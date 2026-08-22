@@ -383,6 +383,7 @@ def test_full_facet_round_records_resolution_metrics_rating_and_child_branch() -
         }
         assert round_state.resolution is not None
         assert round_state.resolution.summary.startswith("The panel compared")
+        assert 2 <= len(agents.split_sentences(round_state.resolution.summary)) <= 3
         assert round_state.metrics is not None
         assert round_state.metrics.after == []
         assert round_state.metrics.method == "unavailable:no-semantic-embedder"
