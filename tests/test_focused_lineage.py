@@ -223,7 +223,10 @@ def test_applied_hypothesis_is_not_a_checkpoint_until_saved() -> None:
 
         assert applied.deliberations[0].applied_hypothesis == value
         assert applied.applied_hypothesis_version_id is None
-        assert service.workspace_view(root.workspace_id).workspace.hypothesis_versions == []
+        assert (
+            service.workspace_view(root.workspace_id).workspace.hypothesis_versions
+            == []
+        )
 
         saved = await service.save_deliberation_hypothesis(
             root.id,
@@ -331,9 +334,10 @@ def test_edit_applied_creates_a_provenance_preserving_version() -> None:
         )
 
         assert state.applied_hypothesis_version_id == "H1"
-        assert len(
-            service.workspace_view(root.workspace_id).workspace.hypothesis_versions
-        ) == 1
+        assert (
+            len(service.workspace_view(root.workspace_id).workspace.hypothesis_versions)
+            == 1
+        )
 
         state = await service.save_deliberation_hypothesis(
             root.id,
@@ -534,12 +538,9 @@ def test_repeated_unsettled_round_does_not_duplicate_open_question() -> None:
             panel_perspective("first", "First", "first"),
             panel_perspective("second", "Second", "second"),
         ]
-        for perspective in state.perspectives:
-            state = await service.add_agent(state.id, perspective.id)
         state = await service.create_deliberation(state.id)
         deliberation = state.deliberations[0]
         agent_iids = [agent.iid for agent in state.agents]
-        await service.wire_agents(state.id, deliberation.id, agent_iids)
 
         for _ in range(2):
             await service.run_round(
@@ -572,12 +573,9 @@ def test_concurrent_round_requests_serialize_without_detached_side_effects(
             panel_perspective("first", "First", "first"),
             panel_perspective("second", "Second", "second"),
         ]
-        for perspective in state.perspectives:
-            state = await service.add_agent(state.id, perspective.id)
         state = await service.create_deliberation(state.id)
         deliberation = state.deliberations[0]
         agent_iids = [agent.iid for agent in state.agents]
-        await service.wire_agents(state.id, deliberation.id, agent_iids)
 
         entered = asyncio.Event()
         release = asyncio.Event()
@@ -646,12 +644,9 @@ def test_workspace_lock_preserves_sibling_mutation_after_failed_round(
             panel_perspective("first", "First", "first"),
             panel_perspective("second", "Second", "second"),
         ]
-        for perspective in child.perspectives:
-            child = await service.add_agent(child.id, perspective.id)
         child = await service.create_deliberation(child.id)
         deliberation = child.deliberations[0]
         agent_iids = [agent.iid for agent in child.agents]
-        await service.wire_agents(child.id, deliberation.id, agent_iids)
 
         entered = asyncio.Event()
         release = asyncio.Event()
@@ -714,12 +709,9 @@ def test_failed_round_restores_the_entire_in_memory_investigation(
             panel_perspective("first", "First", "first"),
             panel_perspective("second", "Second", "second"),
         ]
-        for perspective in state.perspectives:
-            state = await service.add_agent(state.id, perspective.id)
         state = await service.create_deliberation(state.id)
         deliberation = state.deliberations[0]
         agent_iids = [agent.iid for agent in state.agents]
-        await service.wire_agents(state.id, deliberation.id, agent_iids)
         before = service.get(state.id).model_dump(mode="json")
 
         async def fail_after_reflection(*_args, **_kwargs):
@@ -739,7 +731,7 @@ def test_failed_round_restores_the_entire_in_memory_investigation(
     asyncio.run(go())
 
 
-def test_panel_can_wire_more_than_three_perspectives() -> None:
+def test_panel_automatically_includes_more_than_three_agents() -> None:
     async def go() -> None:
         service = FocusedPanelService()
         state = service.create_workspace(
@@ -753,12 +745,7 @@ def test_panel_can_wire_more_than_three_perspectives() -> None:
         ]
         state = await service.create_deliberation(state.id)
         deliberation = state.deliberations[0]
-        state = await service.wire_agents(
-            state.id,
-            deliberation.id,
-            [1, 2, 3, 4, 5],
-        )
-        assert state.deliberations[0].agent_iids == [1, 2, 3, 4, 5]
+        assert deliberation.agent_iids == [1, 2, 3, 4, 5]
 
     asyncio.run(go())
 

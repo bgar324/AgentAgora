@@ -118,26 +118,12 @@ async function prepareConsensusCheckpoint(
       name: "Corroborating boundary",
     },
   )
-  for (const perspective of state.perspectives) {
-    state = await requestJson(
-      request,
-      `/api/focused/sessions/${investigationId}/agents`,
-      "post",
-      { perspective_id: perspective.id },
-    )
-  }
   state = await requestJson(
     request,
     `/api/focused/sessions/${investigationId}/deliberations`,
     "post",
   )
   const deliberation = state.deliberations[0]
-  state = await requestJson(
-    request,
-    `/api/focused/sessions/${investigationId}/deliberations/${deliberation.id}/agents`,
-    "post",
-    { agent_iids: state.agents.map((agent: { iid: number }) => agent.iid) },
-  )
   state = await requestJson(
     request,
     `/api/focused/sessions/${investigationId}/deliberations/${deliberation.id}/rounds`,
@@ -209,13 +195,19 @@ test("branches an open question into an isolated child Investigation", async ({ 
   await expect(page.getByText("Perspective matrix (2)", { exact: true })).toBeVisible()
 
   await page.getByRole("button", { name: "Continue" }).click()
-  await expect(page.getByText("Choose the focused panel", { exact: true })).toBeVisible()
-  await page.getByRole("button", { name: /Resistance ecology/ }).click()
-  await page.getByRole("button", { name: /Host and microbiome/ }).click()
-  await page.getByRole("button", { name: "Continue to panel" }).click()
+  await expect(
+    page.getByRole("dialog", { name: "Choose the focused panel" }),
+  ).toHaveCount(0)
+  await expect(page.locator('[data-testid^="agent-node-"]')).toHaveCount(2)
 
   await expect(page.getByRole("button", { name: "Join" })).toBeEnabled()
   await page.getByRole("button", { name: "Join" }).click()
+  await expect(
+    page.getByRole("heading", { name: "How this panel works" }),
+  ).toBeVisible()
+  await expect(
+    page.getByRole("dialog", { name: "Focused panel" }),
+  ).toContainText("you can ask the whole panel or one Perspective")
   await page.getByRole("button", { name: /Scope Who, where/ }).click()
   await page.getByRole("button", { name: "Start round" }).click()
 
@@ -232,44 +224,35 @@ test("branches an open question into an isolated child Investigation", async ({ 
     .boundingBox()
   expect(summaryBox?.y).toBeLessThan(discussionBox?.y ?? 0)
   await expect(page.getByText(/of 4 parts changed/)).toBeVisible()
-  const scoring = page.getByRole("region", {
-    name: "Thinking scores for round 1",
-  })
-  await scoring
-    .getByRole("group", { name: "Divergent thinking" })
-    .getByRole("radio", { name: "6" })
-    .check()
-  await scoring
-    .getByRole("group", { name: "Convergent thinking" })
-    .getByRole("radio", { name: "5" })
-    .check()
-  await scoring.getByRole("button", { name: "Save scores" }).click()
-  await expect(scoring.getByText("Saved", { exact: true })).toBeVisible()
-  const rated = await requestJson(
-    page.request,
-    `/api/focused/sessions/${rootId}`,
-    "get",
-  )
-  expect(rated.deliberations[0].rounds[0].rating).toMatchObject({
-    divergent: 6,
-    convergent: 5,
-  })
+  await expect(
+    page.getByRole("dialog", { name: "Rate this deliberation" }),
+  ).toHaveCount(0)
   await page.getByRole("button", { name: "Apply shared ground" }).click()
   await expect(page.getByText("Applied, not saved", { exact: true })).toBeVisible()
   await page.getByRole("button", { name: "Save hypothesis" }).click()
   await expect(page.getByText("Saved H1", { exact: true })).toBeVisible()
   await page.keyboard.press("Escape")
   await expect(page.getByTestId("round-result-node-1")).toBeVisible()
-  await expect(page.getByTestId("saved-hypothesis-node-H1")).toBeVisible()
+  await expect(page.getByTestId("saved-hypothesis-node-H1")).toHaveCount(0)
   await expect(
     page.locator('[data-testid^="research-problem-node-"]'),
-  ).not.toHaveCount(0)
+  ).toHaveCount(0)
+
+  await page.getByRole("button", { name: "Extraction" }).click()
+  await addPerspective(page, "Acute outcomes")
+  await expect(page.getByText("Perspective matrix (3)", { exact: true })).toBeVisible()
+  await page.getByRole("button", { name: "Continue" }).click()
+  await expect(page.locator('[data-testid^="agent-node-"]')).toHaveCount(3)
+  await expect(page.getByTestId("round-result-node-1")).toBeVisible()
+
   await page.getByRole("button", { name: "Join" }).click()
   await page.getByRole("button", { name: /Explanation How/ }).click()
   await page.getByRole("button", { name: "Start round" }).click()
-  await expect(page.getByText("2 completed rounds", { exact: true })).toBeVisible({
-    timeout: 30_000,
-  })
+  await expect(
+    page
+      .getByRole("dialog", { name: "Focused panel" })
+      .getByText("2 completed rounds", { exact: true }),
+  ).toBeVisible({ timeout: 30_000 })
   await expect(
     page.locator('[data-hypothesis-part="problem"]'),
   ).not.toContainText("Not established yet.")
@@ -279,15 +262,54 @@ test("branches an open question into an isolated child Investigation", async ({ 
   await expect(
     page.locator('[data-hypothesis-part="hypothesis"]'),
   ).not.toContainText("Not established yet.")
+  await page.getByRole("button", { name: "Apply shared ground" }).click()
+  await page.getByRole("button", { name: "Save hypothesis" }).click()
+  await expect(page.getByText("Saved H2", { exact: true })).toBeVisible()
+  await expect(page.getByTestId("saved-hypothesis-node-H2")).toHaveCount(0)
+  await expect(
+    page.locator('[data-testid^="research-problem-node-"]'),
+  ).toHaveCount(0)
   expect(duplicateKeyWarnings).toEqual([])
+
+  await page.getByRole("button", { name: "End deliberation" }).click()
+  const scoring = page.getByRole("dialog", { name: "Rate this deliberation" })
+  await expect(scoring).toBeVisible()
+  await scoring
+    .getByRole("group", { name: "Divergent thinking" })
+    .getByRole("radio", { name: "6" })
+    .check()
+  await scoring
+    .getByRole("group", { name: "Convergent thinking" })
+    .getByRole("radio", { name: "5" })
+    .check()
+  await scoring.getByRole("button", { name: "Save scores" }).click()
+  await expect(scoring).toHaveCount(0)
+
+  const rated = await requestJson(
+    page.request,
+    `/api/focused/sessions/${rootId}`,
+    "get",
+  )
+  const completed = rated.deliberations[0]
+  expect(completed.completed_at).toBeTruthy()
+  expect(completed.final_hypothesis_version_id).toBe("H2")
+  expect(completed.rating).toMatchObject({ divergent: 6, convergent: 5 })
+  expect(completed.rounds[0]).not.toHaveProperty("rating")
+  expect(completed.rounds.map((round: { participant_iids: number[] }) =>
+    round.participant_iids.length,
+  )).toEqual([2, 3])
+  const researchQuestion = String(completed.recommended_questions[0].question)
+
   await page.keyboard.press("Escape")
+  await expect(page.getByTestId("saved-hypothesis-node-H2")).toBeVisible()
+  await expect(page.getByTestId("saved-hypothesis-node-H1")).toHaveCount(0)
   const researchNode = page.locator(
     '[data-testid^="research-problem-node-"]',
   ).first()
   await expect(researchNode).toBeVisible()
   await researchNode.click()
   await expect(page.getByText("Child Investigation", { exact: true })).toBeVisible()
-  await expect(page.getByText(/This branch begins from H1/)).toBeVisible()
+  await expect(page.getByText(/This branch begins from H2/)).toBeVisible()
   const childId = await page
     .getByRole("combobox", { name: "Switch Investigation" })
     .inputValue()
@@ -305,11 +327,21 @@ test("branches an open question into an isolated child Investigation", async ({ 
     "0 papers",
   )
 
+  await page.getByRole("button", { name: "Open current Investigation" }).click()
+  await searchDemoLiterature(page)
+  await addPerspective(page, "Resistance ecology")
+  await addPerspective(page, "Host and microbiome")
+  await page.getByRole("button", { name: "Continue" }).click()
+  await expect(page.getByTestId("root-research-problem-node")).toContainText(
+    researchQuestion,
+  )
+  await expect(page.locator('[data-testid^="agent-node-"]')).toHaveCount(2)
+  await page.getByRole("button", { name: "Investigation map" }).click()
   await page.getByTestId(`investigation-node-${rootId}`).click()
   await expect(page.getByRole("combobox", { name: "Switch Investigation" })).toHaveValue(
     rootId,
   )
-  await page.getByRole("button", { name: "Join" }).click()
+  await page.getByRole("button", { name: "Review" }).click()
   const drawer = page.getByRole("dialog", { name: "Focused panel" })
   await expect(drawer).toBeVisible()
   const conversation = page.getByTestId("panel-conversation-scroll")
@@ -325,22 +357,19 @@ test("branches an open question into an isolated child Investigation", async ({ 
     borderLeftWidth: "1px",
     overflowY: "auto",
   })
-  const splitGeometry = await drawer.evaluate((surface) => {
+  await expect(page.getByTestId("panel-chat-bar")).toHaveCount(0)
+  const sidebarBottomGap = await drawer.evaluate((surface) => {
     const sidebar = surface.querySelector(
       '[data-testid="working-hypothesis-sidebar"]',
     )
-    const chat = surface.querySelector('[data-testid="panel-chat-bar"]')
-    if (!sidebar || !chat) return null
+    if (!sidebar) return null
     const drawerRect = surface.getBoundingClientRect()
     const sidebarRect = sidebar.getBoundingClientRect()
-    const chatRect = chat.getBoundingClientRect()
-    return {
-      sidebarBottomGap: Math.round(drawerRect.bottom - sidebarRect.bottom),
-      chatRightGap: Math.round(sidebarRect.left - chatRect.right),
-    }
+    return Math.round(drawerRect.bottom - sidebarRect.bottom)
   })
-  expect(Math.abs(splitGeometry?.sidebarBottomGap ?? Number.POSITIVE_INFINITY)).toBeLessThanOrEqual(1)
-  expect(Math.abs(splitGeometry?.chatRightGap ?? Number.POSITIVE_INFINITY)).toBeLessThanOrEqual(1)
+  expect(
+    Math.abs(sidebarBottomGap ?? Number.POSITIVE_INFINITY),
+  ).toBeLessThanOrEqual(1)
   await conversation.evaluate((element) => {
     element.scrollTop = 0
   })
@@ -700,6 +729,25 @@ test("keeps repeated research problems from separate rounds", async ({ page }) =
     1,
     2,
   ])
+  state = await requestJson(
+    page.request,
+    `/api/focused/sessions/${rootId}/deliberations/${deliberation.id}/hypothesis`,
+    "put",
+    {
+      hypothesis: state.deliberations[0].hypothesis,
+      mode: "apply_pending",
+    },
+  )
+  state = await requestJson(
+    page.request,
+    `/api/focused/sessions/${rootId}/deliberations/${deliberation.id}/hypothesis/checkpoint`,
+    "post",
+  )
+  await requestJson(
+    page.request,
+    `/api/focused/sessions/${rootId}/deliberations/${deliberation.id}/complete`,
+    "post",
+  )
 
   await page.goto(`/focused?workspace=${workspaceId}`)
   await expect(
@@ -732,12 +780,10 @@ test("allows a focused panel with more than three Perspectives", async ({ page }
   await page.reload()
   await expect(page.getByText("Perspective matrix (5)", { exact: true })).toBeVisible()
   await page.getByRole("button", { name: "Continue" }).click()
-  const picker = page.getByRole("dialog", { name: "Choose the focused panel" })
-  for (let index = 0; index < 5; index += 1) {
-    await picker.getByRole("button", { name: / Add$/ }).first().click()
-  }
-  await expect(picker.getByText("5 panel members", { exact: true })).toBeVisible()
-  await picker.getByRole("button", { name: "Continue to panel" }).click()
+  await expect(
+    page.getByRole("dialog", { name: "Choose the focused panel" }),
+  ).toHaveCount(0)
+  await expect(page.locator('[data-testid^="agent-node-"]')).toHaveCount(5)
   await expect(page.getByRole("button", { name: "Join" })).toBeEnabled()
 })
 

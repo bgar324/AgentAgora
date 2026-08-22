@@ -31,6 +31,7 @@ from agora.focused.models import (
     AgentState,
     ClusterCard,
     ClusteringDiagnostics,
+    DeliberationRating,
     DeliberationRound,
     DeliberationState,
     ExpPaper,
@@ -47,7 +48,6 @@ from agora.focused.models import (
     QuestionStatus,
     RecommendedQuestion,
     RoundMetrics,
-    RoundRating,
     SessionState,
     Turn,
     TurnKind,
@@ -64,7 +64,6 @@ from agora.focused.persistence import PersistenceConflict
 
 logger = logging.getLogger(__name__)
 MAX_SUGGESTED_QUERIES = 5
-
 
 
 class SessionError(Exception):
@@ -949,7 +948,6 @@ class FocusedPanelService:
                 "Investigation to search new papers without replacing it."
             )
 
-
     @_serialized_session_mutation
     async def suggest_queries(self, session_id: str) -> SessionState:
         session = self._require(session_id)
@@ -1027,14 +1025,10 @@ class FocusedPanelService:
                         for query in plan.queries
                     ]
                 )
-            suggestions = [
-                queries[0] for queries in question_suggestions if queries
-            ]
+            suggestions = [queries[0] for queries in question_suggestions if queries]
             suggestions.extend(problem_suggestions)
             suggestions.extend(
-                query
-                for queries in question_suggestions
-                for query in queries[1:]
+                query for queries in question_suggestions for query in queries[1:]
             )
         deduped = []
         seen = set()
@@ -1042,11 +1036,7 @@ class FocusedPanelService:
             clean_query = " ".join(suggestion.query.split())
             suggestion = suggestion.model_copy(update={"query": clean_query})
             key = clean_query.casefold()
-            if (
-                clean_query
-                and key not in seen
-                and len(deduped) < MAX_SUGGESTED_QUERIES
-            ):
+            if clean_query and key not in seen and len(deduped) < MAX_SUGGESTED_QUERIES:
                 seen.add(key)
                 deduped.append(suggestion)
         state.suggested_queries = deduped
@@ -1330,9 +1320,7 @@ class FocusedPanelService:
                 want_round2=False,
             )
             reach.vocabulary = assessment.vocabulary
-            selected_evidence = {
-                item.paper_id: item for item in assessment.selected
-            }
+            selected_evidence = {item.paper_id: item for item in assessment.selected}
             reach.retrieved = len(hits)
             reach.selected = list(selected_evidence.values())
             reach.reached = bool(reach.selected)
@@ -1422,6 +1410,35 @@ class FocusedPanelService:
                 return paper
         raise SessionError(f"paper '{paper_id}' not in this session", status=404)
 
+    def _ensure_perspective_agent(
+        self,
+        session: _Session,
+        perspective: Perspective,
+    ) -> AgentState:
+        state = session.state
+        existing = next(
+            (agent for agent in state.agents if agent.perspective_id == perspective.id),
+            None,
+        )
+        if existing is None:
+            existing = AgentState(
+                iid=session.next_agent_iid(),
+                perspective_id=perspective.id,
+                label=perspective.name,
+                facets={
+                    facet: evidence.model_copy(deep=True)
+                    for facet, evidence in perspective.facets.items()
+                },
+            )
+            state.agents.append(existing)
+        for deliberation in state.deliberations:
+            if (
+                deliberation.completed_at is None
+                and existing.iid not in deliberation.agent_iids
+            ):
+                deliberation.agent_iids.append(existing.iid)
+        return existing
+
     @_serialized_session_mutation
     async def generate_perspective(
         self,
@@ -1433,6 +1450,14 @@ class FocusedPanelService:
     ) -> SessionState:
         session = self._require(session_id)
         state = session.state
+        if any(
+            deliberation.completed_at is not None
+            for deliberation in state.deliberations
+        ):
+            raise SessionError(
+                "This deliberation has ended. Start from a Research Problem "
+                "before adding more Perspectives."
+            )
         cluster = next((item for item in state.clusters if item.id == cluster_id), None)
         if cluster is None:
             raise SessionError(f"cluster '{cluster_id}' not found", status=404)
@@ -1497,6 +1522,7 @@ class FocusedPanelService:
                 status=409,
             )
         state.perspectives.append(perspective)
+        self._ensure_perspective_agent(session, perspective)
         return self._save_state(state)
 
     @_serialized_session_mutation
@@ -1562,43 +1588,14 @@ class FocusedPanelService:
         )
 
     @_serialized_session_mutation
-    async def add_agent(self, session_id: str, perspective_id: str) -> SessionState:
-        session = self._require(session_id)
-        state = session.state
-        perspective = self._perspective(state, perspective_id)
-        iid = session.next_agent_iid()
-        state.agents.append(
-            AgentState(
-                iid=iid,
-                perspective_id=perspective.id,
-                label=perspective.name,
-                facets={
-                    facet: evidence.model_copy(deep=True)
-                    for facet, evidence in perspective.facets.items()
-                },
-            )
-        )
-        return self._save_state(state)
-
-    @_serialized_session_mutation
-    async def remove_agent(self, session_id: str, iid: int) -> SessionState:
-        state = self._require(session_id).state
-        if any(
-            deliberation.rounds and iid in deliberation.agent_iids
-            for deliberation in state.deliberations
-        ):
-            raise SessionError("A panel member cannot be removed after round 1 starts.")
-        state.agents = [agent for agent in state.agents if agent.iid != iid]
-        for deliberation in state.deliberations:
-            deliberation.agent_iids = [
-                agent_iid for agent_iid in deliberation.agent_iids if agent_iid != iid
-            ]
-        return self._save_state(state)
-
-    @_serialized_session_mutation
     async def develop_agent_hypothesis(self, session_id: str, iid: int) -> SessionState:
         session = self._require(session_id)
         state = session.state
+        if any(
+            deliberation.completed_at is not None
+            for deliberation in state.deliberations
+        ):
+            raise SessionError("This deliberation has ended.")
         agent = next((item for item in state.agents if item.iid == iid), None)
         if agent is None:
             raise SessionError(f"agent {iid} not found", status=404)
@@ -1622,10 +1619,17 @@ class FocusedPanelService:
             )
         return deliberation
 
+    @staticmethod
+    def _require_open_deliberation(deliberation: DeliberationState) -> None:
+        if deliberation.completed_at is not None:
+            raise SessionError("This deliberation has ended.")
+
     @_serialized_session_mutation
     async def create_deliberation(self, session_id: str) -> SessionState:
         session = self._require(session_id)
         state = session.state
+        for perspective in state.perspectives:
+            self._ensure_perspective_agent(session, perspective)
         if not state.deliberations:
             inherited = (
                 state.applied_hypothesis.model_copy(deep=True)
@@ -1635,6 +1639,7 @@ class FocusedPanelService:
             state.deliberations.append(
                 DeliberationState(
                     id=session.next_deliberation_id(),
+                    agent_iids=[agent.iid for agent in state.agents],
                     hypothesis=inherited,
                     applied_hypothesis=(
                         inherited.model_copy(deep=True)
@@ -1644,27 +1649,6 @@ class FocusedPanelService:
                     hypothesis_confirmed=inherited is not None,
                 )
             )
-        return self._save_state(state)
-
-    @_serialized_session_mutation
-    async def wire_agents(
-        self,
-        session_id: str,
-        deliberation_id: str,
-        agent_iids: list[int],
-    ) -> SessionState:
-        state = self._require(session_id).state
-        deliberation = self._deliberation(state, deliberation_id)
-        known = {agent.iid for agent in state.agents}
-        unknown = [iid for iid in agent_iids if iid not in known]
-        if unknown:
-            raise SessionError(f"unknown agents: {unknown}")
-        wired = list(dict.fromkeys(agent_iids))
-        if deliberation.rounds:
-            if set(wired) != set(deliberation.agent_iids):
-                raise SessionError("Panel members cannot change after round 1 starts.")
-            return self._save_state(state)
-        deliberation.agent_iids = wired
         return self._save_state(state)
 
     def _agent_view(
@@ -1840,6 +1824,7 @@ class FocusedPanelService:
         session = self._require(session_id)
         state = session.state
         deliberation = self._deliberation(state, deliberation_id)
+        self._require_open_deliberation(deliberation)
         selected = list(dict.fromkeys(facets))
         if len(selected) != len(facets) or not 1 <= len(selected) <= 2:
             raise SessionError("Select one or two different areas for this round.")
@@ -1863,18 +1848,20 @@ class FocusedPanelService:
         if deliberation.rounds and not deliberation.rounds[-1].completed:
             deliberation.rounds.pop()
 
+        participant_iids = list(deliberation.agent_iids)
         round_state = DeliberationRound(
             n=len(deliberation.rounds) + 1,
             lead_iid=lead_iid,
+            participant_iids=participant_iids,
             facets=selected,
         )
         deliberation.rounds.append(round_state)
-        before = self._facet_snapshot(state, deliberation.agent_iids)
+        before = self._facet_snapshot(state, participant_iids)
 
         lead_agent, lead_profile = self._agent_view(state, lead_iid)
         other_profiles = [
             self._agent_view(state, iid)[1]
-            for iid in deliberation.agent_iids
+            for iid in participant_iids
             if iid != lead_iid
         ]
 
@@ -1905,7 +1892,7 @@ class FocusedPanelService:
             await speak(lead_turn)
 
             answers: list[Turn] = []
-            for iid in deliberation.agent_iids:
+            for iid in participant_iids:
                 if iid == lead_iid:
                     continue
                 agent, profile = self._agent_view(state, iid)
@@ -2014,7 +2001,7 @@ class FocusedPanelService:
         )
         known_papers = {paper.id for paper in state.papers}
         known_names = {
-            self._agent_view(state, iid)[0].label for iid in deliberation.agent_iids
+            self._agent_view(state, iid)[0].label for iid in participant_iids
         }
         for points in (
             resolution.consensus_points,
@@ -2031,7 +2018,7 @@ class FocusedPanelService:
         round_state.resolution = resolution
 
         reflected: list[tuple[AgentState, Any, dict[Facet, FacetEvidence]]] = []
-        for iid in deliberation.agent_iids:
+        for iid in participant_iids:
             agent, profile = self._agent_view(state, iid)
             reflection, updated = await agents.reflect_on_round(
                 iid,
@@ -2047,7 +2034,7 @@ class FocusedPanelService:
                 agent.facet_version += 1
             round_state.reflections.append(reflection)
 
-        after = self._facet_snapshot(state, deliberation.agent_iids)
+        after = self._facet_snapshot(state, participant_iids)
         round_state.metrics = await self._round_metrics(
             session,
             before,
@@ -2113,30 +2100,54 @@ class FocusedPanelService:
         return self._save_state(state)
 
     @_serialized_session_mutation
-    async def rate_round(
+    async def complete_deliberation(
         self,
         session_id: str,
         deliberation_id: str,
-        round_number: int,
-        rating: RoundRating,
     ) -> SessionState:
         session = self._require(session_id)
-        deliberation = self._deliberation(
-            session.state,
-            deliberation_id,
-        )
-        round_state = next(
-            (item for item in deliberation.rounds if item.n == round_number),
-            None,
-        )
-        if round_state is None or not round_state.completed:
-            raise SessionError("Complete the round before rating it.")
-        round_state.rating = RoundRating(
+        state = session.state
+        deliberation = self._deliberation(state, deliberation_id)
+        if deliberation.completed_at is not None:
+            return state
+        if not deliberation.rounds or not deliberation.rounds[-1].completed:
+            raise SessionError(
+                "Complete a focused round before ending the deliberation."
+            )
+        if (
+            not deliberation.hypothesis_confirmed
+            or deliberation.applied_hypothesis is None
+        ):
+            raise SessionError(
+                "Apply the pending hypothesis update before ending the deliberation."
+            )
+        if (
+            state.applied_hypothesis_version_id is None
+            or state.applied_hypothesis != deliberation.applied_hypothesis
+        ):
+            raise SessionError(
+                "Save the current hypothesis before ending the deliberation."
+            )
+        deliberation.completed_at = utcnow()
+        deliberation.final_hypothesis_version_id = state.applied_hypothesis_version_id
+        return self._save_state(state)
+
+    @_serialized_session_mutation
+    async def rate_deliberation(
+        self,
+        session_id: str,
+        deliberation_id: str,
+        rating: DeliberationRating,
+    ) -> SessionState:
+        session = self._require(session_id)
+        deliberation = self._deliberation(session.state, deliberation_id)
+        if deliberation.completed_at is None:
+            raise SessionError("End the deliberation before scoring it.")
+        deliberation.rating = DeliberationRating(
             divergent=rating.divergent,
             convergent=rating.convergent,
             note=rating.note.strip(),
         )
-
         return self._save_state(session.state)
 
     @_serialized_session_mutation
@@ -2149,6 +2160,7 @@ class FocusedPanelService:
     ) -> SessionState:
         session = self._require(session_id)
         deliberation = self._deliberation(session.state, deliberation_id)
+        self._require_open_deliberation(deliberation)
         if not deliberation.rounds or not deliberation.rounds[-1].completed:
             raise SessionError("Complete a focused round first.")
         if deliberation.hypothesis is None:
@@ -2209,6 +2221,7 @@ class FocusedPanelService:
     ) -> SessionState:
         session = self._require(session_id)
         deliberation = self._deliberation(session.state, deliberation_id)
+        self._require_open_deliberation(deliberation)
         working = deliberation.applied_hypothesis
         if not deliberation.hypothesis_confirmed or working is None:
             raise SessionError("Apply the working hypothesis before saving it.")
@@ -2253,6 +2266,7 @@ class FocusedPanelService:
         session = self._require(session_id)
         state = session.state
         deliberation = self._deliberation(state, deliberation_id)
+        self._require_open_deliberation(deliberation)
         speakers = [
             iid
             for iid in deliberation.agent_iids
@@ -2310,7 +2324,7 @@ class FocusedPanelService:
         view = self.workspace_view(workspace_id)
         return {
             "schema": "agora-hypothesis-workspace",
-            "schema_version": 3,
+            "schema_version": 4,
             "exported_at": utcnow().isoformat(),
             "workspace": view.workspace.model_dump(mode="json"),
             "investigations": [
