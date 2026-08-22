@@ -1,0 +1,49 @@
+@layer base {
+  h1 {
+    font-size: var(--text-3xl);
+    font-weight: var(--font-weight-bold);
+    letter-spacing: var(--tracking-s);
+    line-height: 1.15;
+  }
+
+  h2 {
+    font-size: var(--text-2xl);
+    font-weight: var(--font-weight-bold);
+    letter-spacing: var(--tracking-s);
+    line-height: 1.2;
+  }
+
+  h3 {
+    font-size: var(--text-xl);
+    font-weight: var(--font-weight-bold);
+    letter-spacing: var(--tracking-m);
+    line-height: 1.25;
+  }
+
+  h4 {
+    font-size: var(--text-l);
+    font-weight: var(--font-weight-bold);
+    letter-spacing: var(--tracking-m);
+    line-height: 1.3;
+  }
+
+  h5 {
+    font-size: var(--text-m);
+    font-weight: var(--font-weight-bold);
+    line-height: 1.35;
+  }
+
+  h6 {
+    font-size: var(--text-s);
+    font-weight: var(--font-weight-bold);
+    letter-spacing: var(--tracking-m);
+    text-transform: uppercase;
+    line-height: 1.4;
+  }
+
+  p {
+    font-size: var(--text-m);
+    font-weight: var(--font-weight-regular);
+    line-height: 1.5;
+  }
+}

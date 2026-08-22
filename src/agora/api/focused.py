@@ -1,0 +1,509 @@
+"""Standalone focused-panel HTTP API."""
+
+from collections.abc import Awaitable, Callable
+from typing import Annotated, Any, Literal, TypeVar
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
+
+from agora.focused.agents import FocusedAgentError
+from agora.focused.models import (
+    Facet,
+    FacetEvidence,
+    HypothesisConfirmationMode,
+    HypothesisDev,
+    HypothesisPart,
+    QuestionStatus,
+    ResearchQuestion,
+    RoundRating,
+    SearchQuery,
+    SessionState,
+    WorkspaceView,
+)
+from agora.focused.service import (
+    MAX_SUGGESTED_QUERIES,
+    FocusedPanelService,
+    SessionError,
+)
+
+focused_router = APIRouter(prefix="/focused", tags=["focused-panel"])
+
+T = TypeVar("T")
+
+
+def get_service(request: Request) -> FocusedPanelService:
+    return request.app.state.focused
+
+
+Service = Annotated[FocusedPanelService, Depends(get_service)]
+
+
+@focused_router.get("/health")
+async def health() -> dict[str, Any]:
+    return {"status": "ok"}
+
+
+def _err(exc: SessionError) -> HTTPException:
+    return HTTPException(status_code=exc.status, detail=str(exc))
+
+
+def _guard(call: Callable[[], T]) -> T:
+    try:
+        return call()
+    except SessionError as exc:
+        raise _err(exc) from exc
+    except FocusedAgentError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="The live model request failed. Check the server logs and try again.",
+        ) from exc
+
+
+async def _acall(coro: Awaitable[T]) -> T:
+    try:
+        return await coro
+    except SessionError as exc:
+        raise _err(exc) from exc
+    except FocusedAgentError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="The live model request failed. Check the server logs and try again.",
+        ) from exc
+
+
+async def _acall_view(
+    service: FocusedPanelService,
+    coro: Awaitable[SessionState],
+) -> WorkspaceView:
+    state = await _acall(coro)
+    return service.workspace_view(state.workspace_id)
+
+
+def _guard_view(
+    service: FocusedPanelService,
+    call: Callable[[], SessionState],
+) -> WorkspaceView:
+    state = _guard(call)
+    return service.workspace_view(state.workspace_id)
+
+
+# --- request schemas ---------------------------------------------------------
+
+
+class CreateWorkspaceRequest(BaseModel):
+    problem: str = Field(min_length=3, max_length=4000)
+    research_questions: list[ResearchQuestion] = Field(
+        default_factory=list,
+        max_length=20,
+    )
+    demo: bool = True
+
+
+class UpdateSessionRequest(BaseModel):
+    problem: str = Field(min_length=3, max_length=4000)
+    research_questions: list[ResearchQuestion] = Field(
+        default_factory=list,
+        max_length=20,
+    )
+
+
+class SearchRequest(BaseModel):
+    queries: list[SearchQuery] = Field(
+        min_length=1, max_length=MAX_SUGGESTED_QUERIES
+    )
+
+
+class PerspectiveRequest(BaseModel):
+    cluster_id: str = Field(min_length=1, max_length=200)
+    facets: list[FacetEvidence] | None = Field(default=None, max_length=4)
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+class AgentRequest(BaseModel):
+    perspective_id: str = Field(min_length=1, max_length=200)
+
+
+class WireRequest(BaseModel):
+    agent_iids: list[int] = Field(min_length=1)
+
+
+class RoundRequest(BaseModel):
+    lead_iid: int
+    facets: list[Facet] = Field(min_length=1, max_length=2)
+
+
+class ChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=4000)
+    deliberation_id: str
+    target_iid: int | None = None
+    proactivity: Literal["low", "med", "high"] = "med"
+
+
+class QuestionStatusRequest(BaseModel):
+    status: QuestionStatus
+
+
+class MergeHypothesesRequest(BaseModel):
+    target_investigation_id: str
+    source_version_id: str
+    parts_from_source: list[HypothesisPart] = Field(min_length=1, max_length=4)
+
+
+class HypothesisRequest(BaseModel):
+    hypothesis: HypothesisDev
+    mode: HypothesisConfirmationMode
+
+
+class RoundRatingRequest(BaseModel):
+    divergent: int = Field(ge=1, le=7)
+    convergent: int = Field(ge=1, le=7)
+    note: str = Field(default="", max_length=1000)
+
+
+# --- stage ① perspective construction ---------------------------------------
+
+
+@focused_router.post("/workspaces")
+async def create_workspace(
+    request: CreateWorkspaceRequest, service: Service
+) -> WorkspaceView:
+    return _guard(
+        lambda: service.create_workspace(
+            problem=request.problem,
+            research_questions=request.research_questions,
+            demo=request.demo,
+        )
+    )
+
+
+@focused_router.get("/workspaces/{workspace_id}")
+async def get_workspace(workspace_id: str, service: Service) -> WorkspaceView:
+    return _guard(lambda: service.workspace_view(workspace_id))
+
+
+@focused_router.delete("/workspaces/{workspace_id}")
+async def delete_workspace(workspace_id: str, service: Service) -> dict[str, str]:
+    _guard(lambda: service.delete_workspace(workspace_id))
+    return {"deleted": workspace_id}
+
+
+@focused_router.put(
+    "/workspaces/{workspace_id}/investigations/{investigation_id}/active"
+)
+async def activate_investigation(
+    workspace_id: str,
+    investigation_id: str,
+    service: Service,
+) -> WorkspaceView:
+    return _guard(
+        lambda: service.activate_investigation(workspace_id, investigation_id)
+    )
+
+
+@focused_router.post(
+    "/workspaces/{workspace_id}/investigations/"
+    "{parent_investigation_id}/questions/{question_id}/child"
+)
+async def create_child_investigation(
+    workspace_id: str,
+    parent_investigation_id: str,
+    question_id: str,
+    service: Service,
+) -> WorkspaceView:
+    return await _acall(
+        service.create_child_investigation(
+            workspace_id,
+            parent_investigation_id,
+            question_id,
+        )
+    )
+
+
+@focused_router.patch(
+    "/workspaces/{workspace_id}/investigations/"
+    "{investigation_id}/questions/{question_id}"
+)
+async def update_question_status(
+    workspace_id: str,
+    investigation_id: str,
+    question_id: str,
+    request: QuestionStatusRequest,
+    service: Service,
+) -> WorkspaceView:
+    return _guard(
+        lambda: service.set_question_status(
+            workspace_id,
+            investigation_id,
+            question_id,
+            request.status,
+        )
+    )
+
+
+@focused_router.put("/workspaces/{workspace_id}/hypotheses/{version_id}/promote")
+async def promote_hypothesis(
+    workspace_id: str,
+    version_id: str,
+    service: Service,
+) -> WorkspaceView:
+    return _guard(lambda: service.promote_hypothesis(workspace_id, version_id))
+
+
+@focused_router.post("/workspaces/{workspace_id}/hypotheses/merge")
+async def merge_hypotheses(
+    workspace_id: str,
+    request: MergeHypothesesRequest,
+    service: Service,
+) -> WorkspaceView:
+    return _guard(
+        lambda: service.merge_hypotheses(
+            workspace_id,
+            target_investigation_id=request.target_investigation_id,
+            source_version_id=request.source_version_id,
+            parts_from_source=request.parts_from_source,
+        )
+    )
+
+
+@focused_router.delete("/workspaces/{workspace_id}/hypotheses/{version_id}")
+async def archive_hypothesis(
+    workspace_id: str,
+    version_id: str,
+    service: Service,
+) -> WorkspaceView:
+    return _guard(lambda: service.archive_hypothesis(workspace_id, version_id))
+
+
+@focused_router.put("/workspaces/{workspace_id}/hypotheses/{version_id}/restore")
+async def restore_hypothesis(
+    workspace_id: str,
+    version_id: str,
+    service: Service,
+) -> WorkspaceView:
+    return _guard(lambda: service.restore_hypothesis(workspace_id, version_id))
+
+
+@focused_router.get("/sessions/{session_id}")
+async def get_session(session_id: str, service: Service) -> SessionState:
+    return _guard(lambda: service.get(session_id))
+
+
+@focused_router.patch("/sessions/{session_id}")
+async def update_session(
+    session_id: str,
+    request: UpdateSessionRequest,
+    service: Service,
+) -> WorkspaceView:
+    return _guard_view(
+        service,
+        lambda: service.update_brief(
+            session_id,
+            problem=request.problem,
+            research_questions=request.research_questions,
+        ),
+    )
+
+
+@focused_router.post("/sessions/{session_id}/suggest-queries")
+async def suggest_queries(session_id: str, service: Service) -> WorkspaceView:
+    return await _acall_view(service, service.suggest_queries(session_id))
+
+
+@focused_router.post("/sessions/{session_id}/search")
+async def run_search(
+    session_id: str,
+    request: SearchRequest,
+    service: Service,
+) -> WorkspaceView:
+    return await _acall_view(
+        service,
+        service.run_search(session_id, request.queries),
+    )
+
+
+@focused_router.get("/sessions/{session_id}/papers/{paper_id}")
+async def paper_detail(session_id: str, paper_id: str, service: Service):
+    paper = await _acall(service.paper_detail(session_id, paper_id))
+    state = _guard(lambda: service.get(session_id))
+    hits = [
+        {
+            "facet": evidence.facet,
+            "text": evidence.text,
+            "sentence_index": evidence.sentence_index,
+        }
+        for cluster in state.clusters
+        for evidence in cluster.facets
+        if (evidence.paper_id == paper_id and evidence.sentence_index is not None)
+    ]
+    return {"paper": paper.model_dump(mode="json"), "facet_hits": hits}
+
+
+@focused_router.post("/sessions/{session_id}/perspectives")
+async def generate_perspective(
+    session_id: str,
+    request: PerspectiveRequest,
+    service: Service,
+) -> WorkspaceView:
+    return await _acall_view(
+        service,
+        service.generate_perspective(
+            session_id,
+            cluster_id=request.cluster_id,
+            facets=request.facets,
+            name=request.name,
+        ),
+    )
+
+
+@focused_router.delete("/sessions/{session_id}/perspectives/{perspective_id}")
+async def remove_perspective(
+    session_id: str,
+    perspective_id: str,
+    service: Service,
+) -> WorkspaceView:
+    return await _acall_view(
+        service,
+        service.remove_perspective(session_id, perspective_id),
+    )
+
+
+# --- stage ② multi-agent deliberation ----------------------------------------
+
+
+@focused_router.post("/sessions/{session_id}/agents")
+async def add_agent(
+    session_id: str,
+    request: AgentRequest,
+    service: Service,
+) -> WorkspaceView:
+    return await _acall_view(
+        service,
+        service.add_agent(session_id, request.perspective_id),
+    )
+
+
+@focused_router.delete("/sessions/{session_id}/agents/{iid}")
+async def remove_agent(
+    session_id: str,
+    iid: int,
+    service: Service,
+) -> WorkspaceView:
+    return await _acall_view(service, service.remove_agent(session_id, iid))
+
+
+@focused_router.post("/sessions/{session_id}/agents/{iid}/hypothesis")
+async def agent_hypothesis(
+    session_id: str,
+    iid: int,
+    service: Service,
+) -> WorkspaceView:
+    return await _acall_view(
+        service,
+        service.develop_agent_hypothesis(session_id, iid),
+    )
+
+
+@focused_router.post("/sessions/{session_id}/deliberations")
+async def create_deliberation(
+    session_id: str,
+    service: Service,
+) -> WorkspaceView:
+    return await _acall_view(service, service.create_deliberation(session_id))
+
+
+@focused_router.post("/sessions/{session_id}/deliberations/{deliberation_id}/agents")
+async def wire_agents(
+    session_id: str,
+    deliberation_id: str,
+    request: WireRequest,
+    service: Service,
+) -> WorkspaceView:
+    return await _acall_view(
+        service,
+        service.wire_agents(session_id, deliberation_id, request.agent_iids),
+    )
+
+
+@focused_router.post("/sessions/{session_id}/deliberations/{deliberation_id}/rounds")
+async def run_round(
+    session_id: str,
+    deliberation_id: str,
+    request: RoundRequest,
+    service: Service,
+) -> WorkspaceView:
+    return await _acall_view(
+        service,
+        service.run_round(
+            session_id,
+            deliberation_id,
+            lead_iid=request.lead_iid,
+            facets=request.facets,
+        ),
+    )
+
+
+@focused_router.put("/sessions/{session_id}/deliberations/{deliberation_id}/hypothesis")
+async def confirm_deliberation_hypothesis(
+    session_id: str,
+    deliberation_id: str,
+    request: HypothesisRequest,
+    service: Service,
+) -> WorkspaceView:
+    return await _acall_view(
+        service,
+        service.confirm_deliberation_hypothesis(
+            session_id,
+            deliberation_id,
+            request.hypothesis,
+            mode=request.mode,
+        ),
+    )
+
+
+@focused_router.put(
+    "/sessions/{session_id}/deliberations/{deliberation_id}"
+    "/rounds/{round_number}/rating"
+)
+async def rate_round(
+    session_id: str,
+    deliberation_id: str,
+    round_number: int,
+    request: RoundRatingRequest,
+    service: Service,
+) -> WorkspaceView:
+    return await _acall_view(
+        service,
+        service.rate_round(
+            session_id,
+            deliberation_id,
+            round_number,
+            RoundRating(
+                divergent=request.divergent,
+                convergent=request.convergent,
+                note=request.note,
+            ),
+        ),
+    )
+
+
+@focused_router.get("/workspaces/{workspace_id}/export")
+async def export_workspace(workspace_id: str, service: Service):
+    return _guard(lambda: service.export_workspace(workspace_id))
+
+
+@focused_router.post("/sessions/{session_id}/chat")
+async def chat(
+    session_id: str,
+    request: ChatRequest,
+    service: Service,
+) -> WorkspaceView:
+    return await _acall_view(
+        service,
+        service.chat(
+            session_id,
+            request.deliberation_id,
+            message=request.message,
+            target_iid=request.target_iid,
+            proactivity=request.proactivity,
+        ),
+    )

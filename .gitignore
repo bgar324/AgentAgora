@@ -1,0 +1,44 @@
+# python
+__pycache__/
+*.py[oc]
+/build/
+/dist/
+/wheels/
+*.egg-info/
+
+# virtual env
+.venv/
+venv/
+
+# prototyping
+/notebooks/
+/docs/
+/artifacts/
+/experiments/
+
+# env variables
+.env
+.env.*
+!.env.example
+
+# vscode pylance
+.vscode/
+
+# misc
+.DS_Store
+*.pem
+
+# cache
+.cache/
+.ruff_cache/
+.pytest_cache/
+/supabase/.temp/
+
+# frontend dependencies and build output
+/web-ui/node_modules/
+/web-ui/.next/
+/web-ui/.next-e2e/
+/web-ui/playwright-report/
+/web-ui/test-results/
+/web-ui/out/
+/web-ui/tsconfig.tsbuildinfo
