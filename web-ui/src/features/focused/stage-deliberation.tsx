@@ -45,28 +45,6 @@ import {
   useDialogSurface,
 } from "./ui"
 
-function distinctQuestions(
-  questions: RecommendedQuestion[],
-): RecommendedQuestion[] {
-  const selected = new Map<string, RecommendedQuestion>()
-  const statusRank: Record<QuestionStatus, number> = {
-    open: 0,
-    archived: 1,
-    addressed: 2,
-    investigating: 3,
-  }
-  questions.forEach((question) => {
-    const key = question.question
-      .trim()
-      .toLocaleLowerCase()
-      .replace(/\s+/g, " ")
-    const current = selected.get(key)
-    if (!current || statusRank[question.status] >= statusRank[current.status]) {
-      selected.set(key, question)
-    }
-  })
-  return [...selected.values()]
-}
 
 function questionSourceRound(question: RecommendedQuestion): number | null {
   if (question.source_round !== null) return question.source_round
@@ -205,7 +183,7 @@ export function StageDeliberation() {
         version.investigation_id === session.id &&
         version.source_deliberation_id === deliberation.id,
     )
-    const questions = distinctQuestions(deliberation.recommended_questions)
+    const questions = deliberation.recommended_questions
     completedRounds.forEach((round, roundIndex) => {
       const roundX = 1080 + roundIndex * 680
       result.push({
@@ -266,6 +244,7 @@ export function StageDeliberation() {
           type: "epResearchProblem",
           position: { x: roundX + 350, y },
           data: {
+            questionId: question.id,
             question: question.question,
             status: question.status,
             hasChild: question.child_investigation_id !== null,
@@ -337,7 +316,7 @@ export function StageDeliberation() {
         version.investigation_id === session.id &&
         version.source_deliberation_id === deliberation.id,
     )
-    const questions = distinctQuestions(deliberation.recommended_questions)
+    const questions = deliberation.recommended_questions
     completedRounds.forEach((round, index) => {
       const roundId = `round-${deliberation.id}-${round.n}`
       result.push({
@@ -1770,21 +1749,23 @@ function HypothesisNode({ data }: NodeProps) {
 }
 
 function ResearchProblemNode({ data }: NodeProps) {
-  const { question, status, hasChild, actionable, busy, onOpen } = data as {
-    question: string
-    status: QuestionStatus
-    hasChild: boolean
-    actionable: boolean
-    busy: boolean
-    onOpen: () => void
-  }
+  const { questionId, question, status, hasChild, actionable, busy, onOpen } =
+    data as {
+      questionId: string
+      question: string
+      status: QuestionStatus
+      hasChild: boolean
+      actionable: boolean
+      busy: boolean
+      onOpen: () => void
+    }
   return (
     <button
       type="button"
       onClick={onOpen}
       disabled={busy || !actionable}
       className="ep-node-enter panel nodrag nopan block w-[300px] px-4 py-3.5 text-left disabled:opacity-60"
-      data-testid={`research-problem-node-${question}`}
+      data-testid={`research-problem-node-${questionId}`}
     >
       <Handle type="target" position={Position.Left} style={HIDDEN_HANDLE} />
       <div className="flex items-center justify-between gap-3">

@@ -65,7 +65,7 @@ const ALL_DEMO_QUERIES = [
 async function requestJson(
   request: APIRequestContext,
   path: string,
-  method: "get" | "post" | "put",
+  method: "get" | "post" | "put" | "patch",
   data?: unknown,
 ) {
   const response = await request[method](path, data === undefined ? {} : { data })
@@ -643,6 +643,46 @@ test("reloads the authoritative workspace after a revision conflict", async ({
   await expect(
     page.getByText("Reloaded workspace state", { exact: true }),
   ).toBeVisible()
+})
+
+
+test("keeps repeated research problems from separate rounds", async ({ page }) => {
+  const { rootId, workspaceId } = await startWorkspace(page)
+  let state = await prepareConsensusCheckpoint(
+    page.request,
+    rootId,
+    true,
+    "scope",
+  )
+  const deliberation = state.deliberations[0]
+  const firstQuestion = deliberation.recommended_questions[0]
+  expect(firstQuestion.source_round).toBe(1)
+  state = await requestJson(
+    page.request,
+    `/api/focused/workspaces/${workspaceId}/investigations/${rootId}/questions/${firstQuestion.id}`,
+    "patch",
+    { status: "archived" },
+  )
+  state = await requestJson(
+    page.request,
+    `/api/focused/sessions/${rootId}/deliberations/${deliberation.id}/rounds`,
+    "post",
+    { lead_iid: state.agents[0].iid, facets: ["scope"] },
+  )
+  const repeated = state.deliberations[0].recommended_questions.filter(
+    (question: { question: string }) =>
+      question.question === firstQuestion.question,
+  )
+  expect(repeated).toHaveLength(2)
+  expect(repeated.map((question: { source_round: number }) => question.source_round)).toEqual([
+    1,
+    2,
+  ])
+
+  await page.goto(`/focused?workspace=${workspaceId}`)
+  await expect(
+    page.locator('[data-testid^="research-problem-node-"]'),
+  ).toHaveCount(2)
 })
 
 
