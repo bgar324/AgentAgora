@@ -11,6 +11,7 @@ import type {
   HypothesisPart,
   PaperDetail,
   Perspective,
+  RoundRating,
   QuestionStatus,
   WorkspaceView,
 } from "@/types/focused"
@@ -326,7 +327,22 @@ export function useFocusedPanel() {
       ),
     [call, sessionId],
   )
-
+  const rateRound = useCallback(
+    (
+      deliberationId: string,
+      roundNumber: number,
+      rating: Pick<RoundRating, "divergent" | "convergent" | "note">,
+    ) =>
+      call(
+        "Saving round scores",
+        `sessions/${sessionId}/deliberations/${deliberationId}/rounds/${roundNumber}/rating`,
+        {
+          method: "PUT",
+          body: JSON.stringify(rating),
+        },
+      ),
+    [call, sessionId],
+  )
 
   const confirmHypothesis = useCallback(
     (
@@ -511,6 +527,7 @@ export function useFocusedPanel() {
     createDeliberation,
     wireAgents,
     runRound,
+    rateRound,
     confirmHypothesis,
     saveHypothesis,
     createChildInvestigation,

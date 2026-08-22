@@ -26,6 +26,8 @@ Surfaces:
   Applying changes the working hypothesis; saving creates an immutable
   Hypothesis node. Unresolved points become Research Problem nodes that open
   child-Investigation paper search.
+  Every completed round ends with separate 1–7 divergent- and
+  convergent-thinking reflection questions saved on that round.
 
 Overlays: modals (picker, Perspective detail, members, hypothesis, reset)
 share ModalShell; the 1180px/96vw panel drawer is the only side sheet.
