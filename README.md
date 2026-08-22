@@ -14,6 +14,8 @@ round. Each completed round remains on the canvas with a process-first summary.
 Consensus-only updates can be applied to the four-step working hypothesis;
 saving creates an immutable Hypothesis node. Disagreement and unsettled points
 remain Research Problem nodes that can open child Investigations.
+Each round also records separate 1–7 researcher scores for divergent and
+convergent thinking.
 
 An open question can explicitly start a child Investigation. The child receives
 fresh literature, fresh Perspectives, and a fresh fixed panel while inheriting

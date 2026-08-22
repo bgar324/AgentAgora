@@ -30,6 +30,7 @@ import {
   type HypothesisVersion,
   type RecommendedQuestion,
   type QuestionStatus,
+  type RoundRating,
   type Perspective,
   type Turn,
 } from "@/types/focused"
@@ -444,6 +445,7 @@ function PanelDrawer({
   const busy = useFocusedStore((state) => state.busy)
   const {
     runRound,
+    rateRound,
     confirmHypothesis,
     saveHypothesis,
     switchInvestigation,
@@ -619,7 +621,16 @@ function PanelDrawer({
             <div className="min-w-0">
               <div className="flex flex-col gap-5">
             {active.rounds.map((round) => (
-              <RoundRecord key={round.n} round={round} />
+              <RoundRecord
+                key={round.n}
+                round={round}
+                busy={busy !== null}
+                saving={busy === "Saving round scores"}
+                onRate={async (rating) =>
+                  (await act(() => rateRound(active.id, round.n, rating))) !==
+                  undefined
+                }
+              />
             ))}
           </div>
 
@@ -802,7 +813,19 @@ function PanelDrawer({
   )
 }
 
-function RoundRecord({ round }: { round: DeliberationRound }) {
+function RoundRecord({
+  round,
+  busy,
+  saving,
+  onRate,
+}: {
+  round: DeliberationRound
+  busy: boolean
+  saving: boolean
+  onRate: (
+    rating: Pick<RoundRating, "divergent" | "convergent" | "note">,
+  ) => Promise<boolean>
+}) {
   return (
     <section className="ep-enter">
       <div className="mb-2 flex items-center gap-2">
@@ -881,7 +904,141 @@ function RoundRecord({ round }: { round: DeliberationRound }) {
           </div>
         </div>
       )}
+      {round.completed && (
+        <RoundScoring
+          round={round}
+          busy={busy}
+          saving={saving}
+          onRate={onRate}
+        />
+      )}
+    </section>
+  )
+}
 
+const THINKING_SCORES = [1, 2, 3, 4, 5, 6, 7] as const
+
+function RoundScoring({
+  round,
+  busy,
+  saving,
+  onRate,
+}: {
+  round: DeliberationRound
+  busy: boolean
+  saving: boolean
+  onRate: (
+    rating: Pick<RoundRating, "divergent" | "convergent" | "note">,
+  ) => Promise<boolean>
+}) {
+  const [divergent, setDivergent] = useState<number | null>(
+    round.rating?.divergent ?? null,
+  )
+  const [convergent, setConvergent] = useState<number | null>(
+    round.rating?.convergent ?? null,
+  )
+  const scoresSaved =
+    round.rating?.divergent === divergent &&
+    round.rating.convergent === convergent
+  const questions = [
+    {
+      key: "divergent",
+      title: "Divergent thinking",
+      question:
+        "Did the multi-agent deliberation help you expand the range of ideas you were considering—for example, did anything come up that you would not have thought of alone?",
+      value: divergent,
+      setValue: setDivergent,
+    },
+    {
+      key: "convergent",
+      title: "Convergent thinking",
+      question:
+        "Did the multi-agent deliberation help you settle on a single, well-supported direction—for example, did the discussion narrow things down rather than leave you with more open options?",
+      value: convergent,
+      setValue: setConvergent,
+    },
+  ] as const
+
+  const save = async () => {
+    if (divergent === null || convergent === null) return
+    await onRate({
+      divergent,
+      convergent,
+      note: round.rating?.note ?? "",
+    })
+  }
+
+  return (
+    <section
+      className="mt-3 border-t border-[var(--line)] pt-3"
+      aria-label={`Thinking scores for round ${round.n}`}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <SectionLabel>Reflection on this round</SectionLabel>
+        {scoresSaved && (
+          <span className="text-[9.5px] font-medium text-[var(--green)]">
+            Saved
+          </span>
+        )}
+      </div>
+      <div className="mt-2 flex flex-col gap-4">
+        {questions.map((item) => (
+          <fieldset
+            key={item.key}
+            aria-label={item.title}
+            className="min-w-0"
+          >
+            <legend className="text-[11px] font-semibold text-[var(--ink)]">
+              {item.title}
+            </legend>
+            <p className="mt-1 text-[11px] leading-relaxed text-[var(--ink-2)]">
+              {item.question}
+            </p>
+            <div className="mt-2 w-fit">
+              <div className="flex items-center gap-1.5">
+                {THINKING_SCORES.map((score) => (
+                  <label key={score} className="relative cursor-pointer">
+                    <input
+                      type="radio"
+                      name={`round-${round.n}-${item.key}`}
+                      value={score}
+                      checked={item.value === score}
+                      disabled={busy}
+                      onChange={() => item.setValue(score)}
+                      className="peer absolute inset-0 opacity-0"
+                    />
+                    <span className="grid size-7 place-items-center rounded-md border border-[var(--line-strong)] text-[11px] font-medium text-[var(--ink-2)] peer-checked:border-[var(--ink)] peer-checked:bg-[var(--ink)] peer-checked:text-white peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-[var(--ink)]">
+                      {score}
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <div className="mt-1 flex justify-between text-[9.5px] text-[var(--mute)]">
+                <span>Not at all</span>
+                <span>Very much</span>
+              </div>
+            </div>
+          </fieldset>
+        ))}
+      </div>
+      <div className="mt-3 flex justify-end">
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={busy || divergent === null || convergent === null}
+          onClick={() => void save()}
+        >
+          {saving ? (
+            <>
+              <Spinner /> Saving…
+            </>
+          ) : round.rating ? (
+            "Update scores"
+          ) : (
+            "Save scores"
+          )}
+        </Button>
+      </div>
     </section>
   )
 }

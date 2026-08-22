@@ -232,6 +232,28 @@ test("branches an open question into an isolated child Investigation", async ({ 
     .boundingBox()
   expect(summaryBox?.y).toBeLessThan(discussionBox?.y ?? 0)
   await expect(page.getByText(/of 4 parts changed/)).toBeVisible()
+  const scoring = page.getByRole("region", {
+    name: "Thinking scores for round 1",
+  })
+  await scoring
+    .getByRole("group", { name: "Divergent thinking" })
+    .getByRole("radio", { name: "6" })
+    .check()
+  await scoring
+    .getByRole("group", { name: "Convergent thinking" })
+    .getByRole("radio", { name: "5" })
+    .check()
+  await scoring.getByRole("button", { name: "Save scores" }).click()
+  await expect(scoring.getByText("Saved", { exact: true })).toBeVisible()
+  const rated = await requestJson(
+    page.request,
+    `/api/focused/sessions/${rootId}`,
+    "get",
+  )
+  expect(rated.deliberations[0].rounds[0].rating).toMatchObject({
+    divergent: 6,
+    convergent: 5,
+  })
   await page.getByRole("button", { name: "Apply shared ground" }).click()
   await expect(page.getByText("Applied, not saved", { exact: true })).toBeVisible()
   await page.getByRole("button", { name: "Save hypothesis" }).click()
