@@ -1006,6 +1006,41 @@ def _point_from_verdict(
     )
 
 
+def _normalize_round_summary(
+    summary: str,
+    facets: list[Facet],
+    turns: list[str],
+    verdicts: list[FacetVerdict],
+) -> str:
+    sentences = split_sentences(summary)
+    process_markers = (
+        "compared",
+        "challenged",
+        "reinforced",
+        "discussion",
+        "dialogue",
+        "responded",
+    )
+    has_process = bool(sentences) and any(
+        marker in sentences[0].casefold() for marker in process_markers
+    )
+    if has_process and len(sentences) >= 2:
+        return " ".join(sentences[:3])
+    default_process = (
+        f"The panel compared {len(turns)} contributions across "
+        f"{', '.join(facets)} before the moderator classified the result."
+    )
+    process = sentences[0] if has_process else default_process
+    conclusions = (
+        split_sentences(" ".join(verdict.summary for verdict in verdicts).strip())
+        if has_process
+        else sentences
+    )
+    if not conclusions:
+        conclusions = ["The focused discussion is complete."]
+    return " ".join([process, *conclusions[:2]])
+
+
 async def summarize_round(
     facets: list[Facet],
     verdicts: list[FacetVerdict],
@@ -1051,6 +1086,12 @@ async def summarize_round(
         temperature=0.1,
     )
     if parsed and parsed.summary:
+        parsed.summary = _normalize_round_summary(
+            parsed.summary,
+            facets,
+            turns,
+            verdicts,
+        )
         active = set(facets)
         parsed.consensus_points = [
             point for point in parsed.consensus_points if point.facet in active
@@ -1113,15 +1154,12 @@ async def summarize_round(
             )
         )
     conclusion = " ".join(verdict.summary for verdict in verdicts).strip()
-    process = (
-        f"The panel compared {len(turns)} contributions across "
-        f"{', '.join(facets)} before the moderator classified the result."
-    )
     return RoundResolution(
-        summary=(
-            f"{process} {conclusion}"
-            if conclusion
-            else f"{process} The focused discussion is complete."
+        summary=_normalize_round_summary(
+            conclusion,
+            facets,
+            turns,
+            verdicts,
         ),
         consensus_points=consensus,
         disagreement_points=disagreements,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -277,6 +278,40 @@ def test_resolution_creates_unsettled_fallback_without_forced_conflict() -> None
         assert all(item.source_kind == "unsettled" for item in questions)
         assert all(item.rationale and item.source_point for item in questions)
         assert all(".?" not in item.question for item in questions)
+
+    asyncio.run(go())
+
+
+def test_model_round_summary_is_normalized_to_process_and_conclusion() -> None:
+    class OneSentenceProvider:
+        async def generate_structured(self, **_):
+            return SimpleNamespace(
+                parsed=RoundResolution(
+                    summary="The panel compared the two positions and weighed their evidence.",
+                    consensus_points=[],
+                    disagreement_points=[],
+                    unsettled_points=[],
+                )
+            )
+
+    async def go() -> None:
+        resolution = await agents.summarize_round(
+            ["scope"],
+            [
+                FacetVerdict(
+                    facet="scope",
+                    status="consensus",
+                    summary="The panel agreed on the population boundary.",
+                    consensus="Shared boundary",
+                )
+            ],
+            ["First position", "Corroborating position"],
+            provider=OneSentenceProvider(),
+        )
+
+        assert len(agents.split_sentences(resolution.summary)) == 2
+        assert resolution.summary.startswith("The panel compared")
+        assert "agreed on the population boundary" in resolution.summary
 
     asyncio.run(go())
 
