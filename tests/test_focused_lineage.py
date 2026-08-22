@@ -70,6 +70,10 @@ async def apply_checkpoint(
         deliberation.id,
         value,
     )
+    await service.save_deliberation_hypothesis(
+        investigation_id,
+        deliberation.id,
+    )
 
 
 def add_open_question(
@@ -189,6 +193,54 @@ def test_child_branches_from_last_applied_checkpoint_while_update_is_pending() -
     asyncio.run(go())
 
 
+def test_applied_hypothesis_is_not_a_checkpoint_until_saved() -> None:
+    async def go() -> None:
+        service = FocusedPanelService()
+        root = service.create_workspace(
+            problem=PROBLEM,
+            research_questions=[],
+            demo=True,
+        ).active
+        state = await service.create_deliberation(root.id)
+        deliberation = state.deliberations[0]
+        deliberation.rounds.append(
+            DeliberationRound(
+                n=1,
+                lead_iid=1,
+                facets=["scope"],
+                completed=True,
+            )
+        )
+        value = hypothesis("working")
+        deliberation.hypothesis = value.model_copy(deep=True)
+        deliberation.hypothesis_confirmed = False
+
+        applied = await service.confirm_deliberation_hypothesis(
+            root.id,
+            deliberation.id,
+            value,
+        )
+
+        assert applied.deliberations[0].applied_hypothesis == value
+        assert applied.applied_hypothesis_version_id is None
+        assert service.workspace_view(root.workspace_id).workspace.hypothesis_versions == []
+
+        saved = await service.save_deliberation_hypothesis(
+            root.id,
+            deliberation.id,
+        )
+
+        assert saved.applied_hypothesis_version_id == "H1"
+        assert [
+            version.id
+            for version in service.workspace_view(
+                root.workspace_id
+            ).workspace.hypothesis_versions
+        ] == ["H1"]
+
+    asyncio.run(go())
+
+
 def test_repeating_an_applied_hypothesis_does_not_fabricate_a_checkpoint() -> None:
     async def go() -> None:
         service = FocusedPanelService()
@@ -278,6 +330,16 @@ def test_edit_applied_creates_a_provenance_preserving_version() -> None:
             mode="edit_applied",
         )
 
+        assert state.applied_hypothesis_version_id == "H1"
+        assert len(
+            service.workspace_view(root.workspace_id).workspace.hypothesis_versions
+        ) == 1
+
+        state = await service.save_deliberation_hypothesis(
+            root.id,
+            deliberation.id,
+        )
+
         assert state.applied_hypothesis_version_id == "H2"
         version = service.workspace_view(
             root.workspace_id
@@ -302,6 +364,10 @@ def test_edit_applied_creates_a_provenance_preserving_version() -> None:
             deliberation.id,
             edited,
             mode="edit_applied",
+        )
+        await service.save_deliberation_hypothesis(
+            root.id,
+            deliberation.id,
         )
         assert (
             len(service.workspace_view(root.workspace_id).workspace.hypothesis_versions)

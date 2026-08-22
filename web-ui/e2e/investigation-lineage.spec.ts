@@ -65,7 +65,7 @@ const ALL_DEMO_QUERIES = [
 async function requestJson(
   request: APIRequestContext,
   path: string,
-  method: "get" | "post" | "put",
+  method: "get" | "post" | "put" | "patch",
   data?: unknown,
 ) {
   const response = await request[method](path, data === undefined ? {} : { data })
@@ -147,11 +147,16 @@ async function prepareConsensusCheckpoint(
   const candidate = state.deliberations[0].hypothesis
   expect(candidate).toBeTruthy()
   if (!apply) return state
-  return requestJson(
+  state = await requestJson(
     request,
     `/api/focused/sessions/${investigationId}/deliberations/${deliberation.id}/hypothesis`,
     "put",
     { hypothesis: candidate, mode: "apply_pending" },
+  )
+  return requestJson(
+    request,
+    `/api/focused/sessions/${investigationId}/deliberations/${deliberation.id}/hypothesis/checkpoint`,
+    "post",
   )
 }
 
@@ -218,9 +223,26 @@ test("branches an open question into an isolated child Investigation", async ({ 
     timeout: 30_000,
   })
   await expect(page.getByText("Update ready", { exact: true })).toBeVisible()
+  await expect(page.getByTestId("round-1-summary")).toContainText(
+    "The panel compared",
+  )
+  const summaryBox = await page.getByTestId("round-1-summary").boundingBox()
+  const discussionBox = await page
+    .getByTestId("round-1-discussion")
+    .boundingBox()
+  expect(summaryBox?.y).toBeLessThan(discussionBox?.y ?? 0)
+  await expect(page.getByText(/of 4 parts changed/)).toBeVisible()
   await page.getByRole("button", { name: "Apply shared ground" }).click()
-  await expect(page.getByText("Applied", { exact: true })).toBeVisible()
-
+  await expect(page.getByText("Applied, not saved", { exact: true })).toBeVisible()
+  await page.getByRole("button", { name: "Save hypothesis" }).click()
+  await expect(page.getByText("Saved H1", { exact: true })).toBeVisible()
+  await page.keyboard.press("Escape")
+  await expect(page.getByTestId("round-result-node-1")).toBeVisible()
+  await expect(page.getByTestId("saved-hypothesis-node-H1")).toBeVisible()
+  await expect(
+    page.locator('[data-testid^="research-problem-node-"]'),
+  ).not.toHaveCount(0)
+  await page.getByRole("button", { name: "Join" }).click()
   await page.getByRole("button", { name: /Explanation How/ }).click()
   await page.getByRole("button", { name: "Start round" }).click()
   await expect(page.getByText("2 completed rounds", { exact: true })).toBeVisible({
@@ -236,12 +258,12 @@ test("branches an open question into an isolated child Investigation", async ({ 
     page.locator('[data-hypothesis-part="hypothesis"]'),
   ).not.toContainText("Not established yet.")
   expect(duplicateKeyWarnings).toEqual([])
-  const branchButton = page.getByRole("button", {
-    name: "Start child Investigation",
-  }).first()
-  await expect(branchButton).toBeEnabled()
-  await branchButton.click()
-
+  await page.keyboard.press("Escape")
+  const researchNode = page.locator(
+    '[data-testid^="research-problem-node-"]',
+  ).first()
+  await expect(researchNode).toBeVisible()
+  await researchNode.click()
   await expect(page.getByText("Child Investigation", { exact: true })).toBeVisible()
   await expect(page.getByText(/This branch begins from H1/)).toBeVisible()
   const childId = await page
@@ -345,7 +367,9 @@ test("promotes and merges versioned hypotheses through the workspace map", async
   await page.goto(`/focused?workspace=${workspaceId}`)
   await page.getByRole("button", { name: "Join" }).click()
   await page.getByRole("button", { name: "Apply shared ground" }).click()
-  await expect(page.getByText("Applied", { exact: true })).toBeVisible()
+  await expect(page.getByText("Applied, not saved", { exact: true })).toBeVisible()
+  await page.getByRole("button", { name: "Save hypothesis" }).click()
+  await expect(page.getByText("Saved H1", { exact: true })).toBeVisible()
   await page.keyboard.press("Escape")
   const root = await requestJson(
     page.request,
@@ -424,11 +448,13 @@ test("edits an applied hypothesis without reusing pending-update semantics", asy
   await page.goto(`/focused?workspace=${workspaceId}`)
   await page.getByRole("button", { name: "Join" }).click()
   await page.getByRole("button", { name: "Apply shared ground" }).click()
+  await page.getByRole("button", { name: "Save hypothesis" }).click()
   await page.getByRole("button", { name: "Edit hypothesis" }).click()
   await page
     .getByRole("textbox", { name: "Reasoning hypothesis step" })
     .fill("Researcher-edited reasoning")
-  await page.getByRole("button", { name: "Save edits" }).click()
+  await page.getByRole("button", { name: "Apply edits" }).click()
+  await page.getByRole("button", { name: "Save hypothesis" }).click()
   await page.keyboard.press("Escape")
   const workspace = await page.request.get(
     `/api/focused/workspaces/${workspaceId}`,
@@ -617,6 +643,46 @@ test("reloads the authoritative workspace after a revision conflict", async ({
   await expect(
     page.getByText("Reloaded workspace state", { exact: true }),
   ).toBeVisible()
+})
+
+
+test("keeps repeated research problems from separate rounds", async ({ page }) => {
+  const { rootId, workspaceId } = await startWorkspace(page)
+  let state = await prepareConsensusCheckpoint(
+    page.request,
+    rootId,
+    true,
+    "scope",
+  )
+  const deliberation = state.deliberations[0]
+  const firstQuestion = deliberation.recommended_questions[0]
+  expect(firstQuestion.source_round).toBe(1)
+  state = await requestJson(
+    page.request,
+    `/api/focused/workspaces/${workspaceId}/investigations/${rootId}/questions/${firstQuestion.id}`,
+    "patch",
+    { status: "archived" },
+  )
+  state = await requestJson(
+    page.request,
+    `/api/focused/sessions/${rootId}/deliberations/${deliberation.id}/rounds`,
+    "post",
+    { lead_iid: state.agents[0].iid, facets: ["scope"] },
+  )
+  const repeated = state.deliberations[0].recommended_questions.filter(
+    (question: { question: string }) =>
+      question.question === firstQuestion.question,
+  )
+  expect(repeated).toHaveLength(2)
+  expect(repeated.map((question: { source_round: number }) => question.source_round)).toEqual([
+    1,
+    2,
+  ])
+
+  await page.goto(`/focused?workspace=${workspaceId}`)
+  await expect(
+    page.locator('[data-testid^="research-problem-node-"]'),
+  ).toHaveCount(2)
 })
 
 

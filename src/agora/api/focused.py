@@ -460,6 +460,23 @@ async def confirm_deliberation_hypothesis(
     )
 
 
+@focused_router.post(
+    "/sessions/{session_id}/deliberations/{deliberation_id}/hypothesis/checkpoint"
+)
+async def save_deliberation_hypothesis(
+    session_id: str,
+    deliberation_id: str,
+    service: Service,
+) -> WorkspaceView:
+    return await _acall_view(
+        service,
+        service.save_deliberation_hypothesis(
+            session_id,
+            deliberation_id,
+        ),
+    )
+
+
 @focused_router.put(
     "/sessions/{session_id}/deliberations/{deliberation_id}"
     "/rounds/{round_number}/rating"

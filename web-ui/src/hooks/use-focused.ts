@@ -335,7 +335,7 @@ export function useFocusedPanel() {
       mode: HypothesisConfirmationMode,
     ) =>
       call(
-        "Saving hypothesis",
+        "Applying hypothesis",
         `sessions/${sessionId}/deliberations/${deliberationId}/hypothesis`,
         {
           method: "PUT",
@@ -344,6 +344,16 @@ export function useFocusedPanel() {
       ),
     [call, sessionId],
   )
+  const saveHypothesis = useCallback(
+    (deliberationId: string) =>
+      call(
+        "Saving hypothesis checkpoint",
+        `sessions/${sessionId}/deliberations/${deliberationId}/hypothesis/checkpoint`,
+        { method: "POST" },
+      ),
+    [call, sessionId],
+  )
+
 
 
 
@@ -502,6 +512,7 @@ export function useFocusedPanel() {
     wireAgents,
     runRound,
     confirmHypothesis,
+    saveHypothesis,
     createChildInvestigation,
     switchInvestigation,
     updateQuestionStatus,

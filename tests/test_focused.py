@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -134,6 +135,26 @@ def test_demo_search_reaches_every_default_research_question() -> None:
     asyncio.run(go())
 
 
+def test_completed_investigation_cannot_replace_its_literature() -> None:
+    async def go() -> None:
+        service = FocusedPanelService()
+        state = service.create_workspace(
+            problem=PROBLEM,
+            research_questions=DEMO_RESEARCH_QUESTIONS,
+            demo=True,
+        ).active
+        state = await service.suggest_queries(state.id)
+        selected = [query.query for query in state.suggested_queries[:3]]
+        state = await service.run_search(state.id, selected)
+
+        with pytest.raises(SessionError, match="child Investigation"):
+            await service.suggest_queries(state.id)
+        with pytest.raises(SessionError, match="child Investigation"):
+            await service.run_search(state.id, selected)
+
+    asyncio.run(go())
+
+
 def test_extracts_exactly_four_abstract_grounded_facets() -> None:
     async def go() -> None:
         facets = await agents.extract_cluster_facets(
@@ -261,6 +282,40 @@ def test_resolution_creates_unsettled_fallback_without_forced_conflict() -> None
     asyncio.run(go())
 
 
+def test_model_round_summary_is_normalized_to_process_and_conclusion() -> None:
+    class OneSentenceProvider:
+        async def generate_structured(self, **_):
+            return SimpleNamespace(
+                parsed=RoundResolution(
+                    summary="The panel compared the two positions and weighed their evidence.",
+                    consensus_points=[],
+                    disagreement_points=[],
+                    unsettled_points=[],
+                )
+            )
+
+    async def go() -> None:
+        resolution = await agents.summarize_round(
+            ["scope"],
+            [
+                FacetVerdict(
+                    facet="scope",
+                    status="consensus",
+                    summary="The panel agreed on the population boundary.",
+                    consensus="Shared boundary",
+                )
+            ],
+            ["First position", "Corroborating position"],
+            provider=OneSentenceProvider(),
+        )
+
+        assert len(agents.split_sentences(resolution.summary)) == 2
+        assert resolution.summary.startswith("The panel compared")
+        assert "agreed on the population boundary" in resolution.summary
+
+    asyncio.run(go())
+
+
 def test_hypothesis_uses_consensus_only() -> None:
     async def go() -> None:
         resolution = RoundResolution(
@@ -327,6 +382,8 @@ def test_full_facet_round_records_resolution_metrics_rating_and_child_branch() -
             "explanation",
         }
         assert round_state.resolution is not None
+        assert round_state.resolution.summary.startswith("The panel compared")
+        assert 2 <= len(agents.split_sentences(round_state.resolution.summary)) <= 3
         assert round_state.metrics is not None
         assert round_state.metrics.after == []
         assert round_state.metrics.method == "unavailable:no-semantic-embedder"
@@ -339,6 +396,10 @@ def test_full_facet_round_records_resolution_metrics_rating_and_child_branch() -
         assert deliberation.recommended_questions
         assert all(
             question.source_kind == "unsettled"
+            for question in deliberation.recommended_questions
+        )
+        assert all(
+            question.source_round == round_state.n
             for question in deliberation.recommended_questions
         )
 

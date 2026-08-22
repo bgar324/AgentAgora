@@ -1006,6 +1006,41 @@ def _point_from_verdict(
     )
 
 
+def _normalize_round_summary(
+    summary: str,
+    facets: list[Facet],
+    turns: list[str],
+    verdicts: list[FacetVerdict],
+) -> str:
+    sentences = split_sentences(summary)
+    process_markers = (
+        "compared",
+        "challenged",
+        "reinforced",
+        "discussion",
+        "dialogue",
+        "responded",
+    )
+    has_process = bool(sentences) and any(
+        marker in sentences[0].casefold() for marker in process_markers
+    )
+    if has_process and len(sentences) >= 2:
+        return " ".join(sentences[:3])
+    default_process = (
+        f"The panel compared {len(turns)} contributions across "
+        f"{', '.join(facets)} before the moderator classified the result."
+    )
+    process = sentences[0] if has_process else default_process
+    conclusions = (
+        split_sentences(" ".join(verdict.summary for verdict in verdicts).strip())
+        if has_process
+        else sentences
+    )
+    if not conclusions:
+        conclusions = ["The focused discussion is complete."]
+    return " ".join([process, *conclusions[:2]])
+
+
 async def summarize_round(
     facets: list[Facet],
     verdicts: list[FacetVerdict],
@@ -1025,11 +1060,13 @@ async def summarize_round(
     }
     parsed = await _structured(
         provider,
-        "Resolve a focused multi-perspective discussion. Summarize what the "
-        "dialogue established, then separate consensus, genuine disagreement, "
-        "and unsettled evidence or boundaries. Never invent conflict. If no "
-        "disagreement exists, identify at least one open point genuinely left "
-        "unestablished by the dialogue so the investigation can continue.",
+        "Resolve a focused multi-perspective discussion. Begin with a 2-3 "
+        "sentence summary: first explain how the Perspectives compared, "
+        "challenged, or reinforced their positions and what evidence moved the "
+        "discussion; then state the conclusion. Separate consensus, genuine "
+        "disagreement, and unsettled evidence or boundaries. Never invent "
+        "conflict. If no disagreement exists, identify at least one open point "
+        "genuinely left unestablished so the investigation can continue.",
         "## ACTIVE FACETS\n"
         + ", ".join(facets)
         + "\n\n## MODERATOR VERDICTS\n"
@@ -1049,6 +1086,12 @@ async def summarize_round(
         temperature=0.1,
     )
     if parsed and parsed.summary:
+        parsed.summary = _normalize_round_summary(
+            parsed.summary,
+            facets,
+            turns,
+            verdicts,
+        )
         active = set(facets)
         parsed.consensus_points = [
             point for point in parsed.consensus_points if point.facet in active
@@ -1110,9 +1153,14 @@ async def summarize_round(
                 citations=list(evidence_by_facet.get(facet, [])),
             )
         )
-    summary = " ".join(verdict.summary for verdict in verdicts).strip()
+    conclusion = " ".join(verdict.summary for verdict in verdicts).strip()
     return RoundResolution(
-        summary=summary or "The panel completed a focused facet discussion.",
+        summary=_normalize_round_summary(
+            conclusion,
+            facets,
+            turns,
+            verdicts,
+        ),
         consensus_points=consensus,
         disagreement_points=disagreements,
         unsettled_points=unsettled,

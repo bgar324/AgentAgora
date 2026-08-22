@@ -7,7 +7,7 @@ export default defineConfig([
   ...nextTs,
   globalIgnores([
     ".next/**",
-    ".next-e2e/**",
+    ".next-*/**",
     "out/**",
     "build/**",
     "next-env.d.ts",
