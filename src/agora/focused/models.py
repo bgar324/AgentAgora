@@ -185,7 +185,13 @@ class DeliberationPoint(BaseModel):
 
 
 class RoundResolution(BaseModel):
-    summary: str
+    summary: str = Field(
+        description=(
+            "Two or three sentences: how the discussion developed, what evidence "
+            "mattered, and the resulting conclusion."
+        ),
+        max_length=2000,
+    )
     consensus_points: list[DeliberationPoint] = Field(default_factory=list)
     disagreement_points: list[DeliberationPoint] = Field(default_factory=list)
     unsettled_points: list[DeliberationPoint] = Field(default_factory=list)
@@ -252,6 +258,7 @@ class RecommendedQuestion(BaseModel):
     source_kind: Literal["disagreement", "unsettled"]
     source_point: str = Field(max_length=4000)
     facets: list[Facet] = Field(default_factory=list)
+    source_round: int | None = Field(default=None, ge=1)
     status: QuestionStatus = "open"
     child_investigation_id: str | None = None
 
@@ -275,6 +282,8 @@ class DeliberationState(BaseModel):
     hypothesis: HypothesisDev | None = None
     applied_hypothesis: HypothesisDev | None = None
     hypothesis_confirmed: bool = False
+    working_hypothesis_source_kind: Literal["applied", "edit"] | None = None
+    working_hypothesis_source_round: int | None = Field(default=None, ge=1)
     no_agreement: bool = False
     recommended_questions: list[RecommendedQuestion] = Field(default_factory=list)
     questions_generated: bool = False
@@ -288,6 +297,17 @@ class DeliberationState(BaseModel):
             or self.hypothesis != self.applied_hypothesis
         ):
             raise ValueError("a confirmed hypothesis must equal the applied hypothesis")
+        source = (
+            self.working_hypothesis_source_kind,
+            self.working_hypothesis_source_round,
+        )
+        if any(source) and (
+            not all(source)
+            or self.applied_hypothesis is None
+        ):
+            raise ValueError(
+                "unsaved hypothesis provenance requires an applied working hypothesis"
+            )
         return self
 
 

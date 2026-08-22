@@ -134,6 +134,26 @@ def test_demo_search_reaches_every_default_research_question() -> None:
     asyncio.run(go())
 
 
+def test_completed_investigation_cannot_replace_its_literature() -> None:
+    async def go() -> None:
+        service = FocusedPanelService()
+        state = service.create_workspace(
+            problem=PROBLEM,
+            research_questions=DEMO_RESEARCH_QUESTIONS,
+            demo=True,
+        ).active
+        state = await service.suggest_queries(state.id)
+        selected = [query.query for query in state.suggested_queries[:3]]
+        state = await service.run_search(state.id, selected)
+
+        with pytest.raises(SessionError, match="child Investigation"):
+            await service.suggest_queries(state.id)
+        with pytest.raises(SessionError, match="child Investigation"):
+            await service.run_search(state.id, selected)
+
+    asyncio.run(go())
+
+
 def test_extracts_exactly_four_abstract_grounded_facets() -> None:
     async def go() -> None:
         facets = await agents.extract_cluster_facets(
@@ -327,6 +347,7 @@ def test_full_facet_round_records_resolution_metrics_rating_and_child_branch() -
             "explanation",
         }
         assert round_state.resolution is not None
+        assert round_state.resolution.summary.startswith("The panel compared")
         assert round_state.metrics is not None
         assert round_state.metrics.after == []
         assert round_state.metrics.method == "unavailable:no-semantic-embedder"
@@ -339,6 +360,10 @@ def test_full_facet_round_records_resolution_metrics_rating_and_child_branch() -
         assert deliberation.recommended_questions
         assert all(
             question.source_kind == "unsettled"
+            for question in deliberation.recommended_questions
+        )
+        assert all(
+            question.source_round == round_state.n
             for question in deliberation.recommended_questions
         )
 

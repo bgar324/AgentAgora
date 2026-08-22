@@ -507,6 +507,7 @@ class FocusedPanelService:
         source_kind: Literal["applied", "edit", "merge"] = "applied",
         parent_ids: list[str] | None = None,
         step_sources: dict[HypothesisPart, str] | None = None,
+        source_round: int | None = None,
     ) -> HypothesisVersion:
         workspace = self._workspace_for(state)
         current_version = (
@@ -550,9 +551,13 @@ class FocusedPanelService:
             source_kind=source_kind,
             source_deliberation_id=deliberation.id if deliberation else None,
             source_round=(
-                deliberation.rounds[-1].n
-                if deliberation is not None and deliberation.rounds
-                else None
+                source_round
+                if source_round is not None
+                else (
+                    deliberation.rounds[-1].n
+                    if deliberation is not None and deliberation.rounds
+                    else None
+                )
             ),
         )
         workspace.hypothesis_versions.append(version)
@@ -562,6 +567,8 @@ class FocusedPanelService:
             deliberation.hypothesis = hypothesis.model_copy(deep=True)
             deliberation.applied_hypothesis = hypothesis.model_copy(deep=True)
             deliberation.hypothesis_confirmed = True
+            deliberation.working_hypothesis_source_kind = None
+            deliberation.working_hypothesis_source_round = None
         if workspace.promoted_hypothesis_version_id is None:
             workspace.promoted_hypothesis_version_id = version.id
         return version
@@ -934,10 +941,20 @@ class FocusedPanelService:
         state.question_reach = []
         return self._save_state(state)
 
+    @staticmethod
+    def _ensure_searchable(state: SessionState) -> None:
+        if state.searched:
+            raise SessionError(
+                "This Investigation already has literature. Start a child "
+                "Investigation to search new papers without replacing it."
+            )
+
+
     @_serialized_session_mutation
     async def suggest_queries(self, session_id: str) -> SessionState:
         session = self._require(session_id)
         state = session.state
+        self._ensure_searchable(state)
         reaches: list[QuestionReach] = []
         if self._demo(session):
             paired_questions = state.research_questions == DEMO_RESEARCH_QUESTIONS
@@ -1249,6 +1266,7 @@ class FocusedPanelService:
     async def run_search(self, session_id: str, queries: list[str]) -> SessionState:
         session = self._require(session_id)
         state = session.state
+        self._ensure_searchable(state)
         queries = [q.strip() for q in queries if q.strip()]
         if not queries:
             raise SessionError("Pick at least one query to search.")
@@ -2082,7 +2100,10 @@ class FocusedPanelService:
             unresolved.add(identity)
             new_questions.append(
                 question.model_copy(
-                    update={"id": f"{deliberation.id}-r{round_state.n}-q{index}"}
+                    update={
+                        "id": f"{deliberation.id}-r{round_state.n}-q{index}",
+                        "source_round": round_state.n,
+                    }
                 )
             )
         deliberation.recommended_questions.extend(new_questions)
@@ -2127,10 +2148,7 @@ class FocusedPanelService:
         mode: HypothesisConfirmationMode = "apply_pending",
     ) -> SessionState:
         session = self._require(session_id)
-        deliberation = self._deliberation(
-            session.state,
-            deliberation_id,
-        )
+        deliberation = self._deliberation(session.state, deliberation_id)
         if not deliberation.rounds or not deliberation.rounds[-1].completed:
             raise SessionError("Complete a focused round first.")
         if deliberation.hypothesis is None:
@@ -2159,13 +2177,6 @@ class FocusedPanelService:
                     "There is no pending hypothesis update to apply.",
                     status=409,
                 )
-            if (
-                deliberation.applied_hypothesis is not None
-                and applied == deliberation.applied_hypothesis
-            ):
-                deliberation.hypothesis = applied.model_copy(deep=True)
-                deliberation.hypothesis_confirmed = True
-                return self._save_state(session.state)
             source_kind: Literal["applied", "edit"] = "applied"
         else:
             if (
@@ -2174,12 +2185,39 @@ class FocusedPanelService:
             ):
                 raise SessionError(
                     "Apply or discard the pending update before editing the "
-                    "applied hypothesis.",
+                    "working hypothesis.",
                     status=409,
                 )
             if applied == deliberation.applied_hypothesis:
                 return session.state
             source_kind = "edit"
+
+        previous = deliberation.applied_hypothesis
+        deliberation.hypothesis = applied.model_copy(deep=True)
+        deliberation.applied_hypothesis = applied.model_copy(deep=True)
+        deliberation.hypothesis_confirmed = True
+        if previous != applied:
+            deliberation.working_hypothesis_source_kind = source_kind
+            deliberation.working_hypothesis_source_round = deliberation.rounds[-1].n
+        return self._save_state(session.state)
+
+    @_serialized_session_mutation
+    async def save_deliberation_hypothesis(
+        self,
+        session_id: str,
+        deliberation_id: str,
+    ) -> SessionState:
+        session = self._require(session_id)
+        deliberation = self._deliberation(session.state, deliberation_id)
+        working = deliberation.applied_hypothesis
+        if not deliberation.hypothesis_confirmed or working is None:
+            raise SessionError("Apply the working hypothesis before saving it.")
+        if (
+            session.state.applied_hypothesis_version_id is not None
+            and session.state.applied_hypothesis == working
+        ):
+            return session.state
+
         workspace = self._workspace_for(session.state)
         current_version_id = session.state.applied_hypothesis_version_id
         advances_promoted_branch = (
@@ -2194,8 +2232,9 @@ class FocusedPanelService:
         version = self._record_hypothesis(
             session.state,
             deliberation,
-            applied,
-            source_kind=source_kind,
+            working,
+            source_kind=deliberation.working_hypothesis_source_kind or "applied",
+            source_round=deliberation.working_hypothesis_source_round,
         )
         if advances_promoted_branch:
             workspace.promoted_hypothesis_version_id = version.id

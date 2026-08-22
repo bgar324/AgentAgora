@@ -1025,11 +1025,13 @@ async def summarize_round(
     }
     parsed = await _structured(
         provider,
-        "Resolve a focused multi-perspective discussion. Summarize what the "
-        "dialogue established, then separate consensus, genuine disagreement, "
-        "and unsettled evidence or boundaries. Never invent conflict. If no "
-        "disagreement exists, identify at least one open point genuinely left "
-        "unestablished by the dialogue so the investigation can continue.",
+        "Resolve a focused multi-perspective discussion. Begin with a 2-3 "
+        "sentence summary: first explain how the Perspectives compared, "
+        "challenged, or reinforced their positions and what evidence moved the "
+        "discussion; then state the conclusion. Separate consensus, genuine "
+        "disagreement, and unsettled evidence or boundaries. Never invent "
+        "conflict. If no disagreement exists, identify at least one open point "
+        "genuinely left unestablished so the investigation can continue.",
         "## ACTIVE FACETS\n"
         + ", ".join(facets)
         + "\n\n## MODERATOR VERDICTS\n"
@@ -1110,9 +1112,17 @@ async def summarize_round(
                 citations=list(evidence_by_facet.get(facet, [])),
             )
         )
-    summary = " ".join(verdict.summary for verdict in verdicts).strip()
+    conclusion = " ".join(verdict.summary for verdict in verdicts).strip()
+    process = (
+        f"The panel compared {len(turns)} contributions across "
+        f"{', '.join(facets)} before the moderator classified the result."
+    )
     return RoundResolution(
-        summary=summary or "The panel completed a focused facet discussion.",
+        summary=(
+            f"{process} {conclusion}"
+            if conclusion
+            else f"{process} The focused discussion is complete."
+        ),
         consensus_points=consensus,
         disagreement_points=disagreements,
         unsettled_points=unsettled,
