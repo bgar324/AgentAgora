@@ -10,9 +10,10 @@ Supabase deployment support.
 Each workspace begins with one research problem and one root Investigation.
 Perspectives contain four abstract-grounded areas—Scope, Explanation,
 Approach, and Significance—and the researcher selects one or two areas per
-round. A fixed panel iterates inside that Investigation. Consensus-only updates
-produce reviewable four-step hypothesis checkpoints; disagreement and unsettled
-points remain open questions.
+round. Each completed round remains on the canvas with a process-first summary.
+Consensus-only updates can be applied to the four-step working hypothesis;
+saving creates an immutable Hypothesis node. Disagreement and unsettled points
+remain Research Problem nodes that can open child Investigations.
 
 An open question can explicitly start a child Investigation. The child receives
 fresh literature, fresh Perspectives, and a fresh fixed panel while inheriting
@@ -28,14 +29,14 @@ Perspectives but has no product-level maximum; the researcher may seat every
 relevant Perspective before the first round locks membership. Open questions
 move through Open, Investigating, Addressed, and Archived states.
 
-Focused workspaces use revision-checked SQLite snapshots. Concurrent stale
-writers receive a conflict instead of overwriting newer work, malformed rows are
-quarantined without taking down healthy workspaces, and failed in-process
-mutations roll back before another request can observe them.
+Focused workspaces use revision-checked aggregate snapshots in local SQLite or
+production Supabase. Concurrent stale writers receive a conflict instead of
+overwriting newer work, malformed rows are quarantined without taking down
+healthy workspaces, and failed in-process mutations roll back before another
+request can observe them.
 
-This is intentionally a single-user, loopback development application. It has
-no actor authentication or tenant authorization; do not expose the FastAPI
-server to an untrusted network without adding an ownership boundary.
+The app has no actor accounts or tenant authorization. Production deploys gate
+the FastAPI service behind the Vercel server proxy token.
 
 Computed semantic cosine distances remain export-only study measurements; they
 are never rendered to participants.

@@ -217,33 +217,44 @@ export function StageExtraction() {
                     ))}
                   </ul>
                 )}
-                <p className="mt-3 text-[12px] leading-relaxed text-[var(--mute)]">
-                  {session.demo
-                    ? "Load five search queries for the fixed antibiotic demo."
-                    : "Generate up to five search queries based on your problem and research questions. You can review them before searching."}
-                </p>
-                <Button
-                  variant="primary"
-                  size="sm"
-                  disabled={busy === "Generating queries"}
-                  onClick={() => void act(suggestQueries)}
-                  className="mt-4"
-                >
-                  {busy === "Generating queries" ? (
-                    <>
-                      <Spinner /> {session.demo ? "Loading…" : "Generating…"}
-                    </>
-                  ) : session.demo ? (
-                    "Load demo queries"
-                  ) : (
-                    "Generate search queries"
-                  )}
-                </Button>
+                {!session.searched ? (
+                  <>
+                    <p className="mt-3 text-[12px] leading-relaxed text-[var(--mute)]">
+                      {session.demo
+                        ? "Load five search queries for the fixed antibiotic demo."
+                        : "Generate up to five search queries based on your problem and research questions. You can review them before searching."}
+                    </p>
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      disabled={busy === "Generating queries"}
+                      onClick={() => void act(suggestQueries)}
+                      className="mt-4"
+                    >
+                      {busy === "Generating queries" ? (
+                        <>
+                          <Spinner /> {session.demo ? "Loading…" : "Generating…"}
+                        </>
+                      ) : session.demo ? (
+                        "Load demo queries"
+                      ) : (
+                        "Generate search queries"
+                      )}
+                    </Button>
+                  </>
+                ) : (
+                  <p className="mt-3 text-[12px] leading-relaxed text-[var(--mute)]">
+                    This literature set is preserved. Start from a Research
+                    Problem node when a new question needs new papers.
+                  </p>
+                )}
               </>
             )}
           </div>
 
-          {!editingBrief && session.suggested_queries.length > 0 && (
+          {!session.searched &&
+            !editingBrief &&
+            session.suggested_queries.length > 0 && (
             <div className="ep-enter flex flex-col gap-1.5">
               <SectionLabel>Choose queries to search</SectionLabel>
               {queryOptions.map((s, i) => {

@@ -180,6 +180,7 @@ export interface RecommendedQuestion {
   source_kind: "disagreement" | "unsettled"
   source_point: string
   facets: Facet[]
+  source_round: number | null
   status: QuestionStatus
   child_investigation_id: string | null
 }
@@ -192,6 +193,8 @@ export interface DeliberationState {
   hypothesis: HypothesisDev | null
   applied_hypothesis: HypothesisDev | null
   hypothesis_confirmed: boolean
+  working_hypothesis_source_kind: "applied" | "edit" | null
+  working_hypothesis_source_round: number | null
   no_agreement: boolean
   recommended_questions: RecommendedQuestion[]
   questions_generated: boolean

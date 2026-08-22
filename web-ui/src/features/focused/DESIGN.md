@@ -20,10 +20,12 @@ Surfaces:
   Adding a Perspective inserts a pending matrix card immediately. The server
   response replaces the card; a failed request removes it.
 - Panel — React Flow canvas (nodes/wires/dot grid) + guided drawer:
-  the researcher selects one or two areas per focused round; the chronological
-  conversation remains beside a persistent four-step working hypothesis.
-  Consensus proposes an explicit hypothesis update; unresolved points remain
-  separate as open questions.
+  each completed round stays visible as a Deliberation Result node. Its
+  process-first summary precedes the transcript. Shared ground proposes an
+  inspectable before/after update to the four-step working hypothesis.
+  Applying changes the working hypothesis; saving creates an immutable
+  Hypothesis node. Unresolved points become Research Problem nodes that open
+  child-Investigation paper search.
 
 Overlays: modals (picker, Perspective detail, members, hypothesis, reset)
 share ModalShell; the 1180px/96vw panel drawer is the only side sheet.
@@ -39,10 +41,12 @@ IA rules:
 - Start creates a new Investigation and is the intentional reset target.
   The Brief may be edited inline until its first paper search; after that
   evidence boundary is fixed and changing it requires a new Investigation.
-- Question-specific retrieval records both answering papers and misses;
-  a second pass may use vocabulary observed in answering literature.
+- Question-specific retrieval records both answering papers and misses and
+  runs only the queries the researcher selected.
 - Model-supplied source IDs, abstract indices, citations, and moderator
   evidence references are validated before they become user-visible provenance.
+- A completed Investigation's literature cannot be replaced in place. New
+  searches begin from a Research Problem node and preserve the parent canvas.
 
 ## Tokens (app/focused/layout.tsx)
 
