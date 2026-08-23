@@ -27,6 +27,9 @@ deliberation, and returns to the existing Canvas. Prior rounds, chat, questions,
 and hypothesis checkpoints remain in place; the earlier completion and score
 remain in completion history. The workspace map retains the question-labeled
 research branch for provenance.
+On the Canvas, imported agents branch from the Research Problem that initiated
+their literature search and feed the continued panel. The earlier panel,
+Hypothesis, and Research Problem outputs remain visible as the prior checkpoint.
 
 Hypothesis checkpoints form an immutable version graph. Researchers can promote
 a branch, preserve alternatives, merge selected Problem / Previous work /

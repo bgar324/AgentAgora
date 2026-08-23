@@ -177,12 +177,16 @@ test.beforeEach(async ({ page }) => {
 
 test("continues an open question on the existing canvas", async ({ page }) => {
   const duplicateKeyWarnings: string[] = []
+  const reactFlowWarnings: string[] = []
   page.on("console", (message) => {
     if (
       message.type() === "error" &&
       message.text().includes("same key")
     ) {
       duplicateKeyWarnings.push(message.text())
+    }
+    if (message.text().includes("Couldn't create edge")) {
+      reactFlowWarnings.push(message.text())
     }
   })
   const { rootId } = await startWorkspace(page)
@@ -362,14 +366,15 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   expect(completed.rounds.map((round: { participant_iids: number[] }) =>
     round.participant_iids.length,
   )).toEqual([2, 3])
+  const sourceQuestionId = String(completed.recommended_questions[0].id)
 
   await page.keyboard.press("Escape")
   await expect(page.getByTestId("saved-hypothesis-node-H2")).toBeVisible()
   await expect(page.getByTestId("saved-hypothesis-node-H1")).toHaveCount(0)
   await expect(page.locator('[data-testid^="round-result-node-"]')).toHaveCount(0)
-  const researchNode = page.locator(
-    '[data-testid^="research-problem-node-"]',
-  ).first()
+  const researchNode = page.getByTestId(
+    `research-problem-node-${sourceQuestionId}`,
+  )
   await expect(researchNode).toBeVisible()
   await page.getByRole("button", { name: "Review" }).click()
   const endedDrawer = page.getByRole("dialog", { name: "Focused panel" })
@@ -427,6 +432,33 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   expect(continuedState.deliberations[0].agent_iids).toHaveLength(4)
   expect(continuedState.deliberations[0].recommended_questions[0].status).toBe(
     "addressed",
+  )
+  const importedPerspective = continuedState.perspectives.find(
+    (perspective: { source_question_id: string | null }) =>
+      perspective.source_question_id === sourceQuestionId,
+  )
+  expect(importedPerspective).toBeTruthy()
+  const importedAgent = continuedState.agents.find(
+    (agent: { perspective_id: string }) =>
+      agent.perspective_id === importedPerspective.id,
+  )
+  expect(importedAgent).toBeTruthy()
+  await expect(page.locator('[data-testid^="panel-node-"]')).toHaveCount(2)
+  const historicalHypothesis = page.getByTestId("saved-hypothesis-node-H2")
+  await expect(historicalHypothesis).toBeVisible()
+  await expect
+    .poll(() =>
+      historicalHypothesis.evaluate(
+        (element) => getComputedStyle(element).backgroundColor,
+      ),
+    )
+    .toBe("rgb(236, 253, 243)")
+  const sourceProblemBox = await researchNode.boundingBox()
+  const importedAgentBox = await page
+    .getByTestId(`agent-node-${importedAgent.iid}`)
+    .boundingBox()
+  expect(importedAgentBox?.x).toBeGreaterThan(
+    (sourceProblemBox?.x ?? 0) + (sourceProblemBox?.width ?? 0),
   )
   const integratedChild = await requestJson(
     page.request,
@@ -521,6 +553,7 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   await expect(drawer).toBeVisible()
   await page.keyboard.press("Escape")
   await expect(drawer).toHaveCount(0)
+  expect(reactFlowWarnings).toEqual([])
 })
 
 test("promotes and merges versioned hypotheses through the workspace map", async ({

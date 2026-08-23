@@ -122,48 +122,221 @@ export function StageDeliberation() {
         data: { problem: session.origin_question ?? session.problem },
       },
     ]
-
-    session.agents.forEach((agent, index) => {
-      const perspective = session.perspectives.find(
-        (item) => item.id === agent.perspective_id,
-      )
-      result.push({
-        id: `agent-${agent.iid}`,
-        type: "epAgent",
-        position: {
-          x: 330,
-          y: index * 175 - Math.max(0, session.agents.length - 1) * 87.5,
-        },
-        data: {
-          agentId: agent.iid,
-          name: perspective?.name ?? agent.label,
-          color: perspective?.color ?? "var(--mute)",
-          meta: `${perspective?.sources.length ?? 0} source${perspective?.sources.length === 1 ? "" : "s"}`,
-          onOpen: () => setAgentModal(agent),
-        },
-      })
-    })
-
     const deliberation = session.deliberations[0]
     if (!deliberation) return result
+
+    const history = deliberation.completion_history
+    const panelX = (cycle: number) => 720 + cycle * 1060
+    const artifactX = (cycle: number) => panelX(cycle) + 360
+    const branchAgentX = (cycle: number) => panelX(cycle) + 700
+    const historyPanelId = (cycle: number) =>
+      `panel-${deliberation.id}-completion-${cycle + 1}`
+    const currentPanelId = `panel-${deliberation.id}`
+    const perspectiveForAgent = (agent: AgentState) =>
+      session.perspectives.find((item) => item.id === agent.perspective_id)
+    const membersFor = (agentIids: number[]) =>
+      agentIids.map((iid) => {
+        const agent = session.agents.find((item) => item.iid === iid)
+        const perspective = agent ? perspectiveForAgent(agent) : undefined
+        return {
+          id: iid,
+          name: perspective?.name ?? agent?.label ?? "Perspective",
+          color: perspective?.color ?? "var(--mute)",
+        }
+      })
+
+    const completionAgentIids = (
+      completion: DeliberationState["completion_history"][number],
+    ) =>
+      completion.agent_iids.length
+        ? completion.agent_iids
+        : (deliberation.rounds[completion.round_count - 1]?.participant_iids ??
+          [])
+    const questionIdsForCompletion = (
+      completion: DeliberationState["completion_history"][number],
+      cycle: number,
+    ) => {
+      if (completion.question_ids.length) return completion.question_ids
+      const previousRoundCount =
+        cycle === 0 ? 0 : history[cycle - 1].round_count
+      return deliberation.recommended_questions
+        .filter(
+          (question) =>
+            question.source_round !== null &&
+            question.source_round > previousRoundCount &&
+            question.source_round <= completion.round_count,
+        )
+        .map((question) => question.id)
+    }
+    const questionCycle = new Map<string, number>()
+    history.forEach((completion, cycle) => {
+      questionIdsForCompletion(completion, cycle).forEach((questionId) => {
+        questionCycle.set(questionId, cycle)
+      })
+    })
+    const targetCycleForAgent = (agent: AgentState) => {
+      const perspective = perspectiveForAgent(agent)
+      if (perspective && perspective.panel_cycle > 0) {
+        return Math.min(perspective.panel_cycle, history.length)
+      }
+      const sourceQuestionId = perspective?.source_question_id
+      const sourceCycle = sourceQuestionId
+        ? questionCycle.get(sourceQuestionId)
+        : undefined
+      if (sourceCycle !== undefined) return sourceCycle + 1
+      const completedCycle = history.findIndex((completion) =>
+        completionAgentIids(completion).includes(agent.iid),
+      )
+      return completedCycle >= 0 ? completedCycle : history.length
+    }
+    const agentGroups = new Map<number, AgentState[]>()
+    for (const agent of session.agents) {
+      const targetCycle = targetCycleForAgent(agent)
+      agentGroups.set(targetCycle, [
+        ...(agentGroups.get(targetCycle) ?? []),
+        agent,
+      ])
+    }
+    for (const [targetCycle, agents] of agentGroups) {
+      const x = targetCycle === 0 ? 330 : branchAgentX(targetCycle - 1)
+      agents.forEach((agent, index) => {
+        const perspective = perspectiveForAgent(agent)
+        result.push({
+          id: `agent-${agent.iid}`,
+          type: "epAgent",
+          position: {
+            x,
+            y: index * 175 - Math.max(0, agents.length - 1) * 87.5,
+          },
+          data: {
+            agentId: agent.iid,
+            name: perspective?.name ?? agent.label,
+            color: perspective?.color ?? "var(--mute)",
+            meta: `${perspective?.sources.length ?? 0} source${perspective?.sources.length === 1 ? "" : "s"}`,
+            onOpen: () => setAgentModal(agent),
+          },
+        })
+      })
+    }
+
+    const renderedVersionIds = new Set<string>()
+    const addArtifacts = (
+      cycle: number,
+      versionId: string | null,
+      questionIds: string[],
+    ) => {
+      const version =
+        versionId !== null && !renderedVersionIds.has(versionId)
+          ? workspace?.hypothesis_versions.find((item) => item.id === versionId)
+          : undefined
+      if (version) renderedVersionIds.add(version.id)
+      const questions = deliberation.recommended_questions.filter((question) =>
+        questionIds.includes(question.id),
+      )
+      const artifacts = [
+        ...(version ? [{ kind: "hypothesis" as const, version }] : []),
+        ...questions.map((question) => ({
+          kind: "research" as const,
+          question,
+        })),
+      ]
+      artifacts.forEach((artifact, index) => {
+        const y = (index - (artifacts.length - 1) / 2) * 165
+        if (artifact.kind === "hypothesis") {
+          result.push({
+            id: `hypothesis-${artifact.version.id}`,
+            type: "epHypothesis",
+            position: { x: artifactX(cycle), y },
+            data: {
+              versionId: artifact.version.id,
+              hypothesis:
+                [
+                  artifact.version.steps.hypothesis,
+                  artifact.version.steps.reasoning,
+                  artifact.version.steps.problem,
+                  artifact.version.steps.previous_work,
+                ].find((part) => part !== "Not established yet.") ??
+                artifact.version.steps.hypothesis,
+              promoted:
+                workspace?.promoted_hypothesis_version_id === artifact.version.id,
+              onOpen: () => setSavedHypothesisModal(artifact.version),
+            },
+          })
+          return
+        }
+        const question = artifact.question
+        const actionable =
+          question.status === "open" || question.child_investigation_id !== null
+        result.push({
+          id: `research-${question.id}`,
+          type: "epResearchProblem",
+          position: { x: artifactX(cycle), y },
+          data: {
+            questionId: question.id,
+            question: question.question,
+            status: question.status,
+            hasChild: question.child_investigation_id !== null,
+            actionable,
+            busy: busy !== null,
+            onOpen: async () => {
+              if (busy || !actionable) return
+              setCanvasError(null)
+              try {
+                if (question.child_investigation_id) {
+                  await switchInvestigation(question.child_investigation_id)
+                } else {
+                  await createChildInvestigation(question.id)
+                }
+              } catch (cause) {
+                setCanvasError(
+                  cause instanceof Error
+                    ? cause.message
+                    : "Could not open this research problem",
+                )
+              }
+            },
+          },
+        })
+      })
+    }
+
+    history.forEach((completion, cycle) => {
+      const fallbackAgentIids =
+        deliberation.rounds[completion.round_count - 1]?.participant_iids ?? []
+      result.push({
+        id: historyPanelId(cycle),
+        type: "epPanel",
+        position: { x: panelX(cycle), y: 0 },
+        data: {
+          members: membersFor(
+            completion.agent_iids.length
+              ? completion.agent_iids
+              : fallbackAgentIids,
+          ),
+          status: `Ended after ${completion.round_count} ${
+            completion.round_count === 1 ? "round" : "rounds"
+          }`,
+          canJoin: true,
+          ended: true,
+          onJoin: () => setDrawerId(deliberation.id),
+        },
+      })
+      addArtifacts(
+        cycle,
+        completion.final_hypothesis_version_id,
+        questionIdsForCompletion(completion, cycle),
+      )
+    })
+
     const completedRounds = deliberation.rounds.filter((round) => round.completed)
     const ended = deliberation.completed_at !== null
+    const currentCycle = history.length
     result.push({
-      id: `panel-${deliberation.id}`,
+      id: currentPanelId,
       type: "epPanel",
-      position: { x: 720, y: 0 },
+      position: { x: panelX(currentCycle), y: 0 },
       data: {
-        members: deliberation.agent_iids.map((iid) => {
-          const agent = session.agents.find((item) => item.iid === iid)
-          const perspective = agent
-            ? session.perspectives.find((item) => item.id === agent.perspective_id)
-            : undefined
-          return {
-            id: iid,
-            name: perspective?.name ?? agent?.label ?? "Perspective",
-            color: perspective?.color ?? "var(--mute)",
-          }
-        }),
+        members: membersFor(deliberation.agent_iids),
         status: ended
           ? `Ended after ${completedRounds.length} ${
               completedRounds.length === 1 ? "round" : "rounds"
@@ -180,80 +353,20 @@ export function StageDeliberation() {
         onJoin: () => setDrawerId(deliberation.id),
       },
     })
-
-
-    if (!ended || completedRounds.length === 0) return result
-    const finalVersion = workspace?.hypothesis_versions.find(
-      (version) => version.id === deliberation.final_hypothesis_version_id,
-    )
-    const artifacts = [
-      ...(finalVersion
-        ? [{ kind: "hypothesis" as const, version: finalVersion }]
-        : []),
-      ...deliberation.recommended_questions.map((question) => ({
-        kind: "research" as const,
-        question,
-      })),
-    ]
-    const artifactX = 1080
-    artifacts.forEach((artifact, artifactIndex) => {
-      const y = (artifactIndex - (artifacts.length - 1) / 2) * 165
-      if (artifact.kind === "hypothesis") {
-        result.push({
-          id: `hypothesis-${artifact.version.id}`,
-          type: "epHypothesis",
-          position: { x: artifactX, y },
-          data: {
-            versionId: artifact.version.id,
-            hypothesis:
-              [
-                artifact.version.steps.hypothesis,
-                artifact.version.steps.reasoning,
-                artifact.version.steps.problem,
-                artifact.version.steps.previous_work,
-              ].find((part) => part !== "Not established yet.") ??
-              artifact.version.steps.hypothesis,
-            promoted:
-              workspace?.promoted_hypothesis_version_id === artifact.version.id,
-            onOpen: () => setSavedHypothesisModal(artifact.version),
-          },
-        })
-        return
-      }
-      const question = artifact.question
-      const actionable =
-        question.status === "open" || question.child_investigation_id !== null
-      result.push({
-        id: `research-${question.id}`,
-        type: "epResearchProblem",
-        position: { x: artifactX, y },
-        data: {
-          questionId: question.id,
-          question: question.question,
-          status: question.status,
-          hasChild: question.child_investigation_id !== null,
-          actionable,
-          busy: busy !== null,
-          onOpen: async () => {
-            if (busy || !actionable) return
-            setCanvasError(null)
-            try {
-              if (question.child_investigation_id) {
-                await switchInvestigation(question.child_investigation_id)
-              } else {
-                await createChildInvestigation(question.id)
-              }
-            } catch (cause) {
-              setCanvasError(
-                cause instanceof Error
-                  ? cause.message
-                  : "Could not open this research problem",
-              )
-            }
-          },
-        },
-      })
-    })
+    if (ended && completedRounds.length > 0) {
+      const historicalQuestionIds = new Set(
+        history.flatMap((completion, cycle) =>
+          questionIdsForCompletion(completion, cycle),
+        ),
+      )
+      addArtifacts(
+        currentCycle,
+        deliberation.final_hypothesis_version_id,
+        deliberation.recommended_questions
+          .filter((question) => !historicalQuestionIds.has(question.id))
+          .map((question) => question.id),
+      )
+    }
     return result
   }, [
     busy,
@@ -265,6 +378,8 @@ export function StageDeliberation() {
 
   const edges = useMemo<RFEdge[]>(() => {
     if (!session) return []
+    const deliberation = session.deliberations[0]
+    if (!deliberation) return []
     const style = { stroke: "var(--wire)", strokeWidth: 1.25 }
     const markerEnd = {
       type: MarkerType.ArrowClosed,
@@ -272,49 +387,147 @@ export function StageDeliberation() {
       width: 12,
       height: 12,
     }
-    const result: RFEdge[] = session.agents.map((agent) => ({
-      id: `e-problem-${agent.iid}`,
-      source: "problem",
-      target: `agent-${agent.iid}`,
-      style,
-      markerEnd,
-    }))
-    const deliberation = session.deliberations[0]
-    if (!deliberation) return result
-    deliberation.agent_iids.forEach((iid) => {
-      if (session.agents.some((agent) => agent.iid === iid)) {
+    const result: RFEdge[] = []
+    const history = deliberation.completion_history
+    const historyPanelId = (cycle: number) =>
+      `panel-${deliberation.id}-completion-${cycle + 1}`
+    const currentPanelId = `panel-${deliberation.id}`
+    const panelForCycle = (cycle: number) =>
+      cycle < history.length ? historyPanelId(cycle) : currentPanelId
+    const questionIdsForCompletion = (
+      completion: DeliberationState["completion_history"][number],
+      cycle: number,
+    ) => {
+      if (completion.question_ids.length) return completion.question_ids
+      const previousRoundCount =
+        cycle === 0 ? 0 : history[cycle - 1].round_count
+      return deliberation.recommended_questions
+        .filter(
+          (question) =>
+            question.source_round !== null &&
+            question.source_round > previousRoundCount &&
+            question.source_round <= completion.round_count,
+        )
+        .map((question) => question.id)
+    }
+    const questionCycle = new Map<string, number>()
+    history.forEach((completion, cycle) => {
+      questionIdsForCompletion(completion, cycle).forEach((questionId) => {
+        questionCycle.set(questionId, cycle)
+      })
+    })
+
+    const completionAgentIids = (
+      completion: DeliberationState["completion_history"][number],
+    ) =>
+      completion.agent_iids.length
+        ? completion.agent_iids
+        : (deliberation.rounds[completion.round_count - 1]?.participant_iids ??
+          [])
+    for (const agent of session.agents) {
+      const perspective = session.perspectives.find(
+        (item) => item.id === agent.perspective_id,
+      )
+      const sourceQuestionId = perspective?.source_question_id
+      const sourceCycle = sourceQuestionId
+        ? questionCycle.get(sourceQuestionId)
+        : undefined
+      const completedCycle = history.findIndex((completion) =>
+        completionAgentIids(completion).includes(agent.iid),
+      )
+      const declaredCycle =
+        perspective && perspective.panel_cycle > 0
+          ? Math.min(perspective.panel_cycle, history.length)
+          : undefined
+      const targetCycle =
+        declaredCycle ??
+        (sourceCycle !== undefined
+          ? sourceCycle + 1
+          : completedCycle >= 0
+            ? completedCycle
+            : history.length)
+      if (sourceQuestionId && sourceCycle !== undefined) {
         result.push({
-          id: `e-${deliberation.id}-${iid}`,
-          source: `agent-${iid}`,
-          target: `panel-${deliberation.id}`,
+          id: `e-question-${sourceQuestionId}-agent-${agent.iid}`,
+          source: `research-${sourceQuestionId}`,
+          target: `agent-${agent.iid}`,
+          style,
+          markerEnd,
+        })
+      } else if (targetCycle === 0) {
+        result.push({
+          id: `e-problem-${agent.iid}`,
+          source: "problem",
+          target: `agent-${agent.iid}`,
+          style,
+          markerEnd,
+        })
+      } else {
+        result.push({
+          id: `e-panel-${targetCycle}-agent-${agent.iid}`,
+          source: historyPanelId(targetCycle - 1),
+          target: `agent-${agent.iid}`,
           style,
           markerEnd,
         })
       }
-    })
-    const completedRounds = deliberation.rounds.filter((round) => round.completed)
-    if (deliberation.completed_at === null || completedRounds.length === 0) {
-      return result
-    }
-    const panelId = `panel-${deliberation.id}`
-    if (deliberation.final_hypothesis_version_id) {
       result.push({
-        id: `e-hypothesis-${deliberation.final_hypothesis_version_id}`,
-        source: panelId,
-        target: `hypothesis-${deliberation.final_hypothesis_version_id}`,
+        id: `e-agent-${agent.iid}-panel-${targetCycle}`,
+        source: `agent-${agent.iid}`,
+        target: panelForCycle(targetCycle),
         style,
         markerEnd,
       })
     }
-    deliberation.recommended_questions.forEach((question) => {
-      result.push({
-        id: `e-research-${question.id}`,
-        source: panelId,
-        target: `research-${question.id}`,
-        style,
-        markerEnd,
+
+    const renderedVersionIds = new Set<string>()
+    const addArtifactEdges = (
+      cycle: number,
+      versionId: string | null,
+      questionIds: string[],
+    ) => {
+      const panelId = panelForCycle(cycle)
+      if (versionId && !renderedVersionIds.has(versionId)) {
+        renderedVersionIds.add(versionId)
+        result.push({
+          id: `e-hypothesis-${versionId}`,
+          source: panelId,
+          target: `hypothesis-${versionId}`,
+          style,
+          markerEnd,
+        })
+      }
+      questionIds.forEach((questionId) => {
+        result.push({
+          id: `e-research-${questionId}`,
+          source: panelId,
+          target: `research-${questionId}`,
+          style,
+          markerEnd,
+        })
       })
+    }
+    history.forEach((completion, cycle) => {
+      addArtifactEdges(
+        cycle,
+        completion.final_hypothesis_version_id,
+        questionIdsForCompletion(completion, cycle),
+      )
     })
+    if (deliberation.completed_at !== null) {
+      const historicalQuestionIds = new Set(
+        history.flatMap((completion, cycle) =>
+          questionIdsForCompletion(completion, cycle),
+        ),
+      )
+      addArtifactEdges(
+        history.length,
+        deliberation.final_hypothesis_version_id,
+        deliberation.recommended_questions
+          .filter((question) => !historicalQuestionIds.has(question.id))
+          .map((question) => question.id),
+      )
+    }
     return result
   }, [session])
 
@@ -1889,7 +2102,7 @@ function AgentNode({ data }: NodeProps) {
   )
 }
 
-function PanelNode({ data }: NodeProps) {
+function PanelNode({ id, data }: NodeProps) {
   const { members, status, canJoin, ended, onJoin } = data as {
     members: { id: number; name: string; color: string }[]
     status: string
@@ -1898,7 +2111,11 @@ function PanelNode({ data }: NodeProps) {
     onJoin: () => void
   }
   return (
-    <div className="ep-node-enter panel px-3.5 py-3" style={{ width: 280 }}>
+    <div
+      data-testid={`panel-node-${id}`}
+      className="ep-node-enter panel px-3.5 py-3"
+      style={{ width: 280 }}
+    >
       <Handle type="target" position={Position.Left} style={HIDDEN_HANDLE} />
       <Handle type="source" position={Position.Right} style={HIDDEN_HANDLE} />
       <div className="text-[13px] font-semibold tracking-[-0.01em]">Focused panel</div>
@@ -1942,11 +2159,15 @@ function HypothesisNode({ data }: NodeProps) {
       type="button"
       onClick={onOpen}
       className="ep-node-enter panel nodrag nopan block w-[300px] px-4 py-3.5 text-left"
+      style={{
+        background: "var(--green-bg)",
+        borderColor: "rgba(6, 118, 71, 0.28)",
+      }}
       data-testid={`saved-hypothesis-node-${versionId}`}
     >
       <Handle type="target" position={Position.Left} style={HIDDEN_HANDLE} />
       <div className="flex items-center justify-between gap-3">
-        <span className="text-[10.5px] font-medium text-[var(--mute)]">
+        <span className="text-[10.5px] font-semibold text-[var(--green)]">
           Saved hypothesis · {versionId}
         </span>
         {promoted && (
@@ -1982,6 +2203,7 @@ function ResearchProblemNode({ data }: NodeProps) {
       data-testid={`research-problem-node-${questionId}`}
     >
       <Handle type="target" position={Position.Left} style={HIDDEN_HANDLE} />
+      <Handle type="source" position={Position.Right} style={HIDDEN_HANDLE} />
       <div className="flex items-center justify-between gap-3">
         <span className="text-[10.5px] font-medium text-[var(--mute)]">
           Research problem

@@ -88,6 +88,8 @@ class Perspective(BaseModel):
     summary: str = Field(default="", max_length=4000)
     evolved: bool = False
     origin: str = "cluster"
+    source_question_id: str | None = None
+    panel_cycle: int = Field(default=0, ge=0)
 
 
 class ClusteringDiagnostics(BaseModel):
@@ -239,6 +241,8 @@ class DeliberationCompletion(BaseModel):
     completed_at: datetime
     final_hypothesis_version_id: str
     round_count: int = Field(ge=1)
+    agent_iids: list[int] = Field(default_factory=list)
+    question_ids: list[str] = Field(default_factory=list)
     rating: DeliberationRating | None = None
 
 

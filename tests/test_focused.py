@@ -632,11 +632,19 @@ def test_child_research_continues_existing_deliberation() -> None:
         completion = deliberation.completion_history[0]
         assert completion.final_hypothesis_version_id == "H1"
         assert completion.round_count == 1
+        assert completion.agent_iids == agent_iids
+        assert question.id in completion.question_ids
         assert completion.rating is not None
         assert completion.rating.divergent == 6
         assert len(continued.agents) == 4
         assert deliberation.agent_iids == [agent.iid for agent in continued.agents]
         assert continued.deliberations[0].recommended_questions[0].status == "addressed"
+        imported_perspectives = [
+            perspective
+            for perspective in continued.perspectives
+            if perspective.source_question_id == question.id
+        ]
+        assert len(imported_perspectives) == 2
         assert service.get(child.id).integrated_into_parent_at is not None
         with pytest.raises(SessionError, match="already continued"):
             await service.integrate_child_investigation(
@@ -651,6 +659,65 @@ def test_child_research_continues_existing_deliberation() -> None:
             )
         with pytest.raises(SessionError, match="new focused round"):
             await service.complete_deliberation(parent.id, deliberation.id)
+
+        state = await service.run_round(
+            parent.id,
+            deliberation.id,
+            lead_iid=deliberation.agent_iids[-1],
+            facets=["explanation"],
+        )
+        continued_deliberation = state.deliberations[0]
+        if not continued_deliberation.hypothesis_confirmed:
+            assert continued_deliberation.hypothesis is not None
+            state = await service.confirm_deliberation_hypothesis(
+                parent.id,
+                deliberation.id,
+                continued_deliberation.hypothesis,
+            )
+        state = await service.save_deliberation_hypothesis(
+            parent.id,
+            deliberation.id,
+        )
+        state = await service.complete_deliberation(parent.id, deliberation.id)
+        first_question_ids = set(
+            state.deliberations[0].completion_history[0].question_ids
+        )
+        next_question = next(
+            question
+            for question in state.deliberations[0].recommended_questions
+            if question.status == "open"
+        )
+        second_child = (
+            await service.create_child_investigation(
+                state.workspace_id,
+                parent.id,
+                next_question.id,
+            )
+        ).active
+        second_child = await service.suggest_queries(second_child.id)
+        second_child = await service.run_search(
+            second_child.id,
+            [query.query for query in second_child.suggested_queries[:3]],
+        )
+        second_child = await service.generate_perspective(
+            second_child.id,
+            cluster_id=second_child.clusters[4].id,
+        )
+        await service.integrate_child_investigation(
+            state.workspace_id,
+            parent.id,
+            second_child.id,
+        )
+        twice_continued = service.get(parent.id)
+        second_history = twice_continued.deliberations[0].completion_history
+        assert len(second_history) == 2
+        assert first_question_ids.isdisjoint(second_history[1].question_ids)
+        second_import = next(
+            perspective
+            for perspective in twice_continued.perspectives
+            if perspective.source_question_id == next_question.id
+        )
+        assert second_import.panel_cycle == 2
 
     asyncio.run(go())
 

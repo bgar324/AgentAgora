@@ -746,10 +746,27 @@ class FocusedPanelService:
                 status=409,
             )
 
+        recorded_question_ids: set[str] = set()
+        for prior in deliberation.completion_history:
+            if prior.question_ids:
+                recorded_question_ids.update(prior.question_ids)
+                continue
+            recorded_question_ids.update(
+                question.id
+                for question in deliberation.recommended_questions
+                if question.source_round is not None
+                and question.source_round <= prior.round_count
+            )
         completion = DeliberationCompletion(
             completed_at=deliberation.completed_at,
             final_hypothesis_version_id=deliberation.final_hypothesis_version_id,
             round_count=len(deliberation.rounds),
+            agent_iids=list(deliberation.agent_iids),
+            question_ids=[
+                question.id
+                for question in deliberation.recommended_questions
+                if question.id not in recorded_question_ids
+            ],
             rating=(
                 deliberation.rating.model_copy(deep=True)
                 if deliberation.rating is not None
@@ -830,6 +847,8 @@ class FocusedPanelService:
                         perspective.origin,
                         f"{child_state.id[:8]}-{perspective.origin}",
                     ),
+                    "source_question_id": child_state.origin_question_id,
+                    "panel_cycle": len(deliberation.completion_history),
                     "sources": [
                         paper_map.get(paper_id, paper_id)
                         for paper_id in perspective.sources
@@ -1675,6 +1694,11 @@ class FocusedPanelService:
                 }
             ),
             origin=cluster.id,
+            panel_cycle=(
+                len(state.deliberations[0].completion_history)
+                if state.deliberations
+                else 0
+            ),
         )
         perspective.framing = await agents.derive_framing(
             perspective, provider=self._provider_for(session)

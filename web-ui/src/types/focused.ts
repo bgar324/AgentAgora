@@ -50,6 +50,8 @@ export interface Perspective {
   summary: string
   evolved: boolean
   origin: string
+  source_question_id: string | null
+  panel_cycle: number
 }
 
 export interface HypothesisDev {
@@ -157,6 +159,8 @@ export interface DeliberationCompletion {
   completed_at: string
   final_hypothesis_version_id: string
   round_count: number
+  agent_iids: number[]
+  question_ids: string[]
   rating: DeliberationRating | null
 }
 

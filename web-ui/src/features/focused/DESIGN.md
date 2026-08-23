@@ -42,6 +42,10 @@ Surfaces:
   evidence and Perspectives into the parent, reopens the same panel, and returns
   to the existing Canvas. Prior rounds and checkpoints remain; the earlier
   completion and score move into completion history.
+  The Canvas retains each completed panel checkpoint and its final outputs.
+  Perspectives imported from a Research Problem branch render beneath that
+  Research Problem and feed the continued panel; they never attach to the root
+  problem. Saved Hypothesis nodes use the restrained green success surface.
 
 Overlays: modals (add Perspective, Perspective detail, apply changes,
 hypothesis, scoring, reset) share ModalShell; the 1180px/96vw panel drawer is

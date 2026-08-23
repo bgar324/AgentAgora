@@ -232,6 +232,9 @@ export function useFocusedPanel() {
         summary: "",
         evolved: false,
         origin: clusterId,
+        source_question_id: null,
+        panel_cycle:
+          session.deliberations[0]?.completion_history.length ?? 0,
       }
 
       optimisticPerspectiveAdd(optimisticPerspective)
