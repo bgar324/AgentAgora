@@ -1,7 +1,7 @@
 "use client"
 
 
-import { ChevronDown, X } from "lucide-react"
+import { X } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 
 import {
@@ -73,9 +73,6 @@ export function FocusedWorkspace() {
     url.searchParams.set("workspace", workspace.id)
     window.history.replaceState({}, "", url)
   }, [workspace])
-
-
-  const [menuOpen, setMenuOpen] = useState(false)
 
   if (!session) {
     if (busy === "Opening workspace") {
@@ -216,7 +213,6 @@ export function FocusedWorkspace() {
         <Button
           variant="ghost"
           size="sm"
-          className={activeScreen === "map" ? "" : "hidden! sm:inline-flex!"}
           disabled={busy !== null || hasPendingPerspectives}
           onClick={() => setResetOpen(true)}
         >
@@ -233,111 +229,47 @@ export function FocusedWorkspace() {
             Open current Investigation
           </Button>
         ) : (
-          <div className="relative ml-auto shrink-0">
-            <div
-              className={`flex h-8 items-stretch overflow-hidden rounded-lg ${
-                stage === "extraction" ? "btn-primary" : "btn-outline"
-              }`}
-              style={
-                stage === "extraction" && !canDeliberate
-                  ? { background: "rgba(16, 24, 40, 0.14)", opacity: 1 }
+          <Button
+            variant={stage === "extraction" ? "primary" : "outline"}
+            size="sm"
+            disabled={
+              busy !== null ||
+              hasPendingPerspectives ||
+              (stage === "extraction" && !canDeliberate)
+            }
+            onClick={toggleStage}
+            title={
+              hasPendingPerspectives
+                ? "Wait for Perspectives to finish adding"
+                : stage === "extraction" && !canDeliberate
+                  ? branchIntegrated
+                    ? "This research branch already continues on the parent Canvas"
+                    : isResearchBranch
+                      ? "Add at least one Perspective first"
+                      : "Generate at least two Perspectives first"
                   : undefined
-              }
-            >
-              <button
-                type="button"
-                disabled={
-                  busy !== null ||
-                  hasPendingPerspectives ||
-                  (stage === "extraction" && !canDeliberate)
-                }
-                onClick={toggleStage}
-                title={
-                  hasPendingPerspectives
-                    ? "Wait for Perspectives to finish adding"
-                    : stage === "extraction" && !canDeliberate
-                      ? branchIntegrated
-                        ? "This research branch already continues on the parent Canvas"
-                        : isResearchBranch
-                          ? "Add at least one Perspective first"
-                          : "Generate at least two Perspectives first"
-                      : undefined
-                }
-                className="flex items-center gap-1.5 whitespace-nowrap pl-3.5 pr-3 text-[12.5px] font-medium disabled:cursor-default focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--bg)]"
-              >
-                {busy === "Setting up the panel" ? (
-                  <>
-                    <Spinner /> Continuing panel…
-                  </>
-                ) : busy === "Adding research branch to panel" ? (
-                  <>
-                    <Spinner /> Adding to panel…
-                  </>
-                ) : branchIntegrated ? (
-                  "Continued"
-                ) : stage === "extraction" ? (
-                  isResearchBranch ? (
-                    "Add to panel"
-                  ) : (
-                    "Continue"
-                  )
-                ) : (
-                  "Extraction"
-                )}
-              </button>
-              <div className="my-2 w-px shrink-0 bg-current opacity-15" />
-              <button
-                type="button"
-                disabled={busy !== null || hasPendingPerspectives}
-                onClick={() => setMenuOpen((v) => !v)}
-                aria-label="Workspace menu"
-                className="flex items-center pl-2 pr-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--bg)]"
-              >
-                <ChevronDown size={14} strokeWidth={2} />
-              </button>
-            </div>
-            {menuOpen && (
+            }
+          >
+            {busy === "Setting up the panel" ? (
               <>
-                <div
-                  className="fixed inset-0 z-10"
-                  onClick={() => setMenuOpen(false)}
-                />
-                <div className="panel absolute right-0 top-9 z-20 flex w-44 flex-col py-1">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => {
-                      setMenuOpen(false)
-                      setActionError(null)
-                      void focused.exportWorkspace().catch((cause) => {
-                        setActionError({
-                          sessionId: session.id,
-                          message:
-                            cause instanceof Error
-                              ? cause.message
-                              : "Could not export workspace",
-                        })
-                      })
-                    }}
-                    className="justify-start!"
-                  >
-                    Export workspace
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => {
-                      setMenuOpen(false)
-                      setResetOpen(true)
-                    }}
-                    className="justify-start! sm:hidden!"
-                  >
-                    Start over
-                  </Button>
-                </div>
+                <Spinner /> Continuing panel…
               </>
+            ) : busy === "Adding research branch to panel" ? (
+              <>
+                <Spinner /> Adding to panel…
+              </>
+            ) : branchIntegrated ? (
+              "Continued"
+            ) : stage === "extraction" ? (
+              isResearchBranch ? (
+                "Add to panel"
+              ) : (
+                "Continue"
+              )
+            ) : (
+              "Extraction"
             )}
-          </div>
+          </Button>
         )}
       </header>
       {actionError?.sessionId === session.id && (

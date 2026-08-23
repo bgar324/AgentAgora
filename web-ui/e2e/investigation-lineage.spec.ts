@@ -965,30 +965,20 @@ test("preserves a workspace pointer across transient restore failures", async ({
 })
 
 
-test("surfaces export failure and downloads a successful retry", async ({ page }) => {
-  const { workspaceId } = await startWorkspace(page)
-  const routePattern = `**/api/focused/workspaces/${workspaceId}/export`
-  await page.route(routePattern, (route) =>
-    route.fulfill({
-      status: 503,
-      contentType: "application/json",
-      body: JSON.stringify({ detail: "Export temporarily unavailable" }),
-    }),
-  )
-  await page.getByRole("button", { name: "Workspace menu" }).click()
-  await page.getByRole("button", { name: "Export workspace" }).click()
+test("uses one primary header action without an export menu", async ({ page }) => {
+  await startWorkspace(page)
   await expect(
-    page.getByText("Export temporarily unavailable", { exact: true }),
+    page.getByRole("button", { name: "Continue", exact: true }),
   ).toBeVisible()
-
-  await page.unroute(routePattern)
-  await page.getByRole("button", { name: "Workspace menu" }).click()
-  const downloadPromise = page.waitForEvent("download")
-  await page.getByRole("button", { name: "Export workspace" }).click()
-  const download = await downloadPromise
-  expect(download.suggestedFilename()).toBe(
-    `hypothesis-workspace-${workspaceId}.json`,
-  )
+  await expect(
+    page.getByRole("button", { name: "Start over", exact: true }),
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Workspace menu" }),
+  ).toHaveCount(0)
+  await expect(
+    page.getByRole("button", { name: "Export workspace" }),
+  ).toHaveCount(0)
 })
 
 

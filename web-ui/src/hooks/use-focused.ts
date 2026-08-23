@@ -535,24 +535,6 @@ export function useFocusedPanel() {
     [sessionId],
   )
 
-  const exportWorkspace = useCallback(async () => {
-    if (!workspaceId) throw new Error("No active workspace.")
-    return exclusive("Exporting workspace", async () => {
-      const payload = await api<Record<string, unknown>>(
-        `workspaces/${workspaceId}/export`,
-      )
-      const blob = new Blob([JSON.stringify(payload, null, 2)], {
-        type: "application/json",
-      })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement("a")
-      a.href = url
-      a.download = `hypothesis-workspace-${workspaceId}.json`
-      a.click()
-      URL.revokeObjectURL(url)
-    })
-  }, [exclusive, workspaceId])
-
   return {
     loadWorkspace,
     deleteWorkspace,
@@ -578,7 +560,6 @@ export function useFocusedPanel() {
     restoreHypothesis,
     sendChat,
     fetchPaper,
-    exportWorkspace,
   }
 }
 
