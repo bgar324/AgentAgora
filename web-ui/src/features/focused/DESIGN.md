@@ -50,6 +50,9 @@ Surfaces:
 Overlays: modals (add Perspective, Perspective detail, apply changes,
 hypothesis, scoring, reset) share ModalShell; the 1180px/96vw panel drawer is
 the only side sheet.
+The header exposes one Investigation map action when research branches exist.
+It does not expose a second Investigation picker.
+
 
 IA rules:
 - One primary action per surface; it advances the flow.

@@ -189,7 +189,7 @@ test("continues an open question on the existing canvas", async ({ page }) => {
       reactFlowWarnings.push(message.text())
     }
   })
-  const { rootId } = await startWorkspace(page)
+  const { rootId, workspaceId } = await startWorkspace(page)
   await searchDemoLiterature(page)
   await expect(
     page.getByText("Perspective matrix (0)", { exact: true }),
@@ -393,10 +393,16 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   await startPaperSearch.click()
   await expect(page.getByText("Research branch", { exact: true })).toBeVisible()
   await expect(page.getByText(/Continue returns to the existing Canvas/)).toBeVisible()
-  const childId = await page
-    .getByRole("combobox", { name: "Switch Investigation" })
-    .inputValue()
+  const activeBranch = await requestJson(
+    page.request,
+    `/api/focused/workspaces/${workspaceId}`,
+    "get",
+  )
+  const childId = String(activeBranch.id)
   expect(childId).not.toBe(rootId)
+  await expect(
+    page.getByRole("combobox", { name: "Switch Investigation" }),
+  ).toHaveCount(0)
   await expect(
     page.getByText("Perspective matrix (0)", { exact: true }),
   ).toHaveCount(0)
@@ -415,9 +421,12 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   await searchDemoLiterature(page)
   await addPerspective(page, "Diagnostics and targeting")
   await page.getByRole("button", { name: "Continue", exact: true }).click()
-  await expect(page.getByRole("combobox", { name: "Switch Investigation" })).toHaveValue(
-    rootId,
+  const activeParent = await requestJson(
+    page.request,
+    `/api/focused/workspaces/${workspaceId}`,
+    "get",
   )
+  expect(activeParent.id).toBe(rootId)
   await expect(page.locator('[data-testid^="agent-node-"]')).toHaveCount(4)
   await expect(page.locator('[data-testid^="round-result-node-"]')).toHaveCount(0)
   const continuedState = await requestJson(
@@ -466,10 +475,8 @@ test("continues an open question on the existing canvas", async ({ page }) => {
     "get",
   )
   expect(integratedChild.integrated_into_parent_at).toBeTruthy()
-  const investigationSwitcher = page.getByRole("combobox", {
-    name: "Switch Investigation",
-  })
-  await investigationSwitcher.selectOption(childId)
+  await page.getByRole("button", { name: "Investigation map" }).click()
+  await page.getByTestId(`investigation-node-${childId}`).click()
   await expect(
     page.getByText(
       "This research branch has already been added to the parent Canvas and is now read-only.",
@@ -479,7 +486,6 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   await expect(
     page.getByRole("button", { name: "Continued", exact: true }),
   ).toBeDisabled()
-  await investigationSwitcher.selectOption(rootId)
   await page.getByRole("button", { name: "Investigation map" }).click()
   await page.getByTestId(`investigation-node-${rootId}`).click()
   await page.getByRole("button", { name: "Join" }).click()
@@ -600,8 +606,8 @@ test("promotes and merges versioned hypotheses through the workspace map", async
   )
   expect(child.applied_hypothesis_version_id).toBe("H2")
   await page.reload()
-  await expect(page.getByRole("combobox", { name: "Switch Investigation" })).toHaveValue(
-    childId,
+  await expect(page.getByTestId("root-research-problem-node")).toContainText(
+    question.question,
   )
   await page.getByRole("button", { name: "Investigation map" }).click()
 

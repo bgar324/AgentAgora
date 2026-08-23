@@ -135,7 +135,7 @@ export function FocusedWorkspace() {
           Hypothesis Studio
         </div>
         {hasInvestigationBranches && (
-          <div className="order-last flex w-full min-w-0 items-center gap-1.5 border-t border-[var(--line)] pt-1.5 text-[11px] sm:order-none sm:w-auto sm:border-l sm:border-t-0 sm:pl-3 sm:pt-0">
+          <div className="order-last flex w-full items-center border-t border-[var(--line)] pt-1.5 text-[11px] sm:order-none sm:w-auto sm:border-l sm:border-t-0 sm:pl-3 sm:pt-0">
             <button
               type="button"
               onClick={() => workspaceScreenSet("map")}
@@ -144,34 +144,6 @@ export function FocusedWorkspace() {
               <span className="sm:hidden">Map</span>
               <span className="hidden sm:inline">Investigation map</span>
             </button>
-            <span className="text-[var(--line-strong)]">/</span>
-            <select
-              aria-label="Switch Investigation"
-              value={session.id}
-              disabled={busy !== null}
-              onChange={(event) => {
-                setActionError(null)
-                void focused
-                  .switchInvestigation(event.target.value)
-                  .then(() => workspaceScreenSet("detail"))
-                  .catch((cause) =>
-                    setActionError(
-                      cause instanceof Error
-                        ? cause.message
-                        : "Could not open Investigation",
-                    ),
-                  )
-              }}
-              className="min-w-0 max-w-[230px] flex-1 truncate border-0 bg-transparent p-0 text-[11px] font-medium text-[var(--ink)] outline-none sm:flex-none"
-            >
-              {investigations.map((investigation) => (
-                <option key={investigation.id} value={investigation.id}>
-                  {investigation.id === workspace?.root_investigation_id
-                    ? "Initial Investigation"
-                    : investigation.origin_question ?? "Child Investigation"}
-                </option>
-              ))}
-            </select>
           </div>
         )}
         {activeScreen === "detail" && (
