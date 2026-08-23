@@ -10,4 +10,4 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 RUN python -m pip install --upgrade pip && python -m pip install .
 
-CMD ["sh", "-c", "uvicorn agora.app:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["sh", "-c", "uvicorn agora.focused_app:app --host 0.0.0.0 --port ${PORT:-8000}"]
