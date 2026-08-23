@@ -22,10 +22,11 @@ Surfaces:
   Wrapped research-question lines are joined through their closing question
   mark. Live searches use compact academic phrases; a zero-result search stays
   retryable and never seals the Investigation.
-  Adding a Perspective inserts a pending matrix card immediately. The server
+  Adding a Perspective inserts a pending matrix card immediately. Its own card
+  and button show progress while other clusters remain addable. The server
   response replaces the card and creates its matching canvas agent; a failed
-  request removes the card. Continue opens the canvas directly with every matrix
-  Perspective—there is no separate panel-selection step.
+  request removes only that card. Continue opens the canvas directly with every
+  matrix Perspective—there is no separate panel-selection step.
   Before round 1, the drawer explains the multi-round flow and the follow-up
   question step, then asks the researcher to choose one or two areas.
 - Panel — React Flow canvas (nodes/wires/dot grid) + guided drawer:
@@ -41,9 +42,10 @@ Surfaces:
   Completed open questions expose Start paper search both in the drawer and on
   their Research Problem node; neither surface forces the user to hunt for the
   other.
-  A Research Problem opens a temporary literature branch. Continue imports its
-  evidence and Perspectives into the parent, reopens the same panel, and returns
-  to the existing Canvas. Prior rounds and checkpoints remain; the earlier
+  A Research Problem opens a temporary literature branch. Back to panel returns
+  to the parent without changing the branch. After the current parent
+  deliberation ends, Add to panel imports the branch's evidence and Perspectives
+  and reopens the same panel. Prior rounds and checkpoints remain; the earlier
   completion and score move into completion history.
   The Canvas retains each completed panel checkpoint and its final outputs.
   Perspectives imported from a Research Problem branch render beneath that

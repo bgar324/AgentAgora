@@ -1,7 +1,7 @@
 "use client"
 
 
-import { ChevronDown } from "lucide-react"
+import { ChevronDown, X } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 
 import {
@@ -37,7 +37,10 @@ export function FocusedWorkspace() {
   const [resetError, setResetError] = useState<string | null>(null)
   const [restoreError, setRestoreError] = useState<string | null>(null)
   const [restoreAttempt, setRestoreAttempt] = useState(0)
-  const [actionError, setActionError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<{
+    sessionId: string
+    message: string
+  } | null>(null)
   const focused = useFocusedPanel()
   const loadWorkspace = focused.loadWorkspace
   useEffect(() => {
@@ -102,7 +105,12 @@ export function FocusedWorkspace() {
     return <StartScreen />
   }
 
-  const matrixCount = session.perspectives.length
+  const hasPendingPerspectives = session.perspectives.some((perspective) =>
+    perspective.id.startsWith("optimistic:"),
+  )
+  const matrixCount = session.perspectives.filter(
+    (perspective) => !perspective.id.startsWith("optimistic:"),
+  ).length
   const isResearchBranch =
     session.parent_investigation_id !== null &&
     session.origin_question_id !== null
@@ -126,9 +134,13 @@ export function FocusedWorkspace() {
     void continueToCanvas()
       .then(() => stageSet("deliberation"))
       .catch((cause) =>
-        setActionError(
-          cause instanceof Error ? cause.message : "Could not continue the panel",
-        ),
+        setActionError({
+          sessionId: session.id,
+          message:
+            cause instanceof Error
+              ? cause.message
+              : "Could not continue the panel",
+        }),
       )
   }
 
@@ -205,7 +217,7 @@ export function FocusedWorkspace() {
           variant="ghost"
           size="sm"
           className={activeScreen === "map" ? "" : "hidden! sm:inline-flex!"}
-          disabled={busy !== null}
+          disabled={busy !== null || hasPendingPerspectives}
           onClick={() => setResetOpen(true)}
         >
           Start over
@@ -215,7 +227,7 @@ export function FocusedWorkspace() {
             variant="primary"
             size="sm"
             className="ml-auto"
-            disabled={busy !== null}
+            disabled={busy !== null || hasPendingPerspectives}
             onClick={() => workspaceScreenSet("detail")}
           >
             Open current Investigation
@@ -236,29 +248,39 @@ export function FocusedWorkspace() {
                 type="button"
                 disabled={
                   busy !== null ||
+                  hasPendingPerspectives ||
                   (stage === "extraction" && !canDeliberate)
                 }
                 onClick={toggleStage}
                 title={
-                  stage === "extraction" && !canDeliberate
-                    ? branchIntegrated
-                      ? "This research branch already continues on the parent Canvas"
-                      : isResearchBranch
-                        ? "Add at least one Perspective first"
-                        : "Generate at least two Perspectives first"
-                    : undefined
+                  hasPendingPerspectives
+                    ? "Wait for Perspectives to finish adding"
+                    : stage === "extraction" && !canDeliberate
+                      ? branchIntegrated
+                        ? "This research branch already continues on the parent Canvas"
+                        : isResearchBranch
+                          ? "Add at least one Perspective first"
+                          : "Generate at least two Perspectives first"
+                      : undefined
                 }
                 className="flex items-center gap-1.5 whitespace-nowrap pl-3.5 pr-3 text-[12.5px] font-medium disabled:cursor-default focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--bg)]"
               >
-                {busy === "Setting up the panel" ||
-                busy === "Continuing parent deliberation" ? (
+                {busy === "Setting up the panel" ? (
                   <>
                     <Spinner /> Continuing panel…
+                  </>
+                ) : busy === "Adding research branch to panel" ? (
+                  <>
+                    <Spinner /> Adding to panel…
                   </>
                 ) : branchIntegrated ? (
                   "Continued"
                 ) : stage === "extraction" ? (
-                  "Continue"
+                  isResearchBranch ? (
+                    "Add to panel"
+                  ) : (
+                    "Continue"
+                  )
                 ) : (
                   "Extraction"
                 )}
@@ -266,7 +288,7 @@ export function FocusedWorkspace() {
               <div className="my-2 w-px shrink-0 bg-current opacity-15" />
               <button
                 type="button"
-                disabled={busy !== null}
+                disabled={busy !== null || hasPendingPerspectives}
                 onClick={() => setMenuOpen((v) => !v)}
                 aria-label="Workspace menu"
                 className="flex items-center pl-2 pr-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--bg)]"
@@ -288,11 +310,13 @@ export function FocusedWorkspace() {
                       setMenuOpen(false)
                       setActionError(null)
                       void focused.exportWorkspace().catch((cause) => {
-                        setActionError(
-                          cause instanceof Error
-                            ? cause.message
-                            : "Could not export workspace",
-                        )
+                        setActionError({
+                          sessionId: session.id,
+                          message:
+                            cause instanceof Error
+                              ? cause.message
+                              : "Could not export workspace",
+                        })
                       })
                     }}
                     className="justify-start!"
@@ -316,12 +340,20 @@ export function FocusedWorkspace() {
           </div>
         )}
       </header>
-      {actionError && (
+      {actionError?.sessionId === session.id && (
         <div
           role="alert"
-          className="border-b border-[var(--line)] bg-[var(--panel)] px-5 py-2 text-[11px] text-[var(--red)]"
+          className="flex items-center gap-3 border-b border-[var(--line)] bg-[var(--panel)] px-5 py-2 text-[11px] text-[var(--red)]"
         >
-          {actionError}
+          <span className="min-w-0 flex-1">{actionError.message}</span>
+          <button
+            type="button"
+            aria-label="Dismiss error"
+            onClick={() => setActionError(null)}
+            className="shrink-0 text-[var(--mute)] hover:text-[var(--ink)]"
+          >
+            <X size={14} strokeWidth={1.8} aria-hidden />
+          </button>
         </div>
       )}
 

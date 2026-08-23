@@ -731,8 +731,8 @@ class FocusedPanelService:
             or deliberation.final_hypothesis_version_id is None
         ):
             raise SessionError(
-                "End the current deliberation before continuing from a "
-                "Research Problem."
+                "Return to the parent panel and end its current deliberation "
+                "before adding this research branch."
             )
         if child_state.origin_question_id is None:
             raise SessionError("The research branch has no source question.")

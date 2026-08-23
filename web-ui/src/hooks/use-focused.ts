@@ -76,11 +76,12 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 /**
- * Mutations return one authoritative WorkspaceView. Calls are serialized in the
- * browser so an older response cannot overwrite a newer workspace snapshot.
+ * Most mutations are exclusive. Perspective generation may run concurrently;
+ * its response merge preserves pending work and rejects older add snapshots.
  */
 export function useFocusedPanel() {
   const workspaceViewSet = useFocusedStore((s) => s.workspaceViewSet)
+  const perspectiveViewSet = useFocusedStore((s) => s.perspectiveViewSet)
   const busySet = useFocusedStore((s) => s.busySet)
   const queriesCleared = useFocusedStore((s) => s.queriesCleared)
   const optimisticPerspectiveAdd = useFocusedStore(
@@ -107,28 +108,36 @@ export function useFocusedPanel() {
     [busySet],
   )
 
+  const requestView = useCallback(
+    async (
+      path: string,
+      init?: RequestInit,
+      applyView: (view: WorkspaceView) => void = workspaceViewSet,
+    ) => {
+      try {
+        const view = await api<WorkspaceView>(path, init)
+        applyView(view)
+        return view
+      } catch (cause) {
+        if (cause instanceof ApiError && cause.status === 409) {
+          const currentWorkspaceId = useFocusedStore.getState().workspace?.id
+          if (currentWorkspaceId) {
+            const latest = await api<WorkspaceView>(
+              `workspaces/${currentWorkspaceId}`,
+            )
+            workspaceViewSet(latest)
+          }
+        }
+        throw cause
+      }
+    },
+    [workspaceViewSet],
+  )
+
   const viewCall = useCallback(
     (label: string, path: string, init?: RequestInit) =>
-      exclusive(label, async () => {
-        try {
-          const view = await api<WorkspaceView>(path, init)
-          workspaceViewSet(view)
-          return view
-        } catch (cause) {
-          if (cause instanceof ApiError && cause.status === 409) {
-            const currentWorkspaceId =
-              useFocusedStore.getState().workspace?.id
-            if (currentWorkspaceId) {
-              const latest = await api<WorkspaceView>(
-                `workspaces/${currentWorkspaceId}`,
-              )
-              workspaceViewSet(latest)
-            }
-          }
-          throw cause
-        }
-      }),
-    [exclusive, workspaceViewSet],
+      exclusive(label, () => requestView(path, init)),
+    [exclusive, requestView],
   )
 
   const call = useCallback(
@@ -240,6 +249,14 @@ export function useFocusedPanel() {
       if (!session || !cluster) {
         throw new Error("This literature cluster is no longer available.")
       }
+      if (
+        session.perspectives.some(
+          (perspective) =>
+            perspective.origin === clusterId && !perspective.evolved,
+        )
+      ) {
+        throw new Error("This Perspective is already in the matrix.")
+      }
 
       const finalFacets = facets ?? cluster.facets
       const optimisticFacets: Partial<Record<Facet, FacetEvidence>> = {}
@@ -270,19 +287,25 @@ export function useFocusedPanel() {
 
       optimisticPerspectiveAdd(optimisticPerspective)
       try {
-        return await call("Generating perspective", `sessions/${sessionId}/perspectives`, {
-          method: "POST",
-          body: JSON.stringify({ cluster_id: clusterId, facets }),
-        })
+        const view = await requestView(
+          `sessions/${sessionId}/perspectives`,
+          {
+            method: "POST",
+            body: JSON.stringify({ cluster_id: clusterId, facets }),
+          },
+          perspectiveViewSet,
+        )
+        return view.active
       } catch (cause) {
         optimisticPerspectiveRemove(optimisticId)
         throw cause
       }
     },
     [
-      call,
       optimisticPerspectiveAdd,
       optimisticPerspectiveRemove,
+      perspectiveViewSet,
+      requestView,
       sessionId,
     ],
   )
@@ -395,7 +418,7 @@ export function useFocusedPanel() {
       throw new Error("No active research branch to integrate.")
     }
     const view = await viewCall(
-      "Continuing parent deliberation",
+      "Adding research branch to panel",
       `workspaces/${workspaceId}/investigations/${parentId}/children/${sessionId}/integrate`,
       { method: "POST" },
     )

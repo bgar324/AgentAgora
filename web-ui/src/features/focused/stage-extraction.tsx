@@ -39,8 +39,13 @@ export function StageExtraction() {
   const picked = useFocusedStore((s) => s.pickedQueries)
   const queryToggled = useFocusedStore((s) => s.queryToggled)
   const busy = useFocusedStore((s) => s.busy)
-  const { suggestQueries, runSearch, removePerspective, updateBrief } =
-    useFocusedPanel()
+  const {
+    suggestQueries,
+    runSearch,
+    removePerspective,
+    updateBrief,
+    switchInvestigation,
+  } = useFocusedPanel()
   const [error, setError] = useState<string | null>(null)
   const [editingBrief, setEditingBrief] = useState(false)
   const [draftProblem, setDraftProblem] = useState("")
@@ -53,6 +58,10 @@ export function StageExtraction() {
 
   if (!session) return null
   const integrated = session.integrated_into_parent_at !== null
+  const parentInvestigationId = session.parent_investigation_id
+  const hasPendingPerspectives = session.perspectives.some((perspective) =>
+    perspective.id.startsWith("optimistic:"),
+  )
   const queryOptions = session.suggested_queries.slice(0, 5)
   const selectedQueries = queryOptions
     .filter(({ query }) => picked.includes(query))
@@ -113,28 +122,48 @@ export function StageExtraction() {
 
   return (
     <div className="ep-fade-in flex flex-col">
-      {session.parent_investigation_id && (
-        <div className="ep-card-enter mx-6 mt-4 rounded-lg border border-[var(--line)] bg-[var(--panel)] px-4 py-2.5">
-          <div className="text-[11px] font-medium text-[var(--ink)]">
-            Research branch
+      {parentInvestigationId && (
+        <div className="ep-card-enter mx-6 mt-4 flex flex-col gap-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] px-4 py-3 sm:flex-row sm:items-center">
+          <div className="min-w-0 flex-1">
+            <div className="text-[11px] font-medium text-[var(--ink)]">
+              Research branch
+            </div>
+            <p className="mt-0.5 text-[11px] leading-relaxed text-[var(--ink-2)]">
+              {integrated ? (
+                <>
+                  This research branch has already been added to the parent
+                  Canvas and is now read-only.
+                </>
+              ) : (
+                <>
+                  Started from “{session.origin_question}”. Search fresh
+                  literature and add new Perspectives. Back to panel returns
+                  without changing this branch. Add to panel imports it after
+                  the current parent deliberation ends.
+                  {session.applied_hypothesis_version_id
+                    ? ` This branch begins from ${session.applied_hypothesis_version_id}.`
+                    : " No hypothesis checkpoint had been applied yet."}
+                </>
+              )}
+            </p>
           </div>
-          <p className="mt-0.5 text-[11px] leading-relaxed text-[var(--ink-2)]">
-            {integrated ? (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={busy !== null || hasPendingPerspectives}
+            onClick={() =>
+              void act(() => switchInvestigation(parentInvestigationId))
+            }
+            className="shrink-0 self-start sm:self-auto"
+          >
+            {busy === "Opening Investigation" ? (
               <>
-                This research branch has already been added to the parent Canvas
-                and is now read-only.
+                <Spinner /> Returning…
               </>
             ) : (
-              <>
-                Started from “{session.origin_question}”. Search fresh literature
-                and add new Perspectives. Continue returns to the existing Canvas
-                and panel; prior rounds and hypothesis checkpoints stay in place.
-                {session.applied_hypothesis_version_id
-                  ? ` This branch begins from ${session.applied_hypothesis_version_id}.`
-                  : " No hypothesis checkpoint had been applied yet."}
-              </>
+              "Back to panel"
             )}
-          </p>
+          </Button>
         </div>
       )}
       <div className="grid grid-cols-1 items-stretch gap-5 px-4 py-5 lg:grid-cols-[360px_1fr] lg:px-6">
@@ -457,7 +486,9 @@ export function StageExtraction() {
                       }
                       void act(() => removePerspective(p.id))
                     }}
-                    disabled={busy !== null || integrated}
+                    disabled={
+                      busy !== null || hasPendingPerspectives || integrated
+                    }
                     aria-label={`Remove ${p.name} from the matrix`}
                     title={
                       integrated
@@ -757,10 +788,7 @@ function ClusterRow({ cluster, index }: { cluster: ClusterCard; index: number })
                 inMatrix && !pendingPerspective ? "ep-success-state" : ""
               }`}
               disabled={
-                integrated ||
-                inMatrix ||
-                !complete ||
-                busy === "Generating perspective"
+                integrated || inMatrix || !complete || busy !== null
               }
               aria-live="polite"
             >
@@ -774,10 +802,6 @@ function ClusterRow({ cluster, index }: { cluster: ClusterCard; index: number })
                 </>
               ) : !complete ? (
                 "Complete all four areas"
-              ) : busy === "Generating perspective" ? (
-                <>
-                  <Spinner /> Adding…
-                </>
               ) : (
                 "Add to matrix"
               )}

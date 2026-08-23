@@ -28,6 +28,7 @@ type FocusedState = {
 
 type FocusedActions = {
   workspaceViewSet: (view: WorkspaceView) => void
+  perspectiveViewSet: (view: WorkspaceView) => void
   optimisticPerspectiveAdd: (perspective: Perspective) => void
   optimisticPerspectiveRemove: (id: string) => void
   workspaceScreenSet: (screen: WorkspaceScreen) => void
@@ -53,27 +54,72 @@ const initialState: FocusedState = {
   busy: null,
 }
 
+function workspaceViewPatch(
+  state: FocusedState,
+  view: WorkspaceView,
+  monotonicPerspectives = false,
+): Partial<FocusedState> {
+  const currentWorkspace = state.workspace
+  const sameWorkspace = currentWorkspace?.id === view.workspace.id
+  if (
+    sameWorkspace &&
+    currentWorkspace !== null &&
+    currentWorkspace.revision > view.workspace.revision
+  ) {
+    return {}
+  }
+  const activeChanged = state.sessionId !== view.active.id
+  const currentSession =
+    sameWorkspace && !activeChanged ? state.session : null
+  const representedOrigins = new Set(
+    view.active.perspectives.map((perspective) => perspective.origin),
+  )
+  if (
+    monotonicPerspectives &&
+    currentSession?.perspectives.some(
+      (perspective) =>
+        !perspective.id.startsWith("optimistic:") &&
+        !representedOrigins.has(perspective.origin),
+    )
+  ) {
+    return {}
+  }
+  const pendingPerspectives =
+    currentSession?.perspectives.filter(
+      (perspective) =>
+        perspective.id.startsWith("optimistic:") &&
+        !representedOrigins.has(perspective.origin),
+    ) ?? []
+  const active =
+    pendingPerspectives.length > 0
+      ? {
+          ...view.active,
+          perspectives: [...view.active.perspectives, ...pendingPerspectives],
+        }
+      : view.active
+  return {
+    workspace: view.workspace,
+    investigations: view.investigations,
+    session: active,
+    sessionId: active.id,
+    stage: activeChanged
+      ? active.deliberations.length > 0
+        ? "deliberation"
+        : "extraction"
+      : state.stage,
+    pickedQueries: activeChanged ? [] : state.pickedQueries,
+    openClusterId: activeChanged ? null : state.openClusterId,
+    openPaperId: activeChanged ? null : state.openPaperId,
+  }
+}
+
 export const useFocusedStore = create<FocusedState & FocusedActions>()(
   (set) => ({
     ...initialState,
     workspaceViewSet: (view) =>
-      set((state) => {
-        const activeChanged = state.sessionId !== view.active.id
-        return {
-          workspace: view.workspace,
-          investigations: view.investigations,
-          session: view.active,
-          sessionId: view.active.id,
-          stage: activeChanged
-            ? view.active.deliberations.length > 0
-              ? "deliberation"
-              : "extraction"
-            : state.stage,
-          pickedQueries: activeChanged ? [] : state.pickedQueries,
-          openClusterId: activeChanged ? null : state.openClusterId,
-          openPaperId: activeChanged ? null : state.openPaperId,
-        }
-      }),
+      set((state) => workspaceViewPatch(state, view)),
+    perspectiveViewSet: (view) =>
+      set((state) => workspaceViewPatch(state, view, true)),
     optimisticPerspectiveAdd: (perspective) =>
       set((state) => {
         if (

@@ -207,6 +207,156 @@ test("joins wrapped lines into complete research questions", async ({ page }) =>
   ])
 })
 
+test("keeps other matrix additions available while one loads", async ({ page }) => {
+  const { rootId } = await startWorkspace(page)
+  await searchDemoLiterature(page)
+
+  const firstResponseReady = Promise.withResolvers<void>()
+  const releaseFirstResponse = Promise.withResolvers<void>()
+  const firstResponseDelivered = Promise.withResolvers<void>()
+  const secondResponseDelivered = Promise.withResolvers<void>()
+  let requestCount = 0
+  await page.route(
+    `**/api/focused/sessions/${rootId}/perspectives`,
+    async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.continue()
+        return
+      }
+      requestCount += 1
+      const position = requestCount
+      const response = await route.fetch()
+      if (position === 1) {
+        firstResponseReady.resolve()
+        await releaseFirstResponse.promise
+      }
+      await route.fulfill({ response })
+      if (position === 1) firstResponseDelivered.resolve()
+      else secondResponseDelivered.resolve()
+    },
+  )
+
+  await page.getByRole("heading", { name: "Resistance ecology" }).click()
+  await page.getByRole("button", { name: "Add to matrix", exact: true }).click()
+  await firstResponseReady.promise
+  await expect(
+    page.getByRole("button", { name: /Adding to matrix/ }),
+  ).toBeVisible()
+
+  await page.getByRole("heading", { name: "Host and microbiome" }).click()
+  const secondAdd = page.getByRole("button", {
+    name: "Add to matrix",
+    exact: true,
+  })
+  await expect(secondAdd).toBeEnabled()
+  await secondAdd.click()
+  await secondResponseDelivered.promise
+  await expect(
+    page.getByText("Perspective matrix (2)", { exact: true }),
+  ).toBeVisible()
+
+  releaseFirstResponse.resolve()
+  await firstResponseDelivered.promise
+  await expect(
+    page.getByText("Perspective matrix (2)", { exact: true }),
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", {
+      name: "Remove Resistance ecology from the matrix",
+    }),
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", {
+      name: "Remove Host and microbiome from the matrix",
+    }),
+  ).toBeVisible()
+})
+
+test("returns from a blocked research branch to its parent panel", async ({
+  page,
+}) => {
+  const { rootId, workspaceId } = await startWorkspace(page)
+  const parent = await prepareConsensusCheckpoint(page.request, rootId)
+  const question = parent.deliberations[0].recommended_questions[0]
+  expect(question).toBeTruthy()
+
+  let child = await requestJson(
+    page.request,
+    `/api/focused/workspaces/${workspaceId}/investigations/${rootId}/questions/${question.id}/child`,
+    "post",
+  )
+  const childId = String(child.id)
+  child = await requestJson(
+    page.request,
+    `/api/focused/sessions/${childId}/search`,
+    "post",
+    { queries: DEMO_QUERIES },
+  )
+  child = await requestJson(
+    page.request,
+    `/api/focused/sessions/${childId}/perspectives`,
+    "post",
+    {
+      cluster_id: child.clusters[0].id,
+      facets: child.clusters[0].facets,
+    },
+  )
+  const nextCluster = child.clusters.find(
+    (cluster: { id: string }) => cluster.id !== child.perspectives[0].origin,
+  )
+  if (!nextCluster) throw new Error("Expected another child literature cluster.")
+
+  await page.reload()
+  await expect(page.getByText("Research branch", { exact: true })).toBeVisible()
+  const backToPanel = page.getByRole("button", { name: "Back to panel" })
+  await expect(backToPanel).toBeVisible()
+
+  const responseReady = Promise.withResolvers<void>()
+  const releaseResponse = Promise.withResolvers<void>()
+  const responseDelivered = Promise.withResolvers<void>()
+  await page.route(
+    `**/api/focused/sessions/${childId}/perspectives`,
+    async (route) => {
+      const response = await route.fetch()
+      responseReady.resolve()
+      await releaseResponse.promise
+      await route.fulfill({ response })
+      responseDelivered.resolve()
+    },
+  )
+  await page.getByRole("heading", { name: nextCluster.name }).click()
+  await page.getByRole("button", { name: "Add to matrix", exact: true }).click()
+  await responseReady.promise
+  await expect(backToPanel).toBeDisabled()
+  releaseResponse.resolve()
+  await responseDelivered.promise
+  await expect(backToPanel).toBeEnabled()
+  await page.unroute(`**/api/focused/sessions/${childId}/perspectives`)
+
+  await page.getByRole("button", { name: "Add to panel" }).click()
+  const error = page.getByRole("alert").filter({
+    hasText: "Return to the parent panel and end its current deliberation",
+  })
+  await expect(error).toBeVisible()
+  await error.getByRole("button", { name: "Dismiss error" }).click()
+  await expect(error).toHaveCount(0)
+
+  await backToPanel.click()
+  await expect(page.locator('[data-testid^="panel-node-"]')).toBeVisible()
+  const activeParent = await requestJson(
+    page.request,
+    `/api/focused/workspaces/${workspaceId}`,
+    "get",
+  )
+  expect(activeParent.id).toBe(rootId)
+  const savedChild = await requestJson(
+    page.request,
+    `/api/focused/sessions/${childId}`,
+    "get",
+  )
+  expect(savedChild.integrated_into_parent_at).toBeNull()
+})
+
 test("continues an open question on the existing canvas", async ({ page }) => {
   const duplicateKeyWarnings: string[] = []
   const reactFlowWarnings: string[] = []
@@ -424,7 +574,7 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   await expect(startPaperSearch).toBeVisible()
   await startPaperSearch.click()
   await expect(page.getByText("Research branch", { exact: true })).toBeVisible()
-  await expect(page.getByText(/Continue returns to the existing Canvas/)).toBeVisible()
+  await expect(page.getByText(/Back to panel returns/)).toBeVisible()
   const activeBranch = await requestJson(
     page.request,
     `/api/focused/workspaces/${workspaceId}`,
@@ -452,7 +602,7 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   await page.getByRole("button", { name: "Open current Investigation" }).click()
   await searchDemoLiterature(page)
   await addPerspective(page, "Diagnostics and targeting")
-  await page.getByRole("button", { name: "Continue", exact: true }).click()
+  await page.getByRole("button", { name: "Add to panel", exact: true }).click()
   const activeParent = await requestJson(
     page.request,
     `/api/focused/workspaces/${workspaceId}`,

@@ -101,6 +101,7 @@ export function StageDeliberation() {
     useState<HypothesisVersion | null>(null)
   const [scoringId, setScoringId] = useState<string | null>(null)
   const [addPerspectiveOpen, setAddPerspectiveOpen] = useState(false)
+  const [addingPerspective, setAddingPerspective] = useState(false)
   const [canvasError, setCanvasError] = useState<string | null>(null)
   const [drawerId, setDrawerId] = useState<string | null>(null)
   const availableClusters = useMemo(() => {
@@ -558,7 +559,7 @@ export function StageDeliberation() {
               <Button
                 variant="outline"
                 size="sm"
-                disabled={busy !== null}
+                disabled={busy !== null || addingPerspective}
                 onClick={() => setAddPerspectiveOpen(true)}
               >
                 Add Perspective
@@ -586,11 +587,16 @@ export function StageDeliberation() {
       {addPerspectiveOpen && (
         <AddPerspectiveDialog
           clusters={availableClusters}
-          busy={busy !== null}
-          adding={busy === "Generating perspective"}
+          busy={busy !== null || addingPerspective}
+          adding={addingPerspective}
           onAdd={async (clusterId) => {
-            await generatePerspective(clusterId, null)
-            setAddPerspectiveOpen(false)
+            setAddingPerspective(true)
+            try {
+              await generatePerspective(clusterId, null)
+              setAddPerspectiveOpen(false)
+            } finally {
+              setAddingPerspective(false)
+            }
           }}
           onClose={() => setAddPerspectiveOpen(false)}
         />
