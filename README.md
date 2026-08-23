@@ -20,11 +20,13 @@ ends the deliberation after the current hypothesis is saved. That terminal
 action reveals only the final Hypothesis and Research Problem outputs and opens
 one dialog that records separate 1–7 divergent- and convergent-thinking scores.
 
-An open question can explicitly start a child Investigation. The child receives
-fresh literature, fresh Perspectives, and a fresh panel while inheriting the
-parent’s last applied hypothesis checkpoint. A pending parent update never
-leaks into the child. The workspace map records question-labeled lineage and
-opens one Investigation detail at a time.
+An open question starts a research branch with fresh literature and Perspectives
+while inheriting the parent’s last applied hypothesis checkpoint. Continue
+imports the branch evidence and agents into the parent, reopens the same
+deliberation, and returns to the existing Canvas. Prior rounds, chat, questions,
+and hypothesis checkpoints remain in place; the earlier completion and score
+remain in completion history. The workspace map retains the question-labeled
+research branch for provenance.
 
 Hypothesis checkpoints form an immutable version graph. Researchers can promote
 a branch, preserve alternatives, merge selected Problem / Previous work /

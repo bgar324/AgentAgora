@@ -31,6 +31,7 @@ from agora.focused.models import (
     AgentState,
     ClusterCard,
     ClusteringDiagnostics,
+    DeliberationCompletion,
     DeliberationRating,
     DeliberationRound,
     DeliberationState,
@@ -697,7 +698,167 @@ class FocusedPanelService:
         workspace.active_investigation_id = child_id
         question.status = "investigating"
         question.child_investigation_id = child_id
+        return self._save_view(workspace.id)
 
+    @_serialized_parent_mutation
+    async def integrate_child_investigation(
+        self,
+        workspace_id: str,
+        parent_investigation_id: str,
+        child_investigation_id: str,
+    ) -> WorkspaceView:
+        workspace = self._require_workspace(workspace_id)
+        parent = self._require(parent_investigation_id)
+        child = self._require(child_investigation_id)
+        child_state = child.state
+        if child_state.parent_investigation_id != parent.state.id:
+            raise SessionError(
+                "The research branch does not belong to this Investigation.",
+                status=409,
+            )
+        if child_state.integrated_into_parent_at is not None:
+            raise SessionError(
+                "This research branch was already continued.",
+                status=409,
+            )
+        if not child_state.perspectives:
+            raise SessionError("Add at least one Perspective before continuing.")
+        if not parent.state.deliberations:
+            raise SessionError("The parent Investigation has no deliberation.")
+        deliberation = parent.state.deliberations[0]
+        if (
+            deliberation.completed_at is None
+            or deliberation.final_hypothesis_version_id is None
+        ):
+            raise SessionError(
+                "End the current deliberation before continuing from a "
+                "Research Problem."
+            )
+        if child_state.origin_question_id is None:
+            raise SessionError("The research branch has no source question.")
+        _, source_question = self._recommended_question(
+            parent.state,
+            child_state.origin_question_id,
+        )
+        if source_question.child_investigation_id != child_state.id:
+            raise SessionError(
+                "The source question points to another Investigation.",
+                status=409,
+            )
+
+        completion = DeliberationCompletion(
+            completed_at=deliberation.completed_at,
+            final_hypothesis_version_id=deliberation.final_hypothesis_version_id,
+            round_count=len(deliberation.rounds),
+            rating=(
+                deliberation.rating.model_copy(deep=True)
+                if deliberation.rating is not None
+                else None
+            ),
+        )
+        deliberation.completion_history.append(completion)
+        deliberation.completed_at = None
+        deliberation.final_hypothesis_version_id = None
+        deliberation.rating = None
+
+        paper_ids = {paper.id for paper in parent.state.papers}
+        paper_by_content = {
+            (paper.title.casefold(), paper.abstract or ""): paper.id
+            for paper in parent.state.papers
+        }
+        paper_map: dict[str, str] = {}
+        for paper in child_state.papers:
+            fingerprint = (paper.title.casefold(), paper.abstract or "")
+            existing_id = paper_by_content.get(fingerprint)
+            if existing_id is not None:
+                paper_map[paper.id] = existing_id
+                continue
+            imported_id = paper.id
+            if imported_id in paper_ids:
+                imported_id = f"{child_state.id[:8]}-{paper.id}"
+            paper_ids.add(imported_id)
+            paper_by_content[fingerprint] = imported_id
+            paper_map[paper.id] = imported_id
+            parent.state.papers.append(
+                paper.model_copy(deep=True, update={"id": imported_id})
+            )
+
+        cluster_ids = {cluster.id for cluster in parent.state.clusters}
+        cluster_map: dict[str, str] = {}
+        for cluster in child_state.clusters:
+            imported_id = f"{child_state.id[:8]}-{cluster.id}"
+            suffix = 2
+            while imported_id in cluster_ids:
+                imported_id = f"{child_state.id[:8]}-{cluster.id}-{suffix}"
+                suffix += 1
+            cluster_ids.add(imported_id)
+            cluster_map[cluster.id] = imported_id
+            parent.state.clusters.append(
+                cluster.model_copy(
+                    deep=True,
+                    update={
+                        "id": imported_id,
+                        "paper_ids": [
+                            paper_map.get(paper_id, paper_id)
+                            for paper_id in cluster.paper_ids
+                        ],
+                        "facets": [
+                            evidence.model_copy(
+                                deep=True,
+                                update={
+                                    "paper_id": paper_map.get(
+                                        evidence.paper_id,
+                                        evidence.paper_id,
+                                    )
+                                },
+                            )
+                            for evidence in cluster.facets
+                        ],
+                    },
+                )
+            )
+
+        for perspective in child_state.perspectives:
+            imported = perspective.model_copy(
+                deep=True,
+                update={
+                    "id": parent.next_perspective_id(),
+                    "color": PERSONA_COLORS[
+                        len(parent.state.perspectives) % len(PERSONA_COLORS)
+                    ],
+                    "origin": cluster_map.get(
+                        perspective.origin,
+                        f"{child_state.id[:8]}-{perspective.origin}",
+                    ),
+                    "sources": [
+                        paper_map.get(paper_id, paper_id)
+                        for paper_id in perspective.sources
+                    ],
+                    "facets": {
+                        facet: evidence.model_copy(
+                            deep=True,
+                            update={
+                                "paper_id": paper_map.get(
+                                    evidence.paper_id,
+                                    evidence.paper_id,
+                                )
+                            },
+                        )
+                        for facet, evidence in perspective.facets.items()
+                    },
+                },
+            )
+            parent.state.perspectives.append(imported)
+            self._ensure_perspective_agent(parent, imported)
+
+        parent.state.searched_queries = list(
+            dict.fromkeys(
+                [*parent.state.searched_queries, *child_state.searched_queries]
+            )
+        )
+        source_question.status = "addressed"
+        child_state.integrated_into_parent_at = utcnow()
+        workspace.active_investigation_id = parent.state.id
         return self._save_view(workspace.id)
 
     def set_question_status(
@@ -1452,6 +1613,11 @@ class FocusedPanelService:
     ) -> SessionState:
         session = self._require(session_id)
         state = session.state
+        if state.integrated_into_parent_at is not None:
+            raise SessionError(
+                "This research branch was already continued.",
+                status=409,
+            )
         if any(
             deliberation.completed_at is not None
             for deliberation in state.deliberations
@@ -1533,6 +1699,11 @@ class FocusedPanelService:
     ) -> SessionState:
         session = self._require(session_id)
         state = session.state
+        if state.integrated_into_parent_at is not None:
+            raise SessionError(
+                "This research branch was already continued.",
+                status=409,
+            )
         orphaned = {a.iid for a in state.agents if a.perspective_id == perspective_id}
         if any(
             deliberation.rounds
@@ -2141,6 +2312,14 @@ class FocusedPanelService:
                 "Complete a focused round before ending the deliberation."
             )
         if (
+            deliberation.completion_history
+            and len(deliberation.rounds)
+            <= deliberation.completion_history[-1].round_count
+        ):
+            raise SessionError(
+                "Complete a new focused round before ending the continued deliberation."
+            )
+        if (
             not deliberation.hypothesis_confirmed
             or deliberation.applied_hypothesis is None
         ):
@@ -2350,7 +2529,7 @@ class FocusedPanelService:
         view = self.workspace_view(workspace_id)
         return {
             "schema": "agora-hypothesis-workspace",
-            "schema_version": 4,
+            "schema_version": 5,
             "exported_at": utcnow().isoformat(),
             "workspace": view.workspace.model_dump(mode="json"),
             "investigations": [

@@ -99,7 +99,12 @@ export function FocusedWorkspace() {
   }
 
   const matrixCount = session.perspectives.length
-  const canDeliberate = matrixCount >= 2
+  const isResearchBranch =
+    session.parent_investigation_id !== null &&
+    session.origin_question_id !== null
+  const branchIntegrated = session.integrated_into_parent_at !== null
+  const canDeliberate =
+    !branchIntegrated && matrixCount >= (isResearchBranch ? 1 : 2)
 
   const hasInvestigationBranches = investigations.length > 1
   const activeScreen = hasInvestigationBranches ? workspaceScreen : "detail"
@@ -110,12 +115,15 @@ export function FocusedWorkspace() {
       stageSet("extraction")
       return
     }
-    void focused
-      .createDeliberation()
+    const continueToCanvas =
+      session.parent_investigation_id && session.origin_question_id
+        ? focused.integrateChildInvestigation
+        : focused.createDeliberation
+    void continueToCanvas()
       .then(() => stageSet("deliberation"))
       .catch((cause) =>
         setActionError(
-          cause instanceof Error ? cause.message : "Could not open the panel",
+          cause instanceof Error ? cause.message : "Could not continue the panel",
         ),
       )
   }
@@ -257,15 +265,22 @@ export function FocusedWorkspace() {
                 onClick={toggleStage}
                 title={
                   stage === "extraction" && !canDeliberate
-                    ? "Generate at least two perspectives first"
+                    ? branchIntegrated
+                      ? "This research branch already continues on the parent Canvas"
+                      : isResearchBranch
+                        ? "Add at least one Perspective first"
+                        : "Generate at least two Perspectives first"
                     : undefined
                 }
                 className="flex items-center gap-1.5 whitespace-nowrap pl-3.5 pr-3 text-[12.5px] font-medium disabled:cursor-default focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--bg)]"
               >
-                {busy === "Setting up the panel" ? (
+                {busy === "Setting up the panel" ||
+                busy === "Continuing parent deliberation" ? (
                   <>
-                    <Spinner /> Opening panel…
+                    <Spinner /> Continuing panel…
                   </>
+                ) : branchIntegrated ? (
+                  "Continued"
                 ) : stage === "extraction" ? (
                   "Continue"
                 ) : (

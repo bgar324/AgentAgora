@@ -209,6 +209,25 @@ async def create_child_investigation(
     )
 
 
+@focused_router.post(
+    "/workspaces/{workspace_id}/investigations/{parent_investigation_id}/"
+    "children/{child_investigation_id}/integrate"
+)
+async def integrate_child_investigation(
+    workspace_id: str,
+    parent_investigation_id: str,
+    child_investigation_id: str,
+    service: Service,
+) -> WorkspaceView:
+    return await _acall(
+        service.integrate_child_investigation(
+            workspace_id,
+            parent_investigation_id,
+            child_investigation_id,
+        )
+    )
+
+
 @focused_router.patch(
     "/workspaces/{workspace_id}/investigations/"
     "{investigation_id}/questions/{question_id}"

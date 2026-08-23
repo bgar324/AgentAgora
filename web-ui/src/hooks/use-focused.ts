@@ -354,6 +354,20 @@ export function useFocusedPanel() {
     [sessionId, viewCall, workspaceId],
   )
 
+  const integrateChildInvestigation = useCallback(async () => {
+    const active = useFocusedStore.getState().session
+    const parentId = active?.parent_investigation_id
+    if (!workspaceId || !sessionId || !parentId) {
+      throw new Error("No active research branch to integrate.")
+    }
+    const view = await viewCall(
+      "Continuing parent deliberation",
+      `workspaces/${workspaceId}/investigations/${parentId}/children/${sessionId}/integrate`,
+      { method: "POST" },
+    )
+    return view.active
+  }, [sessionId, viewCall, workspaceId])
+
   const switchInvestigation = useCallback(
     async (investigationId: string) => {
       if (!workspaceId) throw new Error("No active workspace.")
@@ -498,6 +512,7 @@ export function useFocusedPanel() {
     confirmHypothesis,
     saveHypothesis,
     createChildInvestigation,
+    integrateChildInvestigation,
     switchInvestigation,
     updateQuestionStatus,
     promoteHypothesis,

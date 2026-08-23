@@ -38,6 +38,10 @@ Surfaces:
   Completed open questions expose Start paper search both in the drawer and on
   their Research Problem node; neither surface forces the user to hunt for the
   other.
+  A Research Problem opens a temporary literature branch. Continue imports its
+  evidence and Perspectives into the parent, reopens the same panel, and returns
+  to the existing Canvas. Prior rounds and checkpoints remain; the earlier
+  completion and score move into completion history.
 
 Overlays: modals (add Perspective, Perspective detail, apply changes,
 hypothesis, scoring, reset) share ModalShell; the 1180px/96vw panel drawer is

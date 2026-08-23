@@ -558,13 +558,99 @@ def test_full_facet_round_records_resolution_metrics_rating_and_child_branch() -
         assert child.agents == []
 
         exported = service.export_workspace(state.workspace_id)
-        assert exported["schema_version"] == 4
+        assert exported["schema_version"] == 5
         exported_deliberation = exported["investigations"][0]["deliberations"][0]
         assert exported_deliberation["rounds"][0]["metrics"]["method"].startswith(
             "unavailable:"
         )
         assert "rating" not in exported_deliberation["rounds"][0]
         assert exported_deliberation["rating"]["convergent"] == 3
+
+    asyncio.run(go())
+
+
+def test_child_research_continues_existing_deliberation() -> None:
+    async def go() -> None:
+        service, session_id, deliberation_id, agent_iids = await _demo_panel()
+        state = await service.run_round(
+            session_id,
+            deliberation_id,
+            lead_iid=agent_iids[0],
+            facets=["scope"],
+        )
+        proposal = state.deliberations[0].hypothesis
+        assert proposal is not None
+        state = await service.confirm_deliberation_hypothesis(
+            session_id,
+            deliberation_id,
+            proposal,
+        )
+        state = await service.save_deliberation_hypothesis(
+            session_id,
+            deliberation_id,
+        )
+        state = await service.complete_deliberation(session_id, deliberation_id)
+        state = await service.rate_deliberation(
+            session_id,
+            deliberation_id,
+            DeliberationRating(divergent=6, convergent=5),
+        )
+        parent = state
+        question = parent.deliberations[0].recommended_questions[0]
+        child = (
+            await service.create_child_investigation(
+                parent.workspace_id,
+                parent.id,
+                question.id,
+            )
+        ).active
+        child = await service.suggest_queries(child.id)
+        child = await service.run_search(
+            child.id,
+            [query.query for query in child.suggested_queries[:3]],
+        )
+        for cluster in child.clusters[2:4]:
+            child = await service.generate_perspective(
+                child.id,
+                cluster_id=cluster.id,
+            )
+
+        view = await service.integrate_child_investigation(
+            parent.workspace_id,
+            parent.id,
+            child.id,
+        )
+        assert view.active.id == parent.id
+        continued = service.get(parent.id)
+        deliberation = continued.deliberations[0]
+        assert len(deliberation.rounds) == 1
+        assert continued.applied_hypothesis_version_id == "H1"
+        assert deliberation.completed_at is None
+        assert deliberation.final_hypothesis_version_id is None
+        assert deliberation.rating is None
+        assert len(deliberation.completion_history) == 1
+        completion = deliberation.completion_history[0]
+        assert completion.final_hypothesis_version_id == "H1"
+        assert completion.round_count == 1
+        assert completion.rating is not None
+        assert completion.rating.divergent == 6
+        assert len(continued.agents) == 4
+        assert deliberation.agent_iids == [agent.iid for agent in continued.agents]
+        assert continued.deliberations[0].recommended_questions[0].status == "addressed"
+        assert service.get(child.id).integrated_into_parent_at is not None
+        with pytest.raises(SessionError, match="already continued"):
+            await service.integrate_child_investigation(
+                parent.workspace_id,
+                parent.id,
+                child.id,
+            )
+        with pytest.raises(SessionError, match="already continued"):
+            await service.generate_perspective(
+                child.id,
+                cluster_id=child.clusters[0].id,
+            )
+        with pytest.raises(SessionError, match="new focused round"):
+            await service.complete_deliberation(parent.id, deliberation.id)
 
     asyncio.run(go())
 

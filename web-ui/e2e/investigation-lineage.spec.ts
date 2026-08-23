@@ -175,7 +175,7 @@ test.beforeEach(async ({ page }) => {
   await page.evaluate(() => localStorage.clear())
 })
 
-test("branches an open question into an isolated child Investigation", async ({ page }) => {
+test("continues an open question on the existing canvas", async ({ page }) => {
   const duplicateKeyWarnings: string[] = []
   page.on("console", (message) => {
     if (
@@ -248,6 +248,13 @@ test("branches an open question into an isolated child Investigation", async ({ 
   await expect(page.getByTestId("round-1-summary")).toContainText(
     "The panel compared",
   )
+  const moderatorSummary = page.getByTestId("round-1-summary")
+  await expect(
+    moderatorSummary.getByText("Moderator", { exact: true }),
+  ).toBeVisible()
+  await expect(
+    moderatorSummary.getByText("Round summary", { exact: true }),
+  ).toBeVisible()
   const summaryBox = await page.getByTestId("round-1-summary").boundingBox()
   const discussionBox = await page
     .getByTestId("round-1-discussion")
@@ -355,7 +362,6 @@ test("branches an open question into an isolated child Investigation", async ({ 
   expect(completed.rounds.map((round: { participant_iids: number[] }) =>
     round.participant_iids.length,
   )).toEqual([2, 3])
-  const researchQuestion = String(completed.recommended_questions[0].question)
 
   await page.keyboard.press("Escape")
   await expect(page.getByTestId("saved-hypothesis-node-H2")).toBeVisible()
@@ -367,18 +373,25 @@ test("branches an open question into an isolated child Investigation", async ({ 
   await expect(researchNode).toBeVisible()
   await page.getByRole("button", { name: "Review" }).click()
   const endedDrawer = page.getByRole("dialog", { name: "Focused panel" })
+  const updateScores = endedDrawer.getByRole("button", { name: "Update scores" })
+  await expect(updateScores).toBeVisible()
+  const scoreActionLayout = await updateScores.evaluate((element) => ({
+    whiteSpace: getComputedStyle(element).whiteSpace,
+    height: element.getBoundingClientRect().height,
+  }))
+  expect(scoreActionLayout.whiteSpace).toBe("nowrap")
+  expect(scoreActionLayout.height).toBeLessThanOrEqual(32)
   const startPaperSearch = endedDrawer
     .getByRole("button", { name: "Start paper search" })
     .first()
   await expect(startPaperSearch).toBeVisible()
   await startPaperSearch.click()
-  await expect(page.getByText("Child Investigation", { exact: true })).toBeVisible()
-  await expect(page.getByText(/This branch begins from H2/)).toBeVisible()
+  await expect(page.getByText("Research branch", { exact: true })).toBeVisible()
+  await expect(page.getByText(/Continue returns to the existing Canvas/)).toBeVisible()
   const childId = await page
     .getByRole("combobox", { name: "Switch Investigation" })
     .inputValue()
   expect(childId).not.toBe(rootId)
-  await expect(page.getByText(/Search fresh literature and build a new fixed panel/)).toBeVisible()
   await expect(
     page.getByText("Perspective matrix (0)", { exact: true }),
   ).toHaveCount(0)
@@ -395,30 +408,61 @@ test("branches an open question into an isolated child Investigation", async ({ 
 
   await page.getByRole("button", { name: "Open current Investigation" }).click()
   await searchDemoLiterature(page)
-  await addPerspective(page, "Resistance ecology")
-  await addPerspective(page, "Host and microbiome")
-  await page.getByRole("button", { name: "Continue" }).click()
-  await expect(page.getByTestId("root-research-problem-node")).toContainText(
-    researchQuestion,
-  )
-  await expect(page.locator('[data-testid^="agent-node-"]')).toHaveCount(2)
-  await page.getByRole("button", { name: "Investigation map" }).click()
-  await page.getByTestId(`investigation-node-${rootId}`).click()
+  await addPerspective(page, "Diagnostics and targeting")
+  await page.getByRole("button", { name: "Continue", exact: true }).click()
   await expect(page.getByRole("combobox", { name: "Switch Investigation" })).toHaveValue(
     rootId,
   )
-  await page.getByRole("button", { name: "Review" }).click()
+  await expect(page.locator('[data-testid^="agent-node-"]')).toHaveCount(4)
+  await expect(page.locator('[data-testid^="round-result-node-"]')).toHaveCount(0)
+  const continuedState = await requestJson(
+    page.request,
+    `/api/focused/sessions/${rootId}`,
+    "get",
+  )
+  expect(continuedState.applied_hypothesis_version_id).toBe("H2")
+  expect(continuedState.deliberations[0].rounds).toHaveLength(2)
+  expect(continuedState.deliberations[0].completion_history).toHaveLength(1)
+  expect(continuedState.deliberations[0].completed_at).toBeNull()
+  expect(continuedState.deliberations[0].agent_iids).toHaveLength(4)
+  expect(continuedState.deliberations[0].recommended_questions[0].status).toBe(
+    "addressed",
+  )
+  const integratedChild = await requestJson(
+    page.request,
+    `/api/focused/sessions/${childId}`,
+    "get",
+  )
+  expect(integratedChild.integrated_into_parent_at).toBeTruthy()
+  const investigationSwitcher = page.getByRole("combobox", {
+    name: "Switch Investigation",
+  })
+  await investigationSwitcher.selectOption(childId)
+  await expect(
+    page.getByText(
+      "This research branch has already been added to the parent Canvas and is now read-only.",
+      { exact: true },
+    ),
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Continued", exact: true }),
+  ).toBeDisabled()
+  await investigationSwitcher.selectOption(rootId)
+  await page.getByRole("button", { name: "Investigation map" }).click()
+  await page.getByTestId(`investigation-node-${rootId}`).click()
+  await page.getByRole("button", { name: "Join" }).click()
   const drawer = page.getByRole("dialog", { name: "Focused panel" })
   await expect(drawer).toBeVisible()
-  const updateScores = drawer.getByRole("button", { name: "Update scores" })
-  await expect(updateScores).toBeVisible()
-  const scoreActionLayout = await updateScores.evaluate((element) => ({
-    whiteSpace: getComputedStyle(element).whiteSpace,
-    height: element.getBoundingClientRect().height,
-  }))
-  expect(scoreActionLayout.whiteSpace).toBe("nowrap")
-  expect(scoreActionLayout.height).toBeLessThanOrEqual(32)
   const conversation = page.getByTestId("panel-conversation-scroll")
+  await expect(
+    drawer.getByText(
+      "Complete a round with the added Perspectives before ending again.",
+      { exact: true },
+    ),
+  ).toBeVisible()
+  await expect(
+    drawer.getByRole("button", { name: "End deliberation" }),
+  ).toBeDisabled()
   const hypothesisSidebar = page.getByTestId("working-hypothesis-sidebar")
   const sidebarLayout = await hypothesisSidebar.evaluate((element) => {
     const styles = getComputedStyle(element)
@@ -431,7 +475,7 @@ test("branches an open question into an isolated child Investigation", async ({ 
     borderLeftWidth: "1px",
     overflowY: "auto",
   })
-  await expect(page.getByTestId("panel-chat-bar")).toHaveCount(0)
+  await expect(page.getByTestId("panel-chat-bar")).toBeVisible()
   const sidebarBottomGap = await drawer.evaluate((surface) => {
     const sidebar = surface.querySelector(
       '[data-testid="working-hypothesis-sidebar"]',
@@ -456,7 +500,7 @@ test("branches an open question into an isolated child Investigation", async ({ 
     .poll(() => conversation.evaluate((element) => element.scrollTop))
     .toBe(0)
   const status = drawer.getByRole("combobox", { name: /Status for/ })
-  await expect(status).toHaveValue("investigating")
+  await expect(status).toHaveValue("addressed")
   await status.selectOption("archived")
   await expect(status).toHaveValue("archived")
   await status.selectOption("investigating")

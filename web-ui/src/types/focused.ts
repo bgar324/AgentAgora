@@ -153,6 +153,13 @@ export interface DeliberationRating {
   submitted_at: string
 }
 
+export interface DeliberationCompletion {
+  completed_at: string
+  final_hypothesis_version_id: string
+  round_count: number
+  rating: DeliberationRating | null
+}
+
 export interface DeliberationRound {
   n: number
   lead_iid: number
@@ -202,6 +209,7 @@ export interface DeliberationState {
   completed_at: string | null
   final_hypothesis_version_id: string | null
   rating: DeliberationRating | null
+  completion_history: DeliberationCompletion[]
 }
 
 export interface AgentState {
@@ -263,6 +271,7 @@ export interface SessionState {
   parent_investigation_id: string | null
   origin_question_id: string | null
   origin_question: string | null
+  integrated_into_parent_at: string | null
   applied_hypothesis: HypothesisDev | null
   applied_hypothesis_version_id: string | null
   suggested_queries: SuggestedQuery[]

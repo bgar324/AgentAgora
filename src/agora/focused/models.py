@@ -235,6 +235,13 @@ class DeliberationRating(BaseModel):
     submitted_at: datetime = Field(default_factory=utcnow)
 
 
+class DeliberationCompletion(BaseModel):
+    completed_at: datetime
+    final_hypothesis_version_id: str
+    round_count: int = Field(ge=1)
+    rating: DeliberationRating | None = None
+
+
 class DeliberationRound(BaseModel):
     n: int
     lead_iid: int
@@ -291,6 +298,7 @@ class DeliberationState(BaseModel):
     completed_at: datetime | None = None
     final_hypothesis_version_id: str | None = None
     rating: DeliberationRating | None = None
+    completion_history: list[DeliberationCompletion] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_hypothesis_state(self) -> Self:
@@ -372,6 +380,7 @@ class SessionState(BaseModel):
     parent_investigation_id: str | None = None
     origin_question_id: str | None = None
     origin_question: ResearchQuestion | None = None
+    integrated_into_parent_at: datetime | None = None
     applied_hypothesis: HypothesisDev | None = None
     applied_hypothesis_version_id: str | None = None
     suggested_queries: list[SuggestedQuery] = Field(default_factory=list)
@@ -398,6 +407,11 @@ class SessionState(BaseModel):
             raise ValueError("a root Investigation cannot have an origin question")
         if self.parent_investigation_id is not None and not all(origin):
             raise ValueError("a child Investigation requires its origin question")
+        if (
+            self.integrated_into_parent_at is not None
+            and self.parent_investigation_id is None
+        ):
+            raise ValueError("only a child Investigation can be integrated")
         return self
 
 

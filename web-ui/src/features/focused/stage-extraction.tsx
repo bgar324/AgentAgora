@@ -49,6 +49,7 @@ export function StageExtraction() {
   const [removalError, setRemovalError] = useState<string | null>(null)
 
   if (!session) return null
+  const integrated = session.integrated_into_parent_at !== null
   const queryOptions = session.suggested_queries.slice(0, 5)
   const selectedQueries = queryOptions
     .filter(({ query }) => picked.includes(query))
@@ -109,14 +110,24 @@ export function StageExtraction() {
       {session.parent_investigation_id && (
         <div className="ep-card-enter mx-6 mt-4 rounded-lg border border-[var(--line)] bg-[var(--panel)] px-4 py-2.5">
           <div className="text-[11px] font-medium text-[var(--ink)]">
-            Child Investigation
+            Research branch
           </div>
           <p className="mt-0.5 text-[11px] leading-relaxed text-[var(--ink-2)]">
-            Started from “{session.origin_question}”. Search fresh literature
-            and build a new fixed panel; the parent remains unchanged.
-            {session.applied_hypothesis_version_id
-              ? ` This branch begins from ${session.applied_hypothesis_version_id}.`
-              : " No hypothesis checkpoint had been applied yet."}
+            {integrated ? (
+              <>
+                This research branch has already been added to the parent Canvas
+                and is now read-only.
+              </>
+            ) : (
+              <>
+                Started from “{session.origin_question}”. Search fresh literature
+                and add new Perspectives. Continue returns to the existing Canvas
+                and panel; prior rounds and hypothesis checkpoints stay in place.
+                {session.applied_hypothesis_version_id
+                  ? ` This branch begins from ${session.applied_hypothesis_version_id}.`
+                  : " No hypothesis checkpoint had been applied yet."}
+              </>
+            )}
           </p>
         </div>
       )}
@@ -421,12 +432,14 @@ export function StageExtraction() {
                       }
                       void act(() => removePerspective(p.id))
                     }}
-                    disabled={busy !== null}
+                    disabled={busy !== null || integrated}
                     aria-label={`Remove ${p.name} from the matrix`}
                     title={
-                      session.agents.some((a) => a.perspective_id === p.id)
-                        ? "Remove from the matrix and any panel it has joined"
-                        : "Remove from the matrix"
+                      integrated
+                        ? "This research branch was already continued"
+                        : session.agents.some((a) => a.perspective_id === p.id)
+                          ? "Remove from the matrix and any panel it has joined"
+                          : "Remove from the matrix"
                     }
                     className="ml-auto text-[13px] leading-none text-[var(--mute)] hover:text-[var(--red)] disabled:opacity-50"
                   >
@@ -536,6 +549,7 @@ function ClusterRow({ cluster, index }: { cluster: ClusterCard; index: number })
   const session = useFocusedStore((s) => s.session)
   const busy = useFocusedStore((s) => s.busy)
   const { generatePerspective } = useFocusedPanel()
+  const integrated = session?.integrated_into_parent_at !== null
   const [edits, setEdits] = useState<
     Partial<Record<Facet, FacetEvidence>>
   >({})
@@ -647,8 +661,11 @@ function ClusterRow({ cluster, index }: { cluster: ClusterCard; index: number })
                     ) : (
                       <>
                         <button
-                          onClick={() => setEditing(key)}
-                          className={`max-w-full text-left text-[13px] leading-snug underline decoration-dotted underline-offset-4 hover:text-[var(--ink)] ${
+                          disabled={integrated}
+                          onClick={() => {
+                            if (!integrated) setEditing(key)
+                          }}
+                          className={`max-w-full text-left text-[13px] leading-snug underline decoration-dotted underline-offset-4 hover:text-[var(--ink)] disabled:cursor-default disabled:no-underline ${
                             evidence.text
                               ? "text-[var(--ink-2)] decoration-[var(--line-strong)]"
                               : "font-medium text-[var(--amber)] decoration-[var(--amber)]"
@@ -714,7 +731,12 @@ function ClusterRow({ cluster, index }: { cluster: ClusterCard; index: number })
               className={`mt-3.5 w-full ${
                 inMatrix && !pendingPerspective ? "ep-success-state" : ""
               }`}
-              disabled={inMatrix || !complete || busy === "Generating perspective"}
+              disabled={
+                integrated ||
+                inMatrix ||
+                !complete ||
+                busy === "Generating perspective"
+              }
               aria-live="polite"
             >
               {pendingPerspective ? (

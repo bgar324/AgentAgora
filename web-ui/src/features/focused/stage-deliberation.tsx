@@ -1020,8 +1020,16 @@ function ResolutionCard({ resolution }: { resolution: NonNullable<DeliberationRo
     { title: "Still unsettled", points: resolution.unsettled_points, color: "var(--amber)" },
   ]
   return (
-    <div className="mt-3 rounded-xl border border-[var(--line)] bg-[var(--bg)] p-3.5">
-      <SectionLabel>Deliberation summary</SectionLabel>
+    <section
+      aria-label="Moderator summary"
+      className="mt-3 rounded-xl border border-[var(--line)] bg-[var(--bg)] p-3.5"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-[12px] font-semibold text-[var(--ink)]">
+          Moderator
+        </span>
+        <span className="text-[10.5px] text-[var(--mute)]">Round summary</span>
+      </div>
       <p className="mt-1 text-[13px] leading-relaxed text-[var(--ink)]">
         {resolution.summary}
       </p>
@@ -1048,7 +1056,7 @@ function ResolutionCard({ resolution }: { resolution: NonNullable<DeliberationRo
           </div>
         ))}
       </div>
-    </div>
+    </section>
   )
 }
 
@@ -1143,6 +1151,10 @@ function WorkingHypothesisPanel({
     if (original) onChange({ ...original })
     setEditing(false)
   }
+  const previousCompletion = deliberation.completion_history.at(-1)
+  const needsNewRound =
+    previousCompletion !== undefined &&
+    deliberation.rounds.length <= previousCompletion.round_count
 
   return (
     <aside className="min-w-0">
@@ -1466,8 +1478,9 @@ function WorkingHypothesisPanel({
         ) : (
           <>
             <p className="text-[10.5px] leading-relaxed text-[var(--mute)]">
-              End after the current hypothesis is applied and saved. This closes
-              the panel and reveals its final outputs on the canvas.
+              {needsNewRound
+                ? "Complete a round with the added Perspectives before ending again."
+                : "End after the current hypothesis is applied and saved. This closes the panel and reveals its final outputs on the canvas."}
             </p>
             <Button
               variant="primary"
@@ -1476,6 +1489,7 @@ function WorkingHypothesisPanel({
               disabled={
                 busy ||
                 deliberation.rounds.length === 0 ||
+                needsNewRound ||
                 pending ||
                 unsaved ||
                 editing ||
