@@ -3,7 +3,10 @@
 import { useState } from "react"
 import { Pencil } from "lucide-react"
 
-import { useFocusedPanel } from "@/hooks/use-focused"
+import {
+  parseResearchQuestions,
+  useFocusedPanel,
+} from "@/hooks/use-focused"
 import { useFocusedStore } from "@/store/focused"
 import type {
   ClusterCard,
@@ -64,6 +67,12 @@ export function StageExtraction() {
       setError(err instanceof Error ? err.message : "request failed")
     }
   }
+  const retrySearch = async () => {
+    await updateBrief(session.problem, session.research_questions)
+    const refreshed = await suggestQueries()
+    await runSearch(refreshed.suggested_queries.map(({ query }) => query))
+  }
+
   const confirmPerspectiveRemoval = async () => {
     if (!perspectiveToRemove) return
     setRemovalError(null)
@@ -88,10 +97,7 @@ export function StageExtraction() {
 
   const saveBrief = async () => {
     const problem = draftProblem.trim()
-    const questions = draftQuestions
-      .split("\n")
-      .map((question) => question.trim())
-      .filter(Boolean)
+    const questions = parseResearchQuestions(draftQuestions)
     if (problem.length < 3) {
       setError("Problem must be at least three characters.")
       return
@@ -203,7 +209,7 @@ export function StageExtraction() {
                   <div className="min-w-0 flex-1 text-[13px] font-medium leading-relaxed">
                     {session.problem}
                   </div>
-                  {!session.searched && (
+                  {(!session.searched || session.papers.length === 0) && (
                     <Button
                       variant="ghost"
                       size="sm"
@@ -253,6 +259,10 @@ export function StageExtraction() {
                       )}
                     </Button>
                   </>
+                ) : session.papers.length === 0 ? (
+                  <p className="mt-3 text-[12px] leading-relaxed text-[var(--mute)]">
+                    No literature was saved from the last search.
+                  </p>
                 ) : (
                   <p className="mt-3 text-[12px] leading-relaxed text-[var(--mute)]">
                     This literature set is preserved. Start from a Research
@@ -379,10 +389,25 @@ export function StageExtraction() {
               <EmptyLine>Run a search to see the clusters.</EmptyLine>
             </div>
           ) : session.clusters.length === 0 ? (
-            <div className="ep-enter panel flex h-full min-h-[220px] flex-col items-center justify-center gap-1.5 px-8 text-center">
-              <EmptyLine>
-                No papers matched those searches — try different ones.
-              </EmptyLine>
+            <div className="ep-enter panel flex h-full min-h-[220px] flex-col items-center justify-center gap-2 px-8 text-center">
+              <EmptyLine>No papers matched those searches.</EmptyLine>
+              <p className="max-w-[42ch] text-[11px] leading-relaxed text-[var(--mute)]">
+                Retry generates shorter academic queries automatically.
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={busy !== null}
+                onClick={() => void act(retrySearch)}
+              >
+                {busy !== null ? (
+                  <>
+                    <Spinner /> Retrying…
+                  </>
+                ) : (
+                  "Retry search"
+                )}
+              </Button>
             </div>
           ) : (
             session.clusters.map((cluster, index) => (

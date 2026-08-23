@@ -87,6 +87,64 @@ def _content_words(text: str) -> list[str]:
     ]
 
 
+def _search_query_words(text: str) -> list[str]:
+    words = re.findall(r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*", text)
+    return [
+        word.lower()
+        for word in words
+        if len(word) > 1 and word.lower() not in STOPWORDS
+    ]
+
+
+SEARCH_QUERY_FILLER = frozenset(
+    {
+        "ability",
+        "cases",
+        "determine",
+        "different",
+        "identify",
+        "provide",
+        "relevant",
+        "reliably",
+        "request",
+        "various",
+    }
+)
+
+
+def compact_search_query(query: str, *, max_terms: int = 6) -> str:
+    text = " ".join(query.split())
+    content = _search_query_words(text)
+    unsafe = (
+        "?" in text
+        or "？" in text
+        or '"' in text
+        or re.search(r"\b(?:AND|OR|NOT)\b", text) is not None
+        or len(content) > max_terms
+    )
+    if not unsafe:
+        return text
+    terms = list(
+        dict.fromkeys(word for word in content if word not in SEARCH_QUERY_FILLER)
+    )
+    if len(terms) < 2:
+        terms = list(dict.fromkeys(content))
+    return " ".join(terms[:max_terms]) or text.rstrip("?？")
+
+
+def relaxed_search_query(query: str, *, terms: int = 3) -> str:
+    content = list(
+        dict.fromkeys(
+            word
+            for word in _search_query_words(query)
+            if word not in SEARCH_QUERY_FILLER
+        )
+    )
+    if not content:
+        return ""
+    return " ".join(content[-terms:])
+
+
 async def _structured(
     provider: FocusedProvider | None,
     system: str,
@@ -149,7 +207,7 @@ def _fallback_queries(
             "Core constructs of the problem statement.",
         )
     for q in questions:
-        push(q, "Taken directly from your research questions.")
+        push(compact_search_query(q), "Taken directly from your research questions.")
     if len(freq) >= 4:
         push(
             f"{freq[0]} versus {freq[min(2, len(freq) - 1)]}",
@@ -177,9 +235,11 @@ async def suggest_queries(
 ) -> list[SuggestedQuery]:
     parsed = await _structured(
         provider,
-        "You write literature-search queries for a research tool. Queries must "
-        "reach DIFFERENT parts of the literature rather than overlapping: a term "
-        "that would hit most papers separates nothing. Return exactly "
+        "You write literature-search queries for Semantic Scholar. Queries must "
+        "reach DIFFERENT parts of the literature rather than overlapping. Use "
+        "two to six unquoted academic keywords or a short noun phrase in "
+        "established literature vocabulary. Do not write questions, Boolean "
+        "expressions, prose sentences, or notation such as Pₓ. Return exactly "
         f"{count} queries.",
         f"## RESEARCH PROBLEM\n{problem}\n\n## RESEARCH QUESTIONS\n"
         + "\n".join(f"- {q}" for q in questions),
@@ -187,7 +247,10 @@ async def suggest_queries(
         temperature=0.4,
     )
     if parsed and parsed.queries:
-        return parsed.queries[:count]
+        return [
+            query.model_copy(update={"query": compact_search_query(query.query)})
+            for query in parsed.queries[:count]
+        ]
     return _fallback_queries(problem, questions, count)
 
 
@@ -196,10 +259,13 @@ async def suggest_queries(
 # ---------------------------------------------------------------------------
 
 QUESTION_PLAN_SYSTEM = """\
-You plan a literature search for one research question. Preserve the
-question's own scientific terms. Return the form of an answer, two to four
-candidate answers, and two concise search queries aimed at those candidates.
-Do not silently replace a key term with a neighboring concept."""
+You plan a Semantic Scholar literature search for one research question.
+Preserve the question's scientific concepts. Return the form of an answer,
+two to four candidate answers, and two search queries aimed at those
+candidates. Each query must contain two to six unquoted academic keywords or
+a short noun phrase in established literature vocabulary. Do not write
+questions, Boolean expressions, prose sentences, or notation such as Pₓ.
+Do not silently replace a key concept with a neighboring concept."""
 
 QUESTION_PLAN_USER = """\
 Research problem (context only):
@@ -249,9 +315,13 @@ async def plan_question_search(
                     for candidate in parsed.candidates
                     if candidate.strip()
                 ],
-                "queries": [query for query in parsed.queries if query.query.strip()][
-                    :2
-                ],
+                "queries": [
+                    query.model_copy(
+                        update={"query": compact_search_query(query.query)}
+                    )
+                    for query in parsed.queries
+                    if compact_search_query(query.query)
+                ][:2],
             }
         )
     terms = _content_words(question)
@@ -489,9 +559,7 @@ async def name_clusters(
             blocked_names=[item.name for item in named],
         )
         if candidate is not None and candidate.blurb.strip():
-            fallback = fallback.model_copy(
-                update={"blurb": candidate.blurb.strip()}
-            )
+            fallback = fallback.model_copy(update={"blurb": candidate.blurb.strip()})
         named.append(fallback)
     return named
 

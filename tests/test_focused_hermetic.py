@@ -7,6 +7,8 @@ import re
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from agora.focused.models import (
     FACETS,
     ClusterNaming,
@@ -22,13 +24,14 @@ from agora.focused.models import (
     VocabularyPair,
 )
 from agora.focused.retrieval import FocusedSearchResult, FocusedSemanticScholar
-from agora.focused.service import FocusedPanelService
+from agora.focused.service import FocusedPanelService, SessionError
 from agora.schemas.research import Paper
 
 
 class HermeticRetrieval:
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.failures: set[str] = set()
         self.papers = {
             "angle-1": FocusedSearchResult(
                 id="angle-1",
@@ -62,6 +65,8 @@ class HermeticRetrieval:
 
     async def search(self, query: str, limit: int = 8):
         self.calls.append(query)
+        if query in self.failures:
+            raise RuntimeError("provider unavailable")
         return [self.papers[paper_id] for paper_id in self.results.get(query, [])][
             :limit
         ]
@@ -221,9 +226,15 @@ class FailingEmbedder:
         raise RuntimeError("embedding unavailable")
 
 
+class FailingRetrieval:
+    async def search(self, _query: str, **_: Any):
+        raise RuntimeError("provider unavailable")
+
+
 def test_question_search_records_reach_and_miss() -> None:
     async def go() -> None:
         retrieval = HermeticRetrieval()
+        retrieval.failures.add("withdrawn tool capability")
         provider = HermeticProvider(retrieval)
         service = FocusedPanelService(provider=provider, s2=retrieval)
         state = service.create_workspace(
@@ -238,8 +249,7 @@ def test_question_search_records_reach_and_miss() -> None:
         selected = [query.query for query in state.suggested_queries]
         assert len(state.suggested_queries) == 5
         assert [
-            (query.kind, query.question_index)
-            for query in state.suggested_queries[:2]
+            (query.kind, query.question_index) for query in state.suggested_queries[:2]
         ] == [("question", 0), ("question", 1)]
         assert len({query.query.casefold() for query in state.suggested_queries}) == 5
         state = await service.run_search(state.id, selected)
@@ -268,6 +278,88 @@ def test_question_search_records_reach_and_miss() -> None:
                 for item in cluster.facets
                 if item.paper_id
             )
+
+    asyncio.run(go())
+
+
+def test_live_retrieval_relaxes_zero_result_prose_query() -> None:
+    async def go() -> None:
+        retrieval = HermeticRetrieval()
+        retrieval.results["large system prompt"] = ["angle-1"]
+        service = FocusedPanelService(s2=retrieval)
+        query = (
+            "How can a compiler identify explicit obligations relevant to a "
+            "request x in a large system prompt P?"
+        )
+        papers, succeeded = await service._live_retrieve([query])
+        assert succeeded
+        assert retrieval.calls == [query, "large system prompt"]
+        assert [paper.id for paper in papers] == ["angle-1"]
+        assert papers[0].source_query == "large system prompt"
+
+    asyncio.run(go())
+
+
+def test_live_retrieval_surfaces_provider_failure() -> None:
+    async def go() -> None:
+        retrieval = HermeticRetrieval()
+        provider = HermeticProvider(retrieval)
+        service = FocusedPanelService(provider=provider, s2=FailingRetrieval())
+        state = service.create_workspace(
+            problem="How do AI writing tools affect knowledge work?",
+            research_questions=[],
+            demo=False,
+        ).active
+        state = await service.suggest_queries(state.id)
+        selected = [query.query for query in state.suggested_queries]
+        with pytest.raises(SessionError, match="temporarily unavailable") as error:
+            await service.run_search(state.id, selected)
+        assert error.value.status == 503
+        assert not service.get(state.id).searched
+
+    asyncio.run(go())
+
+
+def test_empty_live_search_rolls_back_and_can_retry() -> None:
+    async def go() -> None:
+        retrieval = HermeticRetrieval()
+        provider = HermeticProvider(retrieval)
+        service = FocusedPanelService(provider=provider, s2=retrieval)
+        state = service.create_workspace(
+            problem="How do AI writing tools affect knowledge work?",
+            research_questions=[
+                "When do draft suggestions reduce output diversity?",
+            ],
+            demo=False,
+        ).active
+        state = await service.suggest_queries(state.id)
+        selected = [query.query for query in state.suggested_queries]
+        retrieval.results.clear()
+
+        with pytest.raises(SessionError, match="search was not saved") as error:
+            await service.run_search(state.id, selected)
+        assert error.value.status == 422
+        failed = service.get(state.id)
+        assert not failed.searched
+        assert failed.papers == []
+        assert failed.searched_queries == []
+
+        failed.searched = True
+        failed.searched_queries = selected
+        updated = service.update_brief(
+            state.id,
+            problem=state.problem,
+            research_questions=state.research_questions,
+        )
+        assert not updated.searched
+        assert updated.searched_queries == []
+
+        updated = await service.suggest_queries(state.id)
+        selected = [query.query for query in updated.suggested_queries]
+        retrieval.results["ai suggestions output diversity"] = ["q-answer"]
+        retried = await service.run_search(state.id, selected)
+        assert retried.searched
+        assert [paper.id for paper in retried.papers] == ["q-answer"]
 
     asyncio.run(go())
 

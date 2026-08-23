@@ -102,6 +102,46 @@ async def _demo_panel() -> tuple[FocusedPanelService, str, str, list[int]]:
     return service, state.id, deliberation.id, agent_iids
 
 
+def test_compacts_prose_queries_and_relaxes_to_broad_terms() -> None:
+    query = (
+        "How can a compiler identify explicit obligations relevant to a request "
+        "x in a large system prompt P?"
+    )
+    assert (
+        agents.compact_search_query(query)
+        == "compiler explicit obligations large system prompt"
+    )
+    assert agents.relaxed_search_query(query) == "large system prompt"
+    assert (
+        agents.compact_search_query(
+            '"critical-obligation compliance" AND "task quality"'
+        )
+        == "critical-obligation compliance task quality"
+    )
+    assert (
+        agents.compact_search_query('"AI writing tools" AND "team output diversity"')
+        == "ai writing tools team output diversity"
+    )
+    assert (
+        agents.compact_search_query("ai writing tools workplace 2")
+        == "ai writing tools workplace 2"
+    )
+    acronym_query = (
+        "How does GPT-4 compare to LLM RAG pipelines for clinical QA accuracy?"
+    )
+    assert (
+        agents.compact_search_query(acronym_query)
+        == "gpt-4 compare llm rag pipelines clinical"
+    )
+    assert agents.relaxed_search_query(acronym_query) == "clinical qa accuracy"
+    assert (
+        agents.compact_search_query(
+            "Does COVID-19 vaccination reduce long-term fatigue in adults?"
+        )
+        == "covid-19 vaccination reduce long-term fatigue adults"
+    )
+
+
 def test_perspectives_join_open_deliberation_without_reset_and_end_once() -> None:
     async def go() -> None:
         service = FocusedPanelService()
