@@ -99,7 +99,12 @@ export function FocusedWorkspace() {
   }
 
   const matrixCount = session.perspectives.length
-  const canDeliberate = matrixCount >= 2
+  const isResearchBranch =
+    session.parent_investigation_id !== null &&
+    session.origin_question_id !== null
+  const branchIntegrated = session.integrated_into_parent_at !== null
+  const canDeliberate =
+    !branchIntegrated && matrixCount >= (isResearchBranch ? 1 : 2)
 
   const hasInvestigationBranches = investigations.length > 1
   const activeScreen = hasInvestigationBranches ? workspaceScreen : "detail"
@@ -110,12 +115,15 @@ export function FocusedWorkspace() {
       stageSet("extraction")
       return
     }
-    void focused
-      .createDeliberation()
+    const continueToCanvas =
+      session.parent_investigation_id && session.origin_question_id
+        ? focused.integrateChildInvestigation
+        : focused.createDeliberation
+    void continueToCanvas()
       .then(() => stageSet("deliberation"))
       .catch((cause) =>
         setActionError(
-          cause instanceof Error ? cause.message : "Could not open the panel",
+          cause instanceof Error ? cause.message : "Could not continue the panel",
         ),
       )
   }
@@ -127,7 +135,7 @@ export function FocusedWorkspace() {
           Hypothesis Studio
         </div>
         {hasInvestigationBranches && (
-          <div className="order-last flex w-full min-w-0 items-center gap-1.5 border-t border-[var(--line)] pt-1.5 text-[11px] sm:order-none sm:w-auto sm:border-l sm:border-t-0 sm:pl-3 sm:pt-0">
+          <div className="order-last flex w-full items-center border-t border-[var(--line)] pt-1.5 text-[11px] sm:order-none sm:w-auto sm:border-l sm:border-t-0 sm:pl-3 sm:pt-0">
             <button
               type="button"
               onClick={() => workspaceScreenSet("map")}
@@ -136,34 +144,6 @@ export function FocusedWorkspace() {
               <span className="sm:hidden">Map</span>
               <span className="hidden sm:inline">Investigation map</span>
             </button>
-            <span className="text-[var(--line-strong)]">/</span>
-            <select
-              aria-label="Switch Investigation"
-              value={session.id}
-              disabled={busy !== null}
-              onChange={(event) => {
-                setActionError(null)
-                void focused
-                  .switchInvestigation(event.target.value)
-                  .then(() => workspaceScreenSet("detail"))
-                  .catch((cause) =>
-                    setActionError(
-                      cause instanceof Error
-                        ? cause.message
-                        : "Could not open Investigation",
-                    ),
-                  )
-              }}
-              className="min-w-0 max-w-[230px] flex-1 truncate border-0 bg-transparent p-0 text-[11px] font-medium text-[var(--ink)] outline-none sm:flex-none"
-            >
-              {investigations.map((investigation) => (
-                <option key={investigation.id} value={investigation.id}>
-                  {investigation.id === workspace?.root_investigation_id
-                    ? "Initial Investigation"
-                    : investigation.origin_question ?? "Child Investigation"}
-                </option>
-              ))}
-            </select>
           </div>
         )}
         {activeScreen === "detail" && (
@@ -257,15 +237,22 @@ export function FocusedWorkspace() {
                 onClick={toggleStage}
                 title={
                   stage === "extraction" && !canDeliberate
-                    ? "Generate at least two perspectives first"
+                    ? branchIntegrated
+                      ? "This research branch already continues on the parent Canvas"
+                      : isResearchBranch
+                        ? "Add at least one Perspective first"
+                        : "Generate at least two Perspectives first"
                     : undefined
                 }
                 className="flex items-center gap-1.5 whitespace-nowrap pl-3.5 pr-3 text-[12.5px] font-medium disabled:cursor-default focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--bg)]"
               >
-                {busy === "Setting up the panel" ? (
+                {busy === "Setting up the panel" ||
+                busy === "Continuing parent deliberation" ? (
                   <>
-                    <Spinner /> Opening panel…
+                    <Spinner /> Continuing panel…
                   </>
+                ) : branchIntegrated ? (
+                  "Continued"
                 ) : stage === "extraction" ? (
                   "Continue"
                 ) : (

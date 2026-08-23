@@ -232,6 +232,9 @@ export function useFocusedPanel() {
         summary: "",
         evolved: false,
         origin: clusterId,
+        source_question_id: null,
+        panel_cycle:
+          session.deliberations[0]?.completion_history.length ?? 0,
       }
 
       optimisticPerspectiveAdd(optimisticPerspective)
@@ -353,6 +356,20 @@ export function useFocusedPanel() {
     },
     [sessionId, viewCall, workspaceId],
   )
+
+  const integrateChildInvestigation = useCallback(async () => {
+    const active = useFocusedStore.getState().session
+    const parentId = active?.parent_investigation_id
+    if (!workspaceId || !sessionId || !parentId) {
+      throw new Error("No active research branch to integrate.")
+    }
+    const view = await viewCall(
+      "Continuing parent deliberation",
+      `workspaces/${workspaceId}/investigations/${parentId}/children/${sessionId}/integrate`,
+      { method: "POST" },
+    )
+    return view.active
+  }, [sessionId, viewCall, workspaceId])
 
   const switchInvestigation = useCallback(
     async (investigationId: string) => {
@@ -498,6 +515,7 @@ export function useFocusedPanel() {
     confirmHypothesis,
     saveHypothesis,
     createChildInvestigation,
+    integrateChildInvestigation,
     switchInvestigation,
     updateQuestionStatus,
     promoteHypothesis,

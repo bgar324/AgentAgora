@@ -21,6 +21,7 @@ import { useFocusedStore } from "@/store/focused"
 import {
   FACETS,
   type AgentState,
+  type ClusterCard,
   type DeliberationPoint,
   type DeliberationRound,
   type DeliberationState,
@@ -90,13 +91,25 @@ export function StageDeliberation() {
   const session = useFocusedStore((state) => state.session)
   const workspace = useFocusedStore((state) => state.workspace)
   const busy = useFocusedStore((state) => state.busy)
-  const { createChildInvestigation, switchInvestigation } = useFocusedPanel()
+  const {
+    createChildInvestigation,
+    generatePerspective,
+    switchInvestigation,
+  } = useFocusedPanel()
   const [agentModal, setAgentModal] = useState<AgentState | null>(null)
   const [savedHypothesisModal, setSavedHypothesisModal] =
     useState<HypothesisVersion | null>(null)
   const [scoringId, setScoringId] = useState<string | null>(null)
+  const [addPerspectiveOpen, setAddPerspectiveOpen] = useState(false)
   const [canvasError, setCanvasError] = useState<string | null>(null)
   const [drawerId, setDrawerId] = useState<string | null>(null)
+  const availableClusters = useMemo(() => {
+    if (!session) return []
+    const represented = new Set(
+      session.perspectives.map((perspective) => perspective.origin),
+    )
+    return session.clusters.filter((cluster) => !represented.has(cluster.id))
+  }, [session])
 
   const nodes = useMemo<RFNode[]>(() => {
     if (!session) return []
@@ -109,48 +122,221 @@ export function StageDeliberation() {
         data: { problem: session.origin_question ?? session.problem },
       },
     ]
-
-    session.agents.forEach((agent, index) => {
-      const perspective = session.perspectives.find(
-        (item) => item.id === agent.perspective_id,
-      )
-      result.push({
-        id: `agent-${agent.iid}`,
-        type: "epAgent",
-        position: {
-          x: 330,
-          y: index * 175 - Math.max(0, session.agents.length - 1) * 87.5,
-        },
-        data: {
-          agentId: agent.iid,
-          name: perspective?.name ?? agent.label,
-          color: perspective?.color ?? "var(--mute)",
-          meta: `${perspective?.sources.length ?? 0} source${perspective?.sources.length === 1 ? "" : "s"}`,
-          onOpen: () => setAgentModal(agent),
-        },
-      })
-    })
-
     const deliberation = session.deliberations[0]
     if (!deliberation) return result
+
+    const history = deliberation.completion_history
+    const panelX = (cycle: number) => 720 + cycle * 1060
+    const artifactX = (cycle: number) => panelX(cycle) + 360
+    const branchAgentX = (cycle: number) => panelX(cycle) + 700
+    const historyPanelId = (cycle: number) =>
+      `panel-${deliberation.id}-completion-${cycle + 1}`
+    const currentPanelId = `panel-${deliberation.id}`
+    const perspectiveForAgent = (agent: AgentState) =>
+      session.perspectives.find((item) => item.id === agent.perspective_id)
+    const membersFor = (agentIids: number[]) =>
+      agentIids.map((iid) => {
+        const agent = session.agents.find((item) => item.iid === iid)
+        const perspective = agent ? perspectiveForAgent(agent) : undefined
+        return {
+          id: iid,
+          name: perspective?.name ?? agent?.label ?? "Perspective",
+          color: perspective?.color ?? "var(--mute)",
+        }
+      })
+
+    const completionAgentIids = (
+      completion: DeliberationState["completion_history"][number],
+    ) =>
+      completion.agent_iids.length
+        ? completion.agent_iids
+        : (deliberation.rounds[completion.round_count - 1]?.participant_iids ??
+          [])
+    const questionIdsForCompletion = (
+      completion: DeliberationState["completion_history"][number],
+      cycle: number,
+    ) => {
+      if (completion.question_ids.length) return completion.question_ids
+      const previousRoundCount =
+        cycle === 0 ? 0 : history[cycle - 1].round_count
+      return deliberation.recommended_questions
+        .filter(
+          (question) =>
+            question.source_round !== null &&
+            question.source_round > previousRoundCount &&
+            question.source_round <= completion.round_count,
+        )
+        .map((question) => question.id)
+    }
+    const questionCycle = new Map<string, number>()
+    history.forEach((completion, cycle) => {
+      questionIdsForCompletion(completion, cycle).forEach((questionId) => {
+        questionCycle.set(questionId, cycle)
+      })
+    })
+    const targetCycleForAgent = (agent: AgentState) => {
+      const perspective = perspectiveForAgent(agent)
+      if (perspective && perspective.panel_cycle > 0) {
+        return Math.min(perspective.panel_cycle, history.length)
+      }
+      const sourceQuestionId = perspective?.source_question_id
+      const sourceCycle = sourceQuestionId
+        ? questionCycle.get(sourceQuestionId)
+        : undefined
+      if (sourceCycle !== undefined) return sourceCycle + 1
+      const completedCycle = history.findIndex((completion) =>
+        completionAgentIids(completion).includes(agent.iid),
+      )
+      return completedCycle >= 0 ? completedCycle : history.length
+    }
+    const agentGroups = new Map<number, AgentState[]>()
+    for (const agent of session.agents) {
+      const targetCycle = targetCycleForAgent(agent)
+      agentGroups.set(targetCycle, [
+        ...(agentGroups.get(targetCycle) ?? []),
+        agent,
+      ])
+    }
+    for (const [targetCycle, agents] of agentGroups) {
+      const x = targetCycle === 0 ? 330 : branchAgentX(targetCycle - 1)
+      agents.forEach((agent, index) => {
+        const perspective = perspectiveForAgent(agent)
+        result.push({
+          id: `agent-${agent.iid}`,
+          type: "epAgent",
+          position: {
+            x,
+            y: index * 175 - Math.max(0, agents.length - 1) * 87.5,
+          },
+          data: {
+            agentId: agent.iid,
+            name: perspective?.name ?? agent.label,
+            color: perspective?.color ?? "var(--mute)",
+            meta: `${perspective?.sources.length ?? 0} source${perspective?.sources.length === 1 ? "" : "s"}`,
+            onOpen: () => setAgentModal(agent),
+          },
+        })
+      })
+    }
+
+    const renderedVersionIds = new Set<string>()
+    const addArtifacts = (
+      cycle: number,
+      versionId: string | null,
+      questionIds: string[],
+    ) => {
+      const version =
+        versionId !== null && !renderedVersionIds.has(versionId)
+          ? workspace?.hypothesis_versions.find((item) => item.id === versionId)
+          : undefined
+      if (version) renderedVersionIds.add(version.id)
+      const questions = deliberation.recommended_questions.filter((question) =>
+        questionIds.includes(question.id),
+      )
+      const artifacts = [
+        ...(version ? [{ kind: "hypothesis" as const, version }] : []),
+        ...questions.map((question) => ({
+          kind: "research" as const,
+          question,
+        })),
+      ]
+      artifacts.forEach((artifact, index) => {
+        const y = (index - (artifacts.length - 1) / 2) * 165
+        if (artifact.kind === "hypothesis") {
+          result.push({
+            id: `hypothesis-${artifact.version.id}`,
+            type: "epHypothesis",
+            position: { x: artifactX(cycle), y },
+            data: {
+              versionId: artifact.version.id,
+              hypothesis:
+                [
+                  artifact.version.steps.hypothesis,
+                  artifact.version.steps.reasoning,
+                  artifact.version.steps.problem,
+                  artifact.version.steps.previous_work,
+                ].find((part) => part !== "Not established yet.") ??
+                artifact.version.steps.hypothesis,
+              promoted:
+                workspace?.promoted_hypothesis_version_id === artifact.version.id,
+              onOpen: () => setSavedHypothesisModal(artifact.version),
+            },
+          })
+          return
+        }
+        const question = artifact.question
+        const actionable =
+          question.status === "open" || question.child_investigation_id !== null
+        result.push({
+          id: `research-${question.id}`,
+          type: "epResearchProblem",
+          position: { x: artifactX(cycle), y },
+          data: {
+            questionId: question.id,
+            question: question.question,
+            status: question.status,
+            hasChild: question.child_investigation_id !== null,
+            actionable,
+            busy: busy !== null,
+            onOpen: async () => {
+              if (busy || !actionable) return
+              setCanvasError(null)
+              try {
+                if (question.child_investigation_id) {
+                  await switchInvestigation(question.child_investigation_id)
+                } else {
+                  await createChildInvestigation(question.id)
+                }
+              } catch (cause) {
+                setCanvasError(
+                  cause instanceof Error
+                    ? cause.message
+                    : "Could not open this research problem",
+                )
+              }
+            },
+          },
+        })
+      })
+    }
+
+    history.forEach((completion, cycle) => {
+      const fallbackAgentIids =
+        deliberation.rounds[completion.round_count - 1]?.participant_iids ?? []
+      result.push({
+        id: historyPanelId(cycle),
+        type: "epPanel",
+        position: { x: panelX(cycle), y: 0 },
+        data: {
+          members: membersFor(
+            completion.agent_iids.length
+              ? completion.agent_iids
+              : fallbackAgentIids,
+          ),
+          status: `Ended after ${completion.round_count} ${
+            completion.round_count === 1 ? "round" : "rounds"
+          }`,
+          canJoin: true,
+          ended: true,
+          onJoin: () => setDrawerId(deliberation.id),
+        },
+      })
+      addArtifacts(
+        cycle,
+        completion.final_hypothesis_version_id,
+        questionIdsForCompletion(completion, cycle),
+      )
+    })
+
     const completedRounds = deliberation.rounds.filter((round) => round.completed)
     const ended = deliberation.completed_at !== null
+    const currentCycle = history.length
     result.push({
-      id: `panel-${deliberation.id}`,
+      id: currentPanelId,
       type: "epPanel",
-      position: { x: 720, y: 0 },
+      position: { x: panelX(currentCycle), y: 0 },
       data: {
-        members: deliberation.agent_iids.map((iid) => {
-          const agent = session.agents.find((item) => item.iid === iid)
-          const perspective = agent
-            ? session.perspectives.find((item) => item.id === agent.perspective_id)
-            : undefined
-          return {
-            id: iid,
-            name: perspective?.name ?? agent?.label ?? "Perspective",
-            color: perspective?.color ?? "var(--mute)",
-          }
-        }),
+        members: membersFor(deliberation.agent_iids),
         status: ended
           ? `Ended after ${completedRounds.length} ${
               completedRounds.length === 1 ? "round" : "rounds"
@@ -167,96 +353,20 @@ export function StageDeliberation() {
         onJoin: () => setDrawerId(deliberation.id),
       },
     })
-
-    completedRounds.forEach((round, roundIndex) => {
-      const roundX = 1080 + roundIndex * 520
-      result.push({
-        id: `round-${deliberation.id}-${round.n}`,
-        type: "epRoundResult",
-        position: { x: roundX, y: 0 },
-        data: {
-          number: round.n,
-          facets: round.facets.map((facet) => FACET_META[facet].label),
-          summary:
-            round.resolution?.summary ??
-            "The panel completed this focused discussion.",
-          onOpen: () => setDrawerId(deliberation.id),
-        },
-      })
-    })
-
-    if (!ended || completedRounds.length === 0) return result
-    const finalVersion = workspace?.hypothesis_versions.find(
-      (version) => version.id === deliberation.final_hypothesis_version_id,
-    )
-    const artifacts = [
-      ...(finalVersion
-        ? [{ kind: "hypothesis" as const, version: finalVersion }]
-        : []),
-      ...deliberation.recommended_questions.map((question) => ({
-        kind: "research" as const,
-        question,
-      })),
-    ]
-    const artifactX = 1080 + (completedRounds.length - 1) * 520 + 360
-    artifacts.forEach((artifact, artifactIndex) => {
-      const y = (artifactIndex - (artifacts.length - 1) / 2) * 165
-      if (artifact.kind === "hypothesis") {
-        result.push({
-          id: `hypothesis-${artifact.version.id}`,
-          type: "epHypothesis",
-          position: { x: artifactX, y },
-          data: {
-            versionId: artifact.version.id,
-            hypothesis:
-              [
-                artifact.version.steps.hypothesis,
-                artifact.version.steps.reasoning,
-                artifact.version.steps.problem,
-                artifact.version.steps.previous_work,
-              ].find((part) => part !== "Not established yet.") ??
-              artifact.version.steps.hypothesis,
-            promoted:
-              workspace?.promoted_hypothesis_version_id === artifact.version.id,
-            onOpen: () => setSavedHypothesisModal(artifact.version),
-          },
-        })
-        return
-      }
-      const question = artifact.question
-      const actionable =
-        question.status === "open" || question.child_investigation_id !== null
-      result.push({
-        id: `research-${question.id}`,
-        type: "epResearchProblem",
-        position: { x: artifactX, y },
-        data: {
-          questionId: question.id,
-          question: question.question,
-          status: question.status,
-          hasChild: question.child_investigation_id !== null,
-          actionable,
-          busy: busy !== null,
-          onOpen: async () => {
-            if (busy || !actionable) return
-            setCanvasError(null)
-            try {
-              if (question.child_investigation_id) {
-                await switchInvestigation(question.child_investigation_id)
-              } else {
-                await createChildInvestigation(question.id)
-              }
-            } catch (cause) {
-              setCanvasError(
-                cause instanceof Error
-                  ? cause.message
-                  : "Could not open this research problem",
-              )
-            }
-          },
-        },
-      })
-    })
+    if (ended && completedRounds.length > 0) {
+      const historicalQuestionIds = new Set(
+        history.flatMap((completion, cycle) =>
+          questionIdsForCompletion(completion, cycle),
+        ),
+      )
+      addArtifacts(
+        currentCycle,
+        deliberation.final_hypothesis_version_id,
+        deliberation.recommended_questions
+          .filter((question) => !historicalQuestionIds.has(question.id))
+          .map((question) => question.id),
+      )
+    }
     return result
   }, [
     busy,
@@ -268,6 +378,8 @@ export function StageDeliberation() {
 
   const edges = useMemo<RFEdge[]>(() => {
     if (!session) return []
+    const deliberation = session.deliberations[0]
+    if (!deliberation) return []
     const style = { stroke: "var(--wire)", strokeWidth: 1.25 }
     const markerEnd = {
       type: MarkerType.ArrowClosed,
@@ -275,63 +387,147 @@ export function StageDeliberation() {
       width: 12,
       height: 12,
     }
-    const result: RFEdge[] = session.agents.map((agent) => ({
-      id: `e-problem-${agent.iid}`,
-      source: "problem",
-      target: `agent-${agent.iid}`,
-      style,
-      markerEnd,
-    }))
-    const deliberation = session.deliberations[0]
-    if (!deliberation) return result
-    deliberation.agent_iids.forEach((iid) => {
-      if (session.agents.some((agent) => agent.iid === iid)) {
+    const result: RFEdge[] = []
+    const history = deliberation.completion_history
+    const historyPanelId = (cycle: number) =>
+      `panel-${deliberation.id}-completion-${cycle + 1}`
+    const currentPanelId = `panel-${deliberation.id}`
+    const panelForCycle = (cycle: number) =>
+      cycle < history.length ? historyPanelId(cycle) : currentPanelId
+    const questionIdsForCompletion = (
+      completion: DeliberationState["completion_history"][number],
+      cycle: number,
+    ) => {
+      if (completion.question_ids.length) return completion.question_ids
+      const previousRoundCount =
+        cycle === 0 ? 0 : history[cycle - 1].round_count
+      return deliberation.recommended_questions
+        .filter(
+          (question) =>
+            question.source_round !== null &&
+            question.source_round > previousRoundCount &&
+            question.source_round <= completion.round_count,
+        )
+        .map((question) => question.id)
+    }
+    const questionCycle = new Map<string, number>()
+    history.forEach((completion, cycle) => {
+      questionIdsForCompletion(completion, cycle).forEach((questionId) => {
+        questionCycle.set(questionId, cycle)
+      })
+    })
+
+    const completionAgentIids = (
+      completion: DeliberationState["completion_history"][number],
+    ) =>
+      completion.agent_iids.length
+        ? completion.agent_iids
+        : (deliberation.rounds[completion.round_count - 1]?.participant_iids ??
+          [])
+    for (const agent of session.agents) {
+      const perspective = session.perspectives.find(
+        (item) => item.id === agent.perspective_id,
+      )
+      const sourceQuestionId = perspective?.source_question_id
+      const sourceCycle = sourceQuestionId
+        ? questionCycle.get(sourceQuestionId)
+        : undefined
+      const completedCycle = history.findIndex((completion) =>
+        completionAgentIids(completion).includes(agent.iid),
+      )
+      const declaredCycle =
+        perspective && perspective.panel_cycle > 0
+          ? Math.min(perspective.panel_cycle, history.length)
+          : undefined
+      const targetCycle =
+        declaredCycle ??
+        (sourceCycle !== undefined
+          ? sourceCycle + 1
+          : completedCycle >= 0
+            ? completedCycle
+            : history.length)
+      if (sourceQuestionId && sourceCycle !== undefined) {
         result.push({
-          id: `e-${deliberation.id}-${iid}`,
-          source: `agent-${iid}`,
-          target: `panel-${deliberation.id}`,
+          id: `e-question-${sourceQuestionId}-agent-${agent.iid}`,
+          source: `research-${sourceQuestionId}`,
+          target: `agent-${agent.iid}`,
+          style,
+          markerEnd,
+        })
+      } else if (targetCycle === 0) {
+        result.push({
+          id: `e-problem-${agent.iid}`,
+          source: "problem",
+          target: `agent-${agent.iid}`,
+          style,
+          markerEnd,
+        })
+      } else {
+        result.push({
+          id: `e-panel-${targetCycle}-agent-${agent.iid}`,
+          source: historyPanelId(targetCycle - 1),
+          target: `agent-${agent.iid}`,
           style,
           markerEnd,
         })
       }
-    })
-    const completedRounds = deliberation.rounds.filter((round) => round.completed)
-    completedRounds.forEach((round, index) => {
-      const roundId = `round-${deliberation.id}-${round.n}`
       result.push({
-        id: `e-round-${round.n}`,
-        source:
-          index === 0
-            ? `panel-${deliberation.id}`
-            : `round-${deliberation.id}-${completedRounds[index - 1].n}`,
-        target: roundId,
-        style,
-        markerEnd,
-      })
-    })
-    if (deliberation.completed_at === null || completedRounds.length === 0) {
-      return result
-    }
-    const finalRound = completedRounds[completedRounds.length - 1]
-    const finalRoundId = `round-${deliberation.id}-${finalRound.n}`
-    if (deliberation.final_hypothesis_version_id) {
-      result.push({
-        id: `e-hypothesis-${deliberation.final_hypothesis_version_id}`,
-        source: finalRoundId,
-        target: `hypothesis-${deliberation.final_hypothesis_version_id}`,
+        id: `e-agent-${agent.iid}-panel-${targetCycle}`,
+        source: `agent-${agent.iid}`,
+        target: panelForCycle(targetCycle),
         style,
         markerEnd,
       })
     }
-    deliberation.recommended_questions.forEach((question) => {
-      result.push({
-        id: `e-research-${question.id}`,
-        source: finalRoundId,
-        target: `research-${question.id}`,
-        style,
-        markerEnd,
+
+    const renderedVersionIds = new Set<string>()
+    const addArtifactEdges = (
+      cycle: number,
+      versionId: string | null,
+      questionIds: string[],
+    ) => {
+      const panelId = panelForCycle(cycle)
+      if (versionId && !renderedVersionIds.has(versionId)) {
+        renderedVersionIds.add(versionId)
+        result.push({
+          id: `e-hypothesis-${versionId}`,
+          source: panelId,
+          target: `hypothesis-${versionId}`,
+          style,
+          markerEnd,
+        })
+      }
+      questionIds.forEach((questionId) => {
+        result.push({
+          id: `e-research-${questionId}`,
+          source: panelId,
+          target: `research-${questionId}`,
+          style,
+          markerEnd,
+        })
       })
+    }
+    history.forEach((completion, cycle) => {
+      addArtifactEdges(
+        cycle,
+        completion.final_hypothesis_version_id,
+        questionIdsForCompletion(completion, cycle),
+      )
     })
+    if (deliberation.completed_at !== null) {
+      const historicalQuestionIds = new Set(
+        history.flatMap((completion, cycle) =>
+          questionIdsForCompletion(completion, cycle),
+        ),
+      )
+      addArtifactEdges(
+        history.length,
+        deliberation.final_hypothesis_version_id,
+        deliberation.recommended_questions
+          .filter((question) => !historicalQuestionIds.has(question.id))
+          .map((question) => question.id),
+      )
+    }
     return result
   }, [session])
 
@@ -356,6 +552,19 @@ export function StageDeliberation() {
           color="rgba(16,24,40,0.07)"
         />
         <RefitOnNodes count={nodes.length} />
+        {session.deliberations[0]?.completed_at === null &&
+          availableClusters.length > 0 && (
+            <Panel position="top-left" className="!m-3">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={busy !== null}
+                onClick={() => setAddPerspectiveOpen(true)}
+              >
+                Add Perspective
+              </Button>
+            </Panel>
+          )}
         {canvasError && (
           <Panel position="bottom-left" className="!m-3">
             <p role="alert" className="text-[11px] text-[var(--red)]">
@@ -372,6 +581,18 @@ export function StageDeliberation() {
           onOpenAgent={setAgentModal}
           onEnded={() => setScoringId(drawerId)}
           onRate={() => setScoringId(drawerId)}
+        />
+      )}
+      {addPerspectiveOpen && (
+        <AddPerspectiveDialog
+          clusters={availableClusters}
+          busy={busy !== null}
+          adding={busy === "Generating perspective"}
+          onAdd={async (clusterId) => {
+            await generatePerspective(clusterId, null)
+            setAddPerspectiveOpen(false)
+          }}
+          onClose={() => setAddPerspectiveOpen(false)}
         />
       )}
       <AgentModal agent={agentModal} onClose={() => setAgentModal(null)} />
@@ -405,6 +626,7 @@ function PanelDrawer({
   const session = useFocusedStore((state) => state.session)
   const busy = useFocusedStore((state) => state.busy)
   const {
+    createChildInvestigation,
     runRound,
     completeDeliberation,
     confirmHypothesis,
@@ -771,6 +993,9 @@ function PanelDrawer({
               onSave={saveDraft}
               onEnd={endDeliberation}
               onRate={onRate}
+              onInvestigateQuestion={(questionId) => {
+                void act(() => createChildInvestigation(questionId))
+              }}
               onOpenChild={(investigationId) =>
                 act(() => switchInvestigation(investigationId))
               }
@@ -806,11 +1031,6 @@ function RoundRecord({ round }: { round: DeliberationRound }) {
         )}
       </div>
 
-      {round.resolution && (
-        <div data-testid={`round-${round.n}-summary`}>
-          <ResolutionCard resolution={round.resolution} />
-        </div>
-      )}
 
       <div
         className="flex flex-col gap-2.5"
@@ -820,6 +1040,11 @@ function RoundRecord({ round }: { round: DeliberationRound }) {
           <TurnBubble key={turn.id} turn={turn} />
         ))}
       </div>
+      {round.resolution && (
+        <div data-testid={`round-${round.n}-summary`}>
+          <ResolutionCard resolution={round.resolution} />
+        </div>
+      )}
 
       {round.verdicts.length > 0 && (
         <div className="mt-3 grid grid-cols-2 gap-2">
@@ -1008,8 +1233,16 @@ function ResolutionCard({ resolution }: { resolution: NonNullable<DeliberationRo
     { title: "Still unsettled", points: resolution.unsettled_points, color: "var(--amber)" },
   ]
   return (
-    <div className="mt-3 rounded-xl border border-[var(--line)] bg-[var(--bg)] p-3.5">
-      <SectionLabel>Deliberation summary</SectionLabel>
+    <section
+      aria-label="Moderator summary"
+      className="mt-3 rounded-xl border border-[var(--line)] bg-[var(--bg)] p-3.5"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-[12px] font-semibold text-[var(--ink)]">
+          Moderator
+        </span>
+        <span className="text-[10.5px] text-[var(--mute)]">Round summary</span>
+      </div>
       <p className="mt-1 text-[13px] leading-relaxed text-[var(--ink)]">
         {resolution.summary}
       </p>
@@ -1036,7 +1269,7 @@ function ResolutionCard({ resolution }: { resolution: NonNullable<DeliberationRo
           </div>
         ))}
       </div>
-    </div>
+    </section>
   )
 }
 
@@ -1053,6 +1286,11 @@ const HYPOTHESIS_PARTS: {
   { key: "hypothesis", label: "Hypothesis", prompt: "What testable claim follows?" },
 ]
 
+function normalizedHypothesisPart(value: string | undefined): string {
+  const normalized = value?.trim() ?? ""
+  return normalized === "Not established yet." ? "" : normalized
+}
+
 function WorkingHypothesisPanel({
   deliberation,
   value,
@@ -1068,6 +1306,7 @@ function WorkingHypothesisPanel({
   onSave,
   onEnd,
   onRate,
+  onInvestigateQuestion,
   onOpenChild,
   onSetQuestionStatus,
 }: {
@@ -1085,6 +1324,7 @@ function WorkingHypothesisPanel({
   onSave: () => Promise<boolean>
   onEnd: () => Promise<boolean>
   onRate: () => void
+  onInvestigateQuestion: (questionId: string) => void
   onOpenChild: (investigationId: string) => void
   onSetQuestionStatus: (
     questionId: string,
@@ -1099,6 +1339,7 @@ function WorkingHypothesisPanel({
     hypothesis: "",
   }
   const [editing, setEditing] = useState(false)
+  const [applyConfirmationOpen, setApplyConfirmationOpen] = useState(false)
   const pending = value !== null && !deliberation.hypothesis_confirmed
   const unsaved =
     deliberation.hypothesis_confirmed &&
@@ -1113,9 +1354,20 @@ function WorkingHypothesisPanel({
   const baseline = deliberation.applied_hypothesis
   const changedParts = reviewingChanges
     ? HYPOTHESIS_PARTS.filter(
-        (part) => current[part.key] !== (baseline?.[part.key] ?? ""),
+        (part) =>
+          normalizedHypothesisPart(current[part.key]) !==
+          normalizedHypothesisPart(baseline?.[part.key]),
       )
     : []
+  const cancelEditing = () => {
+    const original = deliberation.hypothesis ?? deliberation.applied_hypothesis
+    if (original) onChange({ ...original })
+    setEditing(false)
+  }
+  const previousCompletion = deliberation.completion_history.at(-1)
+  const needsNewRound =
+    previousCompletion !== undefined &&
+    deliberation.rounds.length <= previousCompletion.round_count
 
   return (
     <aside className="min-w-0">
@@ -1157,7 +1409,8 @@ function WorkingHypothesisPanel({
         {HYPOTHESIS_PARTS.map((part, index) => {
           const changed =
             reviewingChanges &&
-            current[part.key] !== (baseline?.[part.key] ?? "")
+            normalizedHypothesisPart(current[part.key]) !==
+              normalizedHypothesisPart(baseline?.[part.key])
           return (
             <div key={part.key}>
               <div className="flex items-baseline gap-1.5">
@@ -1184,6 +1437,11 @@ function WorkingHypothesisPanel({
                   <p className="mt-0.5 text-[10.5px] leading-relaxed text-[var(--ink-2)]">
                     {baseline?.[part.key] || "Not established yet."}
                   </p>
+                </div>
+              )}
+              {changed && (
+                <div className="mt-1 text-[9.5px] font-medium text-[var(--mute)]">
+                  Proposed
                 </div>
               )}
               {editing && value ? (
@@ -1240,17 +1498,24 @@ function WorkingHypothesisPanel({
                 {pending ? "Edit update" : "Edit hypothesis"}
               </Button>
             )}
+            {!completed && editing && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="flex-1"
+                onClick={cancelEditing}
+                disabled={busy}
+              >
+                Cancel editing
+              </Button>
+            )}
             {!completed && (pending || editing) && (
               <Button
                 variant={pending ? "primary" : "outline"}
                 size="sm"
                 className="flex-1"
-                onClick={() => {
-                  void onApply().then((applied) => {
-                    if (applied) setEditing(false)
-                  })
-                }}
-                disabled={busy}
+                onClick={() => setApplyConfirmationOpen(true)}
+                disabled={busy || changedParts.length === 0}
               >
                 {applying ? (
                   <>
@@ -1345,9 +1610,19 @@ function WorkingHypothesisPanel({
                       <>
                         <span className="self-center text-[9.5px] text-[var(--mute)]">
                           {completed
-                            ? "Open its Research Problem node on the canvas to search."
+                            ? "Start a child Investigation with fresh literature and Perspectives."
                             : "Its Research Problem node appears when you end the deliberation."}
                         </span>
+                        {completed && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={busy}
+                            onClick={() => onInvestigateQuestion(item.id)}
+                          >
+                            Start paper search
+                          </Button>
+                        )}
                         <Button
                           variant="ghost"
                           size="sm"
@@ -1416,8 +1691,9 @@ function WorkingHypothesisPanel({
         ) : (
           <>
             <p className="text-[10.5px] leading-relaxed text-[var(--mute)]">
-              End after the current hypothesis is applied and saved. This closes
-              the panel and reveals its final outputs on the canvas.
+              {needsNewRound
+                ? "Complete a round with the added Perspectives before ending again."
+                : "End after the current hypothesis is applied and saved. This closes the panel and reveals its final outputs on the canvas."}
             </p>
             <Button
               variant="primary"
@@ -1426,6 +1702,7 @@ function WorkingHypothesisPanel({
               disabled={
                 busy ||
                 deliberation.rounds.length === 0 ||
+                needsNewRound ||
                 pending ||
                 unsaved ||
                 editing ||
@@ -1444,6 +1721,74 @@ function WorkingHypothesisPanel({
           </>
         )}
       </div>
+      {applyConfirmationOpen && (
+        <ModalShell
+          title="Apply hypothesis changes?"
+          onClose={() => {
+            if (!applying) setApplyConfirmationOpen(false)
+          }}
+        >
+          <p className="mb-4 text-[12px] leading-relaxed text-[var(--ink-2)]">
+            This updates {changedParts.length} of {HYPOTHESIS_PARTS.length} parts
+            in the working hypothesis.
+          </p>
+          <div className="flex max-h-[52vh] flex-col gap-3 overflow-y-auto">
+            {changedParts.map((part) => (
+              <article
+                key={part.key}
+                data-testid={`changed-hypothesis-part-${part.key}`}
+                className="rounded-lg border border-[var(--line)] px-3 py-2.5"
+              >
+                <div className="text-[11px] font-semibold text-[var(--ink)]">
+                  {part.label}
+                </div>
+                <div className="mt-2 text-[9.5px] font-medium text-[var(--mute)]">
+                  Before
+                </div>
+                <p className="mt-0.5 text-[11px] leading-relaxed text-[var(--ink-2)]">
+                  {baseline?.[part.key] || "Not established yet."}
+                </p>
+                <div className="mt-2 text-[9.5px] font-medium text-[var(--mute)]">
+                  Proposed
+                </div>
+                <p className="mt-0.5 text-[11px] leading-relaxed text-[var(--ink)]">
+                  {current[part.key] || "Not established yet."}
+                </p>
+              </article>
+            ))}
+          </div>
+          <div className="mt-5 flex justify-end gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={applying}
+              onClick={() => setApplyConfirmationOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={applying}
+              onClick={() => {
+                void onApply().then((applied) => {
+                  if (!applied) return
+                  setEditing(false)
+                  setApplyConfirmationOpen(false)
+                })
+              }}
+            >
+              {applying ? (
+                <>
+                  <Spinner /> Applying…
+                </>
+              ) : (
+                "Apply changes"
+              )}
+            </Button>
+          </div>
+        </ModalShell>
+      )}
     </aside>
   )
 }
@@ -1526,6 +1871,88 @@ function TurnBubble({ turn }: { turn: Turn }) {
         )}
       </div>
     </div>
+  )
+}
+
+
+function AddPerspectiveDialog({
+  clusters,
+  busy,
+  adding,
+  onAdd,
+  onClose,
+}: {
+  clusters: ClusterCard[]
+  busy: boolean
+  adding: boolean
+  onAdd: (clusterId: string) => Promise<void>
+  onClose: () => void
+}) {
+  const [error, setError] = useState<string | null>(null)
+
+  const add = async (cluster: ClusterCard) => {
+    setError(null)
+    try {
+      await onAdd(cluster.id)
+    } catch (cause) {
+      setError(
+        cause instanceof Error ? cause.message : "Could not add the Perspective",
+      )
+    }
+  }
+
+  return (
+    <ModalShell
+      title="Add a Perspective"
+      onClose={() => {
+        if (!busy) onClose()
+      }}
+    >
+      <p className="mb-4 text-[12px] leading-relaxed text-[var(--ink-2)]">
+        Add another literature-grounded voice to the current panel. Existing
+        rounds and the working hypothesis stay in place.
+      </p>
+      <div className="flex flex-col gap-2">
+        {clusters.map((cluster) => (
+          <button
+            key={cluster.id}
+            type="button"
+            aria-label={`Add ${cluster.name}`}
+            disabled={busy}
+            onClick={() => void add(cluster)}
+            className="rounded-lg border border-[var(--line-strong)] px-3 py-2.5 text-left transition hover:border-[var(--ink-2)] disabled:cursor-default disabled:opacity-50"
+          >
+            <span className="flex items-start justify-between gap-3">
+              <span className="min-w-0">
+                <span className="block text-[12px] font-semibold text-[var(--ink)]">
+                  {cluster.name}
+                </span>
+                <span className="mt-0.5 block text-[11px] leading-relaxed text-[var(--mute)]">
+                  {cluster.blurb}
+                </span>
+              </span>
+              <span className="shrink-0 text-[10.5px] text-[var(--mute)]">
+                {cluster.paper_ids.length} papers
+              </span>
+            </span>
+          </button>
+        ))}
+      </div>
+      {adding && (
+        <p
+          role="status"
+          aria-live="polite"
+          className="mt-3 inline-flex items-center gap-1.5 text-[11px] text-[var(--mute)]"
+        >
+          <Spinner /> Adding Perspective…
+        </p>
+      )}
+      {error && (
+        <p role="alert" className="mt-3 text-[12px] text-[var(--red)]">
+          {error}
+        </p>
+      )}
+    </ModalShell>
   )
 }
 
@@ -1675,7 +2102,7 @@ function AgentNode({ data }: NodeProps) {
   )
 }
 
-function PanelNode({ data }: NodeProps) {
+function PanelNode({ id, data }: NodeProps) {
   const { members, status, canJoin, ended, onJoin } = data as {
     members: { id: number; name: string; color: string }[]
     status: string
@@ -1684,7 +2111,11 @@ function PanelNode({ data }: NodeProps) {
     onJoin: () => void
   }
   return (
-    <div className="ep-node-enter panel px-3.5 py-3" style={{ width: 280 }}>
+    <div
+      data-testid={`panel-node-${id}`}
+      className="ep-node-enter panel px-3.5 py-3"
+      style={{ width: 280 }}
+    >
       <Handle type="target" position={Position.Left} style={HIDDEN_HANDLE} />
       <Handle type="source" position={Position.Right} style={HIDDEN_HANDLE} />
       <div className="text-[13px] font-semibold tracking-[-0.01em]">Focused panel</div>
@@ -1715,34 +2146,6 @@ function PanelNode({ data }: NodeProps) {
   )
 }
 
-function RoundResultNode({ data }: NodeProps) {
-  const { number, facets, summary, onOpen } = data as {
-    number: number
-    facets: string[]
-    summary: string
-    onOpen: () => void
-  }
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="ep-node-enter panel nodrag nopan block w-[300px] px-4 py-3.5 text-left"
-      data-testid={`round-result-node-${number}`}
-    >
-      <Handle type="target" position={Position.Left} style={HIDDEN_HANDLE} />
-      <Handle type="source" position={Position.Right} style={HIDDEN_HANDLE} />
-      <div className="text-[10.5px] font-medium text-[var(--mute)]">
-        Deliberation result · Round {number}
-      </div>
-      <div className="mt-1 text-[11px] font-semibold text-[var(--ink)]">
-        {facets.join(" + ")}
-      </div>
-      <p className="mt-1.5 line-clamp-4 text-[11.5px] leading-relaxed text-[var(--ink-2)]">
-        {summary}
-      </p>
-    </button>
-  )
-}
 
 function HypothesisNode({ data }: NodeProps) {
   const { versionId, hypothesis, promoted, onOpen } = data as {
@@ -1756,11 +2159,15 @@ function HypothesisNode({ data }: NodeProps) {
       type="button"
       onClick={onOpen}
       className="ep-node-enter panel nodrag nopan block w-[300px] px-4 py-3.5 text-left"
+      style={{
+        background: "var(--green-bg)",
+        borderColor: "rgba(6, 118, 71, 0.28)",
+      }}
       data-testid={`saved-hypothesis-node-${versionId}`}
     >
       <Handle type="target" position={Position.Left} style={HIDDEN_HANDLE} />
       <div className="flex items-center justify-between gap-3">
-        <span className="text-[10.5px] font-medium text-[var(--mute)]">
+        <span className="text-[10.5px] font-semibold text-[var(--green)]">
           Saved hypothesis · {versionId}
         </span>
         {promoted && (
@@ -1796,6 +2203,7 @@ function ResearchProblemNode({ data }: NodeProps) {
       data-testid={`research-problem-node-${questionId}`}
     >
       <Handle type="target" position={Position.Left} style={HIDDEN_HANDLE} />
+      <Handle type="source" position={Position.Right} style={HIDDEN_HANDLE} />
       <div className="flex items-center justify-between gap-3">
         <span className="text-[10.5px] font-medium text-[var(--mute)]">
           Research problem
@@ -1822,7 +2230,6 @@ const NODE_TYPES = {
   epProblem: ProblemNode,
   epAgent: AgentNode,
   epPanel: PanelNode,
-  epRoundResult: RoundResultNode,
   epHypothesis: HypothesisNode,
   epResearchProblem: ResearchProblemNode,
 }
