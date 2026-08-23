@@ -150,7 +150,7 @@ export function StageExtraction() {
           <Button
             variant="outline"
             size="sm"
-            disabled={busy !== null}
+            disabled={busy !== null || hasPendingPerspectives}
             onClick={() =>
               void act(() => switchInvestigation(parentInvestigationId))
             }

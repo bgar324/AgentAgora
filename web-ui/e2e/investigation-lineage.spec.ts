@@ -301,12 +301,38 @@ test("returns from a blocked research branch to its parent panel", async ({
       facets: child.clusters[0].facets,
     },
   )
+  const nextCluster = child.clusters.find(
+    (cluster: { id: string }) => cluster.id !== child.perspectives[0].origin,
+  )
+  if (!nextCluster) throw new Error("Expected another child literature cluster.")
 
   await page.reload()
   await expect(page.getByText("Research branch", { exact: true })).toBeVisible()
-  await expect(
-    page.getByRole("button", { name: "Back to panel" }),
-  ).toBeVisible()
+  const backToPanel = page.getByRole("button", { name: "Back to panel" })
+  await expect(backToPanel).toBeVisible()
+
+  const responseReady = Promise.withResolvers<void>()
+  const releaseResponse = Promise.withResolvers<void>()
+  const responseDelivered = Promise.withResolvers<void>()
+  await page.route(
+    `**/api/focused/sessions/${childId}/perspectives`,
+    async (route) => {
+      const response = await route.fetch()
+      responseReady.resolve()
+      await releaseResponse.promise
+      await route.fulfill({ response })
+      responseDelivered.resolve()
+    },
+  )
+  await page.getByRole("heading", { name: nextCluster.name }).click()
+  await page.getByRole("button", { name: "Add to matrix", exact: true }).click()
+  await responseReady.promise
+  await expect(backToPanel).toBeDisabled()
+  releaseResponse.resolve()
+  await responseDelivered.promise
+  await expect(backToPanel).toBeEnabled()
+  await page.unroute(`**/api/focused/sessions/${childId}/perspectives`)
+
   await page.getByRole("button", { name: "Add to panel" }).click()
   const error = page.getByRole("alert").filter({
     hasText: "Return to the parent panel and end its current deliberation",
@@ -315,7 +341,7 @@ test("returns from a blocked research branch to its parent panel", async ({
   await error.getByRole("button", { name: "Dismiss error" }).click()
   await expect(error).toHaveCount(0)
 
-  await page.getByRole("button", { name: "Back to panel" }).click()
+  await backToPanel.click()
   await expect(page.locator('[data-testid^="panel-node-"]')).toBeVisible()
   const activeParent = await requestJson(
     page.request,

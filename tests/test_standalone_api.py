@@ -63,3 +63,4 @@ def test_focused_condition_is_runnable_from_standalone_app() -> None:
             "approach",
             "significance",
         }
+        assert "torch" not in sys.modules
