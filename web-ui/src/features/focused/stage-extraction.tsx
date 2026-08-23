@@ -252,6 +252,25 @@ export function StageExtraction() {
             )}
           </div>
 
+          {session.searched && session.searched_queries.length > 0 && (
+            <section
+              aria-label="Queries searched"
+              className="ep-enter panel px-4 py-3.5"
+            >
+              <SectionLabel>Queries searched</SectionLabel>
+              <ul className="mt-2 divide-y divide-[var(--line)]">
+                {session.searched_queries.map((query) => (
+                  <li
+                    key={query}
+                    className="py-2 text-[12px] leading-snug text-[var(--ink-2)] first:pt-0 last:pb-0"
+                  >
+                    {query}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
           {!session.searched &&
             !editingBrief &&
             session.suggested_queries.length > 0 && (
@@ -363,7 +382,8 @@ export function StageExtraction() {
       </div>
 
       {/* the matrix */}
-      <div className="ep-enter border-t border-[var(--line)] px-4 py-5 lg:px-6">
+      {session.perspectives.length > 0 && (
+        <div className="ep-enter border-t border-[var(--line)] px-4 py-5 lg:px-6">
         <div className="mb-4">
           <div>
             <h2 className="text-[14px] font-semibold tracking-[-0.01em]">
@@ -375,9 +395,6 @@ export function StageExtraction() {
             Significance, extracted only from paper abstracts.
           </p>
         </div>
-        {session.perspectives.length === 0 ? (
-          <EmptyLine>None yet — generate one from a cluster.</EmptyLine>
-        ) : (
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
             {session.perspectives.map((p, index) => (
               <div
@@ -446,8 +463,8 @@ export function StageExtraction() {
               </div>
             ))}
           </div>
-        )}
       </div>
+      )}
       {perspectiveToRemove && (
         <RemovePerspectiveDialog
           name={perspectiveToRemove.name}

@@ -115,6 +115,9 @@ def test_perspectives_join_open_deliberation_without_reset_and_end_once() -> Non
             state.id,
             [query.query for query in state.suggested_queries[:3]],
         )
+        assert state.searched_queries == [
+            query.query for query in state.suggested_queries[:3]
+        ]
 
         for cluster in state.clusters[:2]:
             state = await service.generate_perspective(

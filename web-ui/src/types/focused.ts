@@ -266,6 +266,7 @@ export interface SessionState {
   applied_hypothesis: HypothesisDev | null
   applied_hypothesis_version_id: string | null
   suggested_queries: SuggestedQuery[]
+  searched_queries: string[]
   question_reach: QuestionReach[]
   papers: ExpPaper[]
   clusters: ClusterCard[]

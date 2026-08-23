@@ -37,6 +37,13 @@ async function searchDemoLiterature(page: Page) {
   await page.getByRole("button", { name: /early broad coverage sepsis/ }).click()
   await page.getByRole("button", { name: "Search papers (3 queries)" }).click()
   await expect(page.getByText("Resistance ecology", { exact: true })).toBeVisible()
+  const searchedQueries = page.getByRole("region", {
+    name: "Queries searched",
+  })
+  await expect(searchedQueries).toBeVisible()
+  for (const query of DEMO_QUERIES) {
+    await expect(searchedQueries).toContainText(query)
+  }
 }
 
 async function addPerspective(page: Page, name: string) {
@@ -163,6 +170,12 @@ test("branches an open question into an isolated child Investigation", async ({ 
   })
   const { rootId } = await startWorkspace(page)
   await searchDemoLiterature(page)
+  await expect(
+    page.getByText("Perspective matrix (0)", { exact: true }),
+  ).toHaveCount(0)
+  await expect(
+    page.getByText("None yet — generate one from a cluster.", { exact: true }),
+  ).toHaveCount(0)
   await page.getByRole("heading", { name: "Resistance ecology" }).click()
   const paperRoute = `**/api/focused/sessions/${rootId}/papers/**`
   await page.route(paperRoute, (route) =>
@@ -315,7 +328,9 @@ test("branches an open question into an isolated child Investigation", async ({ 
     .inputValue()
   expect(childId).not.toBe(rootId)
   await expect(page.getByText(/Search fresh literature and build a new fixed panel/)).toBeVisible()
-  await expect(page.getByText("Perspective matrix (0)", { exact: true })).toBeVisible()
+  await expect(
+    page.getByText("Perspective matrix (0)", { exact: true }),
+  ).toHaveCount(0)
 
   await page.getByRole("button", { name: "Investigation map" }).click()
   await expect(page.locator('[data-testid^="investigation-node-"]')).toHaveCount(2)
@@ -344,6 +359,14 @@ test("branches an open question into an isolated child Investigation", async ({ 
   await page.getByRole("button", { name: "Review" }).click()
   const drawer = page.getByRole("dialog", { name: "Focused panel" })
   await expect(drawer).toBeVisible()
+  const updateScores = drawer.getByRole("button", { name: "Update scores" })
+  await expect(updateScores).toBeVisible()
+  const scoreActionLayout = await updateScores.evaluate((element) => ({
+    whiteSpace: getComputedStyle(element).whiteSpace,
+    height: element.getBoundingClientRect().height,
+  }))
+  expect(scoreActionLayout.whiteSpace).toBe("nowrap")
+  expect(scoreActionLayout.height).toBeLessThanOrEqual(32)
   const conversation = page.getByTestId("panel-conversation-scroll")
   const hypothesisSidebar = page.getByTestId("working-hypothesis-sidebar")
   const sidebarLayout = await hypothesisSidebar.evaluate((element) => {

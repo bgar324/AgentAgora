@@ -1395,7 +1395,7 @@ function WorkingHypothesisPanel({
       <div className="mt-4 border-t border-[var(--line)] pt-3">
         {completed ? (
           <div className="flex items-center justify-between gap-3">
-            <div>
+            <div className="min-w-0">
               <div className="text-[12px] font-semibold text-[var(--ink)]">
                 Deliberation ended
               </div>
@@ -1406,6 +1406,7 @@ function WorkingHypothesisPanel({
             <Button
               variant="outline"
               size="sm"
+              className="shrink-0 whitespace-nowrap"
               disabled={busy}
               onClick={onRate}
             >

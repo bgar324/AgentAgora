@@ -17,6 +17,8 @@ Surfaces:
   matrix below.
   Every Perspective exposes Scope, Explanation, Approach, and Significance,
   each grounded in an abstract sentence.
+  After retrieval, the exact submitted queries remain visible as a read-only
+  record beside the resulting clusters.
   Adding a Perspective inserts a pending matrix card immediately. The server
   response replaces the card and creates its matching canvas agent; a failed
   request removes the card. Continue opens the canvas directly with every matrix

@@ -937,6 +937,7 @@ class FocusedPanelService:
             question.strip() for question in research_questions if question.strip()
         ]
         state.suggested_queries = []
+        state.searched_queries = []
         state.question_reach = []
         return self._save_state(state)
 
@@ -1349,6 +1350,7 @@ class FocusedPanelService:
 
         state.papers = papers
         state.searched = True
+        state.searched_queries = list(dict.fromkeys(queries))
 
         clusters: list[ClusterCard] = []
         ordered_groups = [self._centroid_order(group) for group in groups]

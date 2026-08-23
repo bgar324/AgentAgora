@@ -375,6 +375,7 @@ class SessionState(BaseModel):
     applied_hypothesis: HypothesisDev | None = None
     applied_hypothesis_version_id: str | None = None
     suggested_queries: list[SuggestedQuery] = Field(default_factory=list)
+    searched_queries: list[SearchQuery] = Field(default_factory=list)
     question_reach: list[QuestionReach] = Field(default_factory=list)
     papers: list[ExpPaper] = Field(default_factory=list)
     clusters: list[ClusterCard] = Field(default_factory=list)
