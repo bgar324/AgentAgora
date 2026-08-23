@@ -8,8 +8,7 @@ decoration.
 ## Information architecture
 
 Persistent header: brand · step trail (Search, Perspectives, Panel) ·
-demo badge · split Continue button (label | divider | chevron menu:
-Export session, Start over).
+demo badge · Start over · one primary Continue or Add to panel action.
 
 Surfaces:
 - Start — centered 440px form (Problem, Research questions, Demo, Begin)
@@ -63,7 +62,7 @@ IA rules:
 - One primary action per surface; it advances the flow.
 - Identity and status at a glance; prose one click away.
 - Metadata (counts, states) are quiet labels, never sentences.
-- Destructive/tooling actions live in the chevron menu, not the flow.
+- Start over remains a quiet secondary header action; the flow has one primary action.
 - Every list row has exactly one affordance, visible without hover.
 - A Perspective's name is its speaker identity; never expose ordinal
   agent labels such as A1 or A2.
@@ -97,7 +96,7 @@ Type: Inter only. Scale (px) — 11 micro/meta, 12 labels/body-sm,
 Weights: 400 body · 500 buttons/labels/emphasis · 600 titles. No 700+.
 Tracking -0.01em on 13px+ headings.
 
-Controls: h-7 sm / h-8 md; text 12 sm / 13 md; icon 13px lucide (chevrons only).
+Controls: h-7 sm / h-8 md; text 12 sm / 13 md; icon 13px lucide.
 Motion: 120ms micro-interactions; 180–260ms entry using opacity and
 at most 8px translation. Lists stagger 36–45ms; drawers travel 18px.
 Every entry class resolves instantly under `prefers-reduced-motion`.
