@@ -8,14 +8,16 @@ Supabase deployment support.
 ## Focused study flow
 
 Each workspace begins with one research problem and one root Investigation.
+The exact queries submitted for retrieval remain visible beside the resulting
+literature clusters and are included in workspace exports.
 Perspectives contain four abstract-grounded areas—Scope, Explanation,
 Approach, and Significance—and the researcher selects one or two areas per
 round. Each completed round remains on the canvas with a process-first summary.
 Consensus-only updates can be applied to the four-step working hypothesis, and
 saving creates an immutable checkpoint. The researcher explicitly ends the
 deliberation after the current hypothesis is saved. That terminal action reveals
-the final Hypothesis and Research Problem nodes and opens one 1–7 divergent- and
-convergent-thinking score for the deliberation as a whole.
+the final Hypothesis and Research Problem nodes and opens one dialog that records
+separate 1–7 divergent- and convergent-thinking scores.
 
 An open question can explicitly start a child Investigation. The child receives
 fresh literature, fresh Perspectives, and a fresh panel while inheriting the
@@ -85,7 +87,8 @@ Open:
   `/focused`)
 - API health: <http://localhost:8000/api/v1/focused/health>
 
-The frontend proxies `/api/*` to `http://127.0.0.1:8000/api/v1/*`. Override the backend host when needed:
+The frontend route `/api/focused/*` forwards requests to
+`<API_URL>/api/v1/focused/*`. Override the backend host when needed:
 
 ```bash
 API_URL=http://127.0.0.1:8000 pnpm dev
@@ -163,8 +166,8 @@ Do not prefix either variable with `NEXT_PUBLIC_`. The route at
 `/api/focused/*` reads them only on the Vercel server and forwards the shared
 token to Railway.
 
-Enable Vercel Deployment Protection and grant the PI access. Then redeploy the
-frontend.
+Keep Vercel Deployment Protection enabled for preview deployments. Keep the
+production URL accessible to study participants, then redeploy the frontend.
 
 ### 4. Verify production
 
@@ -179,9 +182,11 @@ curl -i https://<vercel-domain>/api/focused/workspaces/example
 The direct Railway workspace request must return `401`. The Vercel request
 should reach FastAPI and return `404` for the example ID.
 
-In the browser, create an Investigation, run a demo search, add two
-Perspectives, refresh the page, and confirm that the workspace restores from
-Supabase.
+In the browser, create an Investigation and run a demo search. Confirm that the
+submitted queries remain visible after the clusters load. Add two Perspectives,
+continue directly to the canvas, complete a round, save the hypothesis, and end
+the deliberation. Submit the final scores, refresh the page, and confirm that
+Supabase restores the workspace and final canvas nodes.
 
 ## Verification
 
@@ -195,16 +200,20 @@ pnpm exec playwright install chromium  # first run only
 pnpm test:e2e
 ```
 
-The Playwright suite starts an isolated hermetic API and frontend. It covers
-open-question branching and status transitions, fresh child state,
+The Playwright suite starts an isolated API and frontend. It covers persistent
+search-query history, automatic agent placement, later-Perspective state
+preservation, terminal deliberation completion and scoring, final artifact
+reveal, open-question branching and status transitions, fresh child state,
 Investigation-map navigation, UI hypothesis application, promotion,
 provenance-preserving merge, archive confirmation and restore, URL restoration,
-transient restore failure, export failure/retry, abstract loading failure/retry,
-destructive reset, keyboard dialog behavior, and mobile overflow.
+transient restore failure, export failure and retry, abstract loading failure
+and retry, destructive reset, keyboard dialog behavior, and mobile overflow.
 
-Workspace exports include every Investigation, abstract provenance, selected
-areas, turns, moderator evidence references, participant reflections, hidden
-semantic-distance metrics, open-question status, and hypothesis lineage.
+Workspace exports include every Investigation, submitted search queries,
+abstract provenance, selected areas, each round’s participant roster, turns,
+moderator evidence references, participant reflections, hidden semantic-distance
+metrics, deliberation completion and final scores, open-question status, and
+hypothesis lineage.
 
 ## Credits
 
