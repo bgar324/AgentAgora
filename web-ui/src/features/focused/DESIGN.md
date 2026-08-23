@@ -17,20 +17,25 @@ Surfaces:
   matrix below.
   Every Perspective exposes Scope, Explanation, Approach, and Significance,
   each grounded in an abstract sentence.
+  After retrieval, the exact submitted queries remain visible as a read-only
+  record beside the resulting clusters.
   Adding a Perspective inserts a pending matrix card immediately. The server
-  response replaces the card; a failed request removes it.
+  response replaces the card and creates its matching canvas agent; a failed
+  request removes the card. Continue opens the canvas directly with every matrix
+  Perspective—there is no separate panel-selection step.
+  Before round 1, the drawer explains the multi-round flow and the follow-up
+  question step, then asks the researcher to choose one or two areas.
 - Panel — React Flow canvas (nodes/wires/dot grid) + guided drawer:
   each completed round stays visible as a Deliberation Result node. Its
   process-first summary precedes the transcript. Shared ground proposes an
   inspectable before/after update to the four-step working hypothesis.
   Applying changes the working hypothesis; saving creates an immutable
-  Hypothesis node. Unresolved points become Research Problem nodes that open
-  child-Investigation paper search.
-  Every completed round ends with separate 1–7 divergent- and
-  convergent-thinking reflection questions saved on that round.
+  checkpoint. End deliberation closes the round/chat/edit lifecycle, reveals
+  the final Hypothesis and Research Problem nodes, and opens one deliberation-
+  level divergent/convergent scoring dialog.
 
-Overlays: modals (picker, Perspective detail, members, hypothesis, reset)
-share ModalShell; the 1180px/96vw panel drawer is the only side sheet.
+Overlays: modals (Perspective detail, hypothesis, scoring, reset) share
+ModalShell; the 1180px/96vw panel drawer is the only side sheet.
 
 IA rules:
 - One primary action per surface; it advances the flow.
@@ -90,13 +95,13 @@ border affordance. CheckRow(checked, onToggle) — 13px checklist row.
 
 ## Content rules
 
-Sentence case, never uppercase labels. No arrows, no emojis, plain
-language; the visible term is "panel", not "deliberation". Empty states are
-one actionable line. Buttons say what they do (Generate search queries,
-Start round, Apply shared ground, Investigate selected).
+Sentence case, never uppercase labels. No arrows, no emojis, plain language;
+prefer “panel” in explanatory copy. The explicit terminal action is
+“End deliberation.” Empty states are one actionable line. Buttons say what they
+do (Generate search queries, Start round, Apply shared ground, End deliberation).
 Busy = spinner inside the triggering button.
 Visible labels start with a capital letter. Internal agent and paper IDs
 never render; use the Perspective name and complete, wrapping
 bibliographic title. Sources remain visible as dotted, clickable title
 links. Computed cosine-distance metrics are exported for analysis but never
-shown to participants; only the participant's own round ratings are visible.
+shown to participants; scoring reflects the completed deliberation as a whole.

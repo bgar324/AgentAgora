@@ -299,7 +299,9 @@ export function ModalShell({
             ✕
           </button>
         </div>
-        <div className="overflow-auto px-5 py-4">{children}</div>
+        <div className="min-h-0 flex-1 overflow-auto px-5 py-4">
+          {children}
+        </div>
       </div>
     </div>
   )

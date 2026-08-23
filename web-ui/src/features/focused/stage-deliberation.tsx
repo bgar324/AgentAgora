@@ -28,9 +28,7 @@ import {
   type FacetVerdict,
   type HypothesisDev,
   type HypothesisVersion,
-  type RecommendedQuestion,
   type QuestionStatus,
-  type RoundRating,
   type Perspective,
   type Turn,
 } from "@/types/focused"
@@ -39,7 +37,6 @@ import {
   Button,
   EmptyLine,
   IdentityChip,
-  ListRow,
   ModalShell,
   SectionLabel,
   Spinner,
@@ -47,11 +44,6 @@ import {
 } from "./ui"
 
 
-function questionSourceRound(question: RecommendedQuestion): number | null {
-  if (question.source_round !== null) return question.source_round
-  const match = question.id.match(/-r(\d+)-q\d+$/)
-  return match ? Number(match[1]) : null
-}
 
 
 
@@ -99,18 +91,10 @@ export function StageDeliberation() {
   const workspace = useFocusedStore((state) => state.workspace)
   const busy = useFocusedStore((state) => state.busy)
   const { createChildInvestigation, switchInvestigation } = useFocusedPanel()
-  const [pickerOpen, setPickerOpen] = useState(() => {
-    const current = useFocusedStore.getState().session
-    return (
-      current !== null &&
-      current.agents.length === 0 &&
-      current.perspectives.length > 0
-    )
-  })
   const [agentModal, setAgentModal] = useState<AgentState | null>(null)
-  const [wireModal, setWireModal] = useState<DeliberationState | null>(null)
   const [savedHypothesisModal, setSavedHypothesisModal] =
     useState<HypothesisVersion | null>(null)
+  const [scoringId, setScoringId] = useState<string | null>(null)
   const [canvasError, setCanvasError] = useState<string | null>(null)
   const [drawerId, setDrawerId] = useState<string | null>(null)
 
@@ -122,7 +106,7 @@ export function StageDeliberation() {
         type: "epProblem",
         position: { x: 0, y: 0 },
         draggable: false,
-        data: { problem: session.problem },
+        data: { problem: session.origin_question ?? session.problem },
       },
     ]
 
@@ -138,6 +122,7 @@ export function StageDeliberation() {
           y: index * 175 - Math.max(0, session.agents.length - 1) * 87.5,
         },
         data: {
+          agentId: agent.iid,
           name: perspective?.name ?? agent.label,
           color: perspective?.color ?? "var(--mute)",
           meta: `${perspective?.sources.length ?? 0} source${perspective?.sources.length === 1 ? "" : "s"}`,
@@ -149,6 +134,7 @@ export function StageDeliberation() {
     const deliberation = session.deliberations[0]
     if (!deliberation) return result
     const completedRounds = deliberation.rounds.filter((round) => round.completed)
+    const ended = deliberation.completed_at !== null
     result.push({
       id: `panel-${deliberation.id}`,
       type: "epPanel",
@@ -165,28 +151,25 @@ export function StageDeliberation() {
             color: perspective?.color ?? "var(--mute)",
           }
         }),
-        status: completedRounds.length
-          ? `${completedRounds.length} focused ${
+        status: ended
+          ? `Ended after ${completedRounds.length} ${
               completedRounds.length === 1 ? "round" : "rounds"
             }`
-          : deliberation.agent_iids.length >= 2
-            ? "Ready for a focused round"
-            : "Needs two Perspectives",
+          : completedRounds.length
+            ? `${completedRounds.length} completed ${
+                completedRounds.length === 1 ? "round" : "rounds"
+              }`
+            : deliberation.agent_iids.length >= 2
+              ? "Ready for a focused round"
+              : "Needs two Perspectives",
         canJoin: deliberation.agent_iids.length >= 2,
+        ended,
         onJoin: () => setDrawerId(deliberation.id),
-        onMembers: () => setWireModal(deliberation),
       },
     })
 
-    const versions = (workspace?.hypothesis_versions ?? []).filter(
-      (version) =>
-        !version.archived &&
-        version.investigation_id === session.id &&
-        version.source_deliberation_id === deliberation.id,
-    )
-    const questions = deliberation.recommended_questions
     completedRounds.forEach((round, roundIndex) => {
-      const roundX = 1080 + roundIndex * 680
+      const roundX = 1080 + roundIndex * 520
       result.push({
         id: `round-${deliberation.id}-${round.n}`,
         type: "epRoundResult",
@@ -200,76 +183,78 @@ export function StageDeliberation() {
           onOpen: () => setDrawerId(deliberation.id),
         },
       })
+    })
 
-      const roundVersions = versions.filter(
-        (version) => version.source_round === round.n,
-      )
-      const roundQuestions = questions.filter(
-        (question) =>
-          (questionSourceRound(question) ??
-            completedRounds[completedRounds.length - 1]?.n) === round.n,
-      )
-      const artifacts = [
-        ...roundVersions.map((version) => ({ kind: "hypothesis" as const, version })),
-        ...roundQuestions.map((question) => ({ kind: "research" as const, question })),
-      ]
-      artifacts.forEach((artifact, artifactIndex) => {
-        const y = (artifactIndex - (artifacts.length - 1) / 2) * 165
-        if (artifact.kind === "hypothesis") {
-          result.push({
-            id: `hypothesis-${artifact.version.id}`,
-            type: "epHypothesis",
-            position: { x: roundX + 350, y },
-            data: {
-              versionId: artifact.version.id,
-              hypothesis:
-                [
-                  artifact.version.steps.hypothesis,
-                  artifact.version.steps.reasoning,
-                  artifact.version.steps.problem,
-                  artifact.version.steps.previous_work,
-                ].find((part) => part !== "Not established yet.") ??
-                artifact.version.steps.hypothesis,
-              promoted:
-                workspace?.promoted_hypothesis_version_id === artifact.version.id,
-              onOpen: () => setSavedHypothesisModal(artifact.version),
-            },
-          })
-          return
-        }
-        const question = artifact.question
-        const actionable =
-          question.status === "open" || question.child_investigation_id !== null
+    if (!ended || completedRounds.length === 0) return result
+    const finalVersion = workspace?.hypothesis_versions.find(
+      (version) => version.id === deliberation.final_hypothesis_version_id,
+    )
+    const artifacts = [
+      ...(finalVersion
+        ? [{ kind: "hypothesis" as const, version: finalVersion }]
+        : []),
+      ...deliberation.recommended_questions.map((question) => ({
+        kind: "research" as const,
+        question,
+      })),
+    ]
+    const artifactX = 1080 + (completedRounds.length - 1) * 520 + 360
+    artifacts.forEach((artifact, artifactIndex) => {
+      const y = (artifactIndex - (artifacts.length - 1) / 2) * 165
+      if (artifact.kind === "hypothesis") {
         result.push({
-          id: `research-${question.id}`,
-          type: "epResearchProblem",
-          position: { x: roundX + 350, y },
+          id: `hypothesis-${artifact.version.id}`,
+          type: "epHypothesis",
+          position: { x: artifactX, y },
           data: {
-            questionId: question.id,
-            question: question.question,
-            status: question.status,
-            hasChild: question.child_investigation_id !== null,
-            actionable,
-            busy: busy !== null,
-            onOpen: async () => {
-              if (busy || !actionable) return
-              setCanvasError(null)
-              try {
-                if (question.child_investigation_id) {
-                  await switchInvestigation(question.child_investigation_id)
-                } else {
-                  await createChildInvestigation(question.id)
-                }
-              } catch (cause) {
-                setCanvasError(
-                  cause instanceof Error
-                    ? cause.message
-                    : "Could not open this research problem",
-                )
-              }
-            },
+            versionId: artifact.version.id,
+            hypothesis:
+              [
+                artifact.version.steps.hypothesis,
+                artifact.version.steps.reasoning,
+                artifact.version.steps.problem,
+                artifact.version.steps.previous_work,
+              ].find((part) => part !== "Not established yet.") ??
+              artifact.version.steps.hypothesis,
+            promoted:
+              workspace?.promoted_hypothesis_version_id === artifact.version.id,
+            onOpen: () => setSavedHypothesisModal(artifact.version),
           },
         })
+        return
+      }
+      const question = artifact.question
+      const actionable =
+        question.status === "open" || question.child_investigation_id !== null
+      result.push({
+        id: `research-${question.id}`,
+        type: "epResearchProblem",
+        position: { x: artifactX, y },
+        data: {
+          questionId: question.id,
+          question: question.question,
+          status: question.status,
+          hasChild: question.child_investigation_id !== null,
+          actionable,
+          busy: busy !== null,
+          onOpen: async () => {
+            if (busy || !actionable) return
+            setCanvasError(null)
+            try {
+              if (question.child_investigation_id) {
+                await switchInvestigation(question.child_investigation_id)
+              } else {
+                await createChildInvestigation(question.id)
+              }
+            } catch (cause) {
+              setCanvasError(
+                cause instanceof Error
+                  ? cause.message
+                  : "Could not open this research problem",
+              )
+            }
+          },
+        },
       })
     })
     return result
@@ -311,13 +296,6 @@ export function StageDeliberation() {
       }
     })
     const completedRounds = deliberation.rounds.filter((round) => round.completed)
-    const versions = (workspace?.hypothesis_versions ?? []).filter(
-      (version) =>
-        !version.archived &&
-        version.investigation_id === session.id &&
-        version.source_deliberation_id === deliberation.id,
-    )
-    const questions = deliberation.recommended_questions
     completedRounds.forEach((round, index) => {
       const roundId = `round-${deliberation.id}-${round.n}`
       result.push({
@@ -330,35 +308,32 @@ export function StageDeliberation() {
         style,
         markerEnd,
       })
-      versions
-        .filter((version) => version.source_round === round.n)
-        .forEach((version) => {
-          result.push({
-            id: `e-hypothesis-${version.id}`,
-            source: roundId,
-            target: `hypothesis-${version.id}`,
-            style,
-            markerEnd,
-          })
-        })
-      questions
-        .filter(
-          (question) =>
-            (questionSourceRound(question) ??
-              completedRounds[completedRounds.length - 1]?.n) === round.n,
-        )
-        .forEach((question) => {
-          result.push({
-            id: `e-research-${question.id}`,
-            source: roundId,
-            target: `research-${question.id}`,
-            style,
-            markerEnd,
-          })
-        })
+    })
+    if (deliberation.completed_at === null || completedRounds.length === 0) {
+      return result
+    }
+    const finalRound = completedRounds[completedRounds.length - 1]
+    const finalRoundId = `round-${deliberation.id}-${finalRound.n}`
+    if (deliberation.final_hypothesis_version_id) {
+      result.push({
+        id: `e-hypothesis-${deliberation.final_hypothesis_version_id}`,
+        source: finalRoundId,
+        target: `hypothesis-${deliberation.final_hypothesis_version_id}`,
+        style,
+        markerEnd,
+      })
+    }
+    deliberation.recommended_questions.forEach((question) => {
+      result.push({
+        id: `e-research-${question.id}`,
+        source: finalRoundId,
+        target: `research-${question.id}`,
+        style,
+        markerEnd,
+      })
     })
     return result
-  }, [session, workspace])
+  }, [session])
 
   if (!session) return null
 
@@ -381,23 +356,6 @@ export function StageDeliberation() {
           color="rgba(16,24,40,0.07)"
         />
         <RefitOnNodes count={nodes.length} />
-        <Panel position="top-left" className="!m-3 flex items-center gap-1.5">
-          {session.perspectives.some(
-            (perspective) =>
-              !session.agents.some(
-                (agent) => agent.perspective_id === perspective.id,
-              ),
-          ) && (
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={!!busy}
-                onClick={() => setPickerOpen(true)}
-              >
-                Add a Perspective
-              </Button>
-            )}
-        </Panel>
         {canvasError && (
           <Panel position="bottom-left" className="!m-3">
             <p role="alert" className="text-[11px] text-[var(--red)]">
@@ -411,21 +369,22 @@ export function StageDeliberation() {
         <PanelDrawer
           deliberationId={drawerId}
           onClose={() => setDrawerId(null)}
-          onOpenWire={setWireModal}
           onOpenAgent={setAgentModal}
+          onEnded={() => setScoringId(drawerId)}
+          onRate={() => setScoringId(drawerId)}
         />
       )}
-      {pickerOpen && (
-        <PerspectivePicker onClose={() => setPickerOpen(false)} />
-      )}
       <AgentModal agent={agentModal} onClose={() => setAgentModal(null)} />
-      {wireModal && (
-        <WireModal deliberation={wireModal} onClose={() => setWireModal(null)} />
-      )}
       <SavedHypothesisModal
         version={savedHypothesisModal}
         onClose={() => setSavedHypothesisModal(null)}
       />
+      {scoringId && (
+        <DeliberationScoringDialog
+          deliberationId={scoringId}
+          onClose={() => setScoringId(null)}
+        />
+      )}
     </div>
   )
 }
@@ -433,19 +392,21 @@ export function StageDeliberation() {
 function PanelDrawer({
   deliberationId,
   onClose,
-  onOpenWire,
   onOpenAgent,
+  onEnded,
+  onRate,
 }: {
   deliberationId: string
   onClose: () => void
-  onOpenWire: (deliberation: DeliberationState) => void
   onOpenAgent: (agent: AgentState) => void
+  onEnded: () => void
+  onRate: () => void
 }) {
   const session = useFocusedStore((state) => state.session)
   const busy = useFocusedStore((state) => state.busy)
   const {
     runRound,
-    rateRound,
+    completeDeliberation,
     confirmHypothesis,
     saveHypothesis,
     switchInvestigation,
@@ -537,6 +498,12 @@ function PanelDrawer({
   const saveDraft = async (): Promise<boolean> =>
     (await act(() => saveHypothesis(active.id))) !== undefined
 
+  const endDeliberation = async (): Promise<boolean> => {
+    const ended = (await act(() => completeDeliberation(active.id))) !== undefined
+    if (ended) onEnded()
+    return ended
+  }
+
 
 
   const send = () => {
@@ -571,7 +538,9 @@ function PanelDrawer({
             Focused panel
           </div>
           <span className="text-[11px] text-[var(--mute)]">
-            {active.rounds.filter((round) => round.completed).length} completed rounds
+            {active.completed_at
+              ? "Ended"
+              : `${active.rounds.filter((round) => round.completed).length} completed rounds`}
           </span>
           <button
             type="button"
@@ -602,17 +571,7 @@ function PanelDrawer({
               )
             })}
             {agents.length < 2 && (
-              <>
-                <EmptyLine>Choose at least two Perspectives.</EmptyLine>
-                <Button
-                  variant="primary"
-                  size="sm"
-                  disabled={!!busy}
-                  onClick={() => onOpenWire(active)}
-                >
-                  Members
-                </Button>
-              </>
+              <EmptyLine>Add at least two Perspectives to the matrix.</EmptyLine>
             )}
           </div>
 
@@ -621,16 +580,7 @@ function PanelDrawer({
             <div className="min-w-0">
               <div className="flex flex-col gap-5">
             {active.rounds.map((round) => (
-              <RoundRecord
-                key={round.n}
-                round={round}
-                busy={busy !== null}
-                saving={busy === "Saving round scores"}
-                onRate={async (rating) =>
-                  (await act(() => rateRound(active.id, round.n, rating))) !==
-                  undefined
-                }
-              />
+              <RoundRecord key={round.n} round={round} />
             ))}
           </div>
 
@@ -648,12 +598,30 @@ function PanelDrawer({
           )}
 
 
-          {(active.hypothesis === null || active.hypothesis_confirmed) && (
+          {active.completed_at === null &&
+            (active.hypothesis === null || active.hypothesis_confirmed) && (
               <section
                 className={`ep-card-enter rounded-xl border border-[var(--line)] bg-[var(--bg)] p-4 ${
                   active.rounds.length > 0 ? "mt-4" : ""
                 }`}
               >
+            {active.rounds.length === 0 && (
+              <div className="mb-4 border-b border-[var(--line)] pb-4">
+                <h2 className="text-[15px] font-semibold tracking-[-0.01em]">
+                  How this panel works
+                </h2>
+                <p className="mt-1 max-w-[68ch] text-[12px] leading-relaxed text-[var(--ink-2)]">
+                  Every Perspective in the matrix is now part of this panel.
+                  Together, they will build and refine the working hypothesis
+                  shown on the right.
+                </p>
+                <p className="mt-1.5 max-w-[68ch] text-[12px] leading-relaxed text-[var(--mute)]">
+                  Each round examines one or two areas. Afterward, you can ask
+                  the whole panel or one Perspective a follow-up question before
+                  choosing the next focus.
+                </p>
+              </div>
+            )}
             <div className="flex items-start justify-between gap-4">
               <div>
                 <SectionLabel>Round {active.rounds.length + 1}</SectionLabel>
@@ -733,7 +701,8 @@ function PanelDrawer({
             </div>
           </div>
           </div>
-        {active.rounds.some((round) => round.completed) && (
+        {active.completed_at === null &&
+          active.rounds.some((round) => round.completed) && (
           <footer
             data-testid="panel-chat-bar"
             className="border-t border-[var(--line)] bg-[var(--panel)] px-5 py-3"
@@ -795,9 +764,13 @@ function PanelDrawer({
               busy={busy !== null}
               applying={busy === "Applying hypothesis"}
               saving={busy === "Saving hypothesis checkpoint"}
+              completed={active.completed_at !== null}
+              ending={busy === "Ending deliberation"}
               onChange={setHypothesisDraft}
               onApply={confirmDraft}
               onSave={saveDraft}
+              onEnd={endDeliberation}
+              onRate={onRate}
               onOpenChild={(investigationId) =>
                 act(() => switchInvestigation(investigationId))
               }
@@ -813,19 +786,7 @@ function PanelDrawer({
   )
 }
 
-function RoundRecord({
-  round,
-  busy,
-  saving,
-  onRate,
-}: {
-  round: DeliberationRound
-  busy: boolean
-  saving: boolean
-  onRate: (
-    rating: Pick<RoundRating, "divergent" | "convergent" | "note">,
-  ) => Promise<boolean>
-}) {
+function RoundRecord({ round }: { round: DeliberationRound }) {
   return (
     <section className="ep-enter">
       <div className="mb-2 flex items-center gap-2">
@@ -904,42 +865,34 @@ function RoundRecord({
           </div>
         </div>
       )}
-      {round.completed && (
-        <RoundScoring
-          round={round}
-          busy={busy}
-          saving={saving}
-          onRate={onRate}
-        />
-      )}
     </section>
   )
 }
 
 const THINKING_SCORES = [1, 2, 3, 4, 5, 6, 7] as const
 
-function RoundScoring({
-  round,
-  busy,
-  saving,
-  onRate,
+function DeliberationScoringDialog({
+  deliberationId,
+  onClose,
 }: {
-  round: DeliberationRound
-  busy: boolean
-  saving: boolean
-  onRate: (
-    rating: Pick<RoundRating, "divergent" | "convergent" | "note">,
-  ) => Promise<boolean>
+  deliberationId: string
+  onClose: () => void
 }) {
+  const session = useFocusedStore((state) => state.session)
+  const busy = useFocusedStore((state) => state.busy)
+  const { rateDeliberation } = useFocusedPanel()
+  const deliberation = session?.deliberations.find(
+    (item) => item.id === deliberationId,
+  )
   const [divergent, setDivergent] = useState<number | null>(
-    round.rating?.divergent ?? null,
+    deliberation?.rating?.divergent ?? null,
   )
   const [convergent, setConvergent] = useState<number | null>(
-    round.rating?.convergent ?? null,
+    deliberation?.rating?.convergent ?? null,
   )
-  const scoresSaved =
-    round.rating?.divergent === divergent &&
-    round.rating.convergent === convergent
+  const [error, setError] = useState<string | null>(null)
+  if (!deliberation) return null
+
   const questions = [
     {
       key: "divergent",
@@ -961,37 +914,31 @@ function RoundScoring({
 
   const save = async () => {
     if (divergent === null || convergent === null) return
-    await onRate({
-      divergent,
-      convergent,
-      note: round.rating?.note ?? "",
-    })
+    setError(null)
+    try {
+      await rateDeliberation(deliberation.id, {
+        divergent,
+        convergent,
+        note: deliberation.rating?.note ?? "",
+      })
+      onClose()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not save scores")
+    }
   }
 
   return (
-    <section
-      className="mt-3 border-t border-[var(--line)] pt-3"
-      aria-label={`Thinking scores for round ${round.n}`}
-    >
-      <div className="flex items-center justify-between gap-3">
-        <SectionLabel>Reflection on this round</SectionLabel>
-        {scoresSaved && (
-          <span className="text-[9.5px] font-medium text-[var(--green)]">
-            Saved
-          </span>
-        )}
-      </div>
-      <div className="mt-2 flex flex-col gap-4">
+    <ModalShell title="Rate this deliberation" onClose={onClose}>
+      <p className="mb-4 text-[12px] leading-relaxed text-[var(--ink-2)]">
+        Consider the completed deliberation as a whole.
+      </p>
+      <div className="flex flex-col gap-5">
         {questions.map((item) => (
-          <fieldset
-            key={item.key}
-            aria-label={item.title}
-            className="min-w-0"
-          >
-            <legend className="text-[11px] font-semibold text-[var(--ink)]">
+          <fieldset key={item.key} aria-label={item.title}>
+            <legend className="text-[12px] font-semibold text-[var(--ink)]">
               {item.title}
             </legend>
-            <p className="mt-1 text-[11px] leading-relaxed text-[var(--ink-2)]">
+            <p className="mt-1 text-[12px] leading-relaxed text-[var(--ink-2)]">
               {item.question}
             </p>
             <div className="mt-2 w-fit">
@@ -1000,20 +947,20 @@ function RoundScoring({
                   <label key={score} className="relative cursor-pointer">
                     <input
                       type="radio"
-                      name={`round-${round.n}-${item.key}`}
+                      name={`deliberation-${deliberation.id}-${item.key}`}
                       value={score}
                       checked={item.value === score}
-                      disabled={busy}
+                      disabled={busy !== null}
                       onChange={() => item.setValue(score)}
                       className="peer absolute inset-0 opacity-0"
                     />
-                    <span className="grid size-7 place-items-center rounded-md border border-[var(--line-strong)] text-[11px] font-medium text-[var(--ink-2)] peer-checked:border-[var(--ink)] peer-checked:bg-[var(--ink)] peer-checked:text-white peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-[var(--ink)]">
+                    <span className="grid size-8 place-items-center rounded-md border border-[var(--line-strong)] text-[12px] font-medium text-[var(--ink-2)] peer-checked:border-[var(--ink)] peer-checked:bg-[var(--ink)] peer-checked:text-white peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-[var(--ink)]">
                       {score}
                     </span>
                   </label>
                 ))}
               </div>
-              <div className="mt-1 flex justify-between text-[9.5px] text-[var(--mute)]">
+              <div className="mt-1 flex justify-between text-[10px] text-[var(--mute)]">
                 <span>Not at all</span>
                 <span>Very much</span>
               </div>
@@ -1021,25 +968,32 @@ function RoundScoring({
           </fieldset>
         ))}
       </div>
-      <div className="mt-3 flex justify-end">
+      {error && (
+        <p role="alert" className="mt-4 text-[12px] text-[var(--red)]">
+          {error}
+        </p>
+      )}
+      <div className="mt-5 flex justify-end">
         <Button
-          variant="outline"
+          variant="primary"
           size="sm"
-          disabled={busy || divergent === null || convergent === null}
+          disabled={
+            busy !== null || divergent === null || convergent === null
+          }
           onClick={() => void save()}
         >
-          {saving ? (
+          {busy === "Saving deliberation scores" ? (
             <>
               <Spinner /> Saving…
             </>
-          ) : round.rating ? (
+          ) : deliberation.rating ? (
             "Update scores"
           ) : (
             "Save scores"
           )}
         </Button>
       </div>
-    </section>
+    </ModalShell>
   )
 }
 
@@ -1107,9 +1061,13 @@ function WorkingHypothesisPanel({
   busy,
   applying,
   saving,
+  completed,
+  ending,
   onChange,
   onApply,
   onSave,
+  onEnd,
+  onRate,
   onOpenChild,
   onSetQuestionStatus,
 }: {
@@ -1120,9 +1078,13 @@ function WorkingHypothesisPanel({
   busy: boolean
   applying: boolean
   saving: boolean
+  completed: boolean
+  ending: boolean
   onChange: (value: HypothesisDev) => void
   onApply: () => Promise<boolean>
   onSave: () => Promise<boolean>
+  onEnd: () => Promise<boolean>
+  onRate: () => void
   onOpenChild: (investigationId: string) => void
   onSetQuestionStatus: (
     questionId: string,
@@ -1267,7 +1229,7 @@ function WorkingHypothesisPanel({
             </p>
           )}
           <div className="flex gap-2">
-            {!editing && (
+            {!completed && !editing && (
               <Button
                 variant="outline"
                 size="sm"
@@ -1278,7 +1240,7 @@ function WorkingHypothesisPanel({
                 {pending ? "Edit update" : "Edit hypothesis"}
               </Button>
             )}
-            {(pending || editing) && (
+            {!completed && (pending || editing) && (
               <Button
                 variant={pending ? "primary" : "outline"}
                 size="sm"
@@ -1301,7 +1263,7 @@ function WorkingHypothesisPanel({
                 )}
               </Button>
             )}
-            {unsaved && !pending && !editing && (
+            {!completed && unsaved && !pending && !editing && (
               <Button
                 variant="primary"
                 size="sm"
@@ -1382,7 +1344,9 @@ function WorkingHypothesisPanel({
                     {item.status === "open" && (
                       <>
                         <span className="self-center text-[9.5px] text-[var(--mute)]">
-                          Open its Research Problem node on the canvas to search.
+                          {completed
+                            ? "Open its Research Problem node on the canvas to search."
+                            : "Its Research Problem node appears when you end the deliberation."}
                         </span>
                         <Button
                           variant="ghost"
@@ -1426,6 +1390,58 @@ function WorkingHypothesisPanel({
           <p className="mt-1 text-[10.5px] leading-relaxed text-[var(--mute)]">
             Unresolved points from the panel will appear here.
           </p>
+        )}
+      </div>
+      <div className="mt-4 border-t border-[var(--line)] pt-3">
+        {completed ? (
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[12px] font-semibold text-[var(--ink)]">
+                Deliberation ended
+              </div>
+              <p className="mt-0.5 text-[10.5px] text-[var(--mute)]">
+                The final hypothesis and Research Problem nodes are on the canvas.
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0 whitespace-nowrap"
+              disabled={busy}
+              onClick={onRate}
+            >
+              {deliberation.rating ? "Update scores" : "Rate deliberation"}
+            </Button>
+          </div>
+        ) : (
+          <>
+            <p className="text-[10.5px] leading-relaxed text-[var(--mute)]">
+              End after the current hypothesis is applied and saved. This closes
+              the panel and reveals its final outputs on the canvas.
+            </p>
+            <Button
+              variant="primary"
+              size="sm"
+              className="mt-2 w-full"
+              disabled={
+                busy ||
+                deliberation.rounds.length === 0 ||
+                pending ||
+                unsaved ||
+                editing ||
+                savedVersionId === null
+              }
+              onClick={() => void onEnd()}
+            >
+              {ending ? (
+                <>
+                  <Spinner /> Ending…
+                </>
+              ) : (
+                "End deliberation"
+              )}
+            </Button>
+          </>
         )}
       </div>
     </aside>
@@ -1513,86 +1529,6 @@ function TurnBubble({ turn }: { turn: Turn }) {
   )
 }
 
-function PerspectivePicker({ onClose }: { onClose: () => void }) {
-  const session = useFocusedStore((state) => state.session)
-  const busy = useFocusedStore((state) => state.busy)
-  const { addAgent, createDeliberation, wireAgents } = useFocusedPanel()
-  const [selected, setSelected] = useState<string[]>([])
-  const [error, setError] = useState<string | null>(null)
-
-  if (!session) return null
-  const placed = new Set(session.agents.map((agent) => agent.perspective_id))
-  const available = session.perspectives.filter((perspective) => !placed.has(perspective.id))
-  const total = session.agents.length + selected.length
-
-  const toggle = (id: string) => {
-    setSelected((current) =>
-      current.includes(id)
-        ? current.filter((item) => item !== id)
-        : [...current, id],
-    )
-  }
-
-  const continueToPanel = async () => {
-    if (total < 2) return
-    setError(null)
-    try {
-      let current = useFocusedStore.getState().session
-      if (!current?.deliberations.length) {
-        current = await createDeliberation()
-      }
-      for (const perspectiveId of selected) {
-        current = await addAgent(perspectiveId)
-      }
-      const latest = useFocusedStore.getState().session ?? current
-      const deliberation = latest?.deliberations[0]
-      if (latest && deliberation) {
-        await wireAgents(
-          deliberation.id,
-          latest.agents.map((agent) => agent.iid),
-        )
-      }
-      onClose()
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not place Perspectives")
-    }
-  }
-
-  return (
-    <ModalShell title="Choose the focused panel" onClose={onClose}>
-      <div className="flex flex-col gap-1">
-        {available.map((perspective) => {
-          const active = selected.includes(perspective.id)
-          return (
-            <ListRow key={perspective.id} onClick={() => toggle(perspective.id)}>
-              <span className="size-2 rounded-full" style={{ background: perspective.color }} />
-              <span className="min-w-0 flex-1">
-                <span className="block text-[13px] font-semibold">{perspective.name}</span>
-                <span className="block truncate text-[11px] text-[var(--mute)]">{perspective.summary}</span>
-              </span>
-              <span className="text-[11px] font-medium" style={{ color: active ? "var(--green)" : "var(--mute)" }}>
-                {active ? "Selected" : "Add"}
-              </span>
-            </ListRow>
-          )
-        })}
-        {!available.length && <EmptyLine>Every Perspective is already on the canvas.</EmptyLine>}
-      </div>
-      {error && <p className="mt-3 text-[12px] text-[var(--red)]">{error}</p>}
-      <div className="mt-4 flex items-center justify-between">
-        <span className="text-[11px] text-[var(--mute)]">{total} panel members</span>
-        <Button
-          variant="primary"
-          size="sm"
-          disabled={!!busy || total < 2}
-          onClick={() => void continueToPanel()}
-        >
-          {busy ? <><Spinner /> Seating…</> : "Continue to panel"}
-        </Button>
-      </div>
-    </ModalShell>
-  )
-}
 
 function AgentModal({ agent, onClose }: { agent: AgentState | null; onClose: () => void }) {
   const session = useFocusedStore((state) => state.session)
@@ -1648,66 +1584,6 @@ function AgentModal({ agent, onClose }: { agent: AgentState | null; onClose: () 
   )
 }
 
-function WireModal({ deliberation, onClose }: { deliberation: DeliberationState; onClose: () => void }) {
-  const session = useFocusedStore((state) => state.session)
-  const busy = useFocusedStore((state) => state.busy)
-  const { wireAgents } = useFocusedPanel()
-  const [selected, setSelected] = useState<number[]>(deliberation.agent_iids)
-  const [error, setError] = useState<string | null>(null)
-  if (!session) return null
-  const locked = deliberation.rounds.length > 0
-
-  const save = async () => {
-    setError(null)
-    try {
-      await wireAgents(deliberation.id, selected)
-      onClose()
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not update panel")
-    }
-  }
-
-  return (
-    <ModalShell title="Panel members" onClose={onClose}>
-      {locked && (
-        <p className="mb-3 text-[12px] text-[var(--mute)]">
-          Membership is locked because a focused round has started.
-        </p>
-      )}
-      <div className="flex flex-col gap-1">
-        {session.agents.map((agent) => {
-          const perspective = session.perspectives.find((item) => item.id === agent.perspective_id)
-          const active = selected.includes(agent.iid)
-          return (
-            <ListRow
-              key={agent.iid}
-              disabled={locked}
-              onClick={() =>
-                setSelected((current) =>
-                  active
-                    ? current.filter((iid) => iid !== agent.iid)
-                    : [...current, agent.iid],
-                )
-              }
-            >
-              <span className="size-2 rounded-full" style={{ background: perspective?.color ?? "var(--mute)" }} />
-              <span className="flex-1 text-[13px] font-medium">{perspective?.name ?? agent.label}</span>
-              <span className="text-[11px] text-[var(--mute)]">{active ? "Seated" : "Available"}</span>
-            </ListRow>
-          )
-        })}
-      </div>
-      {error && <p className="mt-3 text-[12px] text-[var(--red)]">{error}</p>}
-      {!locked && (
-        <div className="mt-4 flex justify-end">
-          <Button variant="primary" size="sm" disabled={!!busy || selected.length < 2} onClick={() => void save()}>
-            Save members
-          </Button>
-        </div>
-      )}
-    </ModalShell>
-  )
-}
 
 function SavedHypothesisModal({
   version,
@@ -1760,7 +1636,11 @@ const HIDDEN_HANDLE: CSSProperties = {
 function ProblemNode({ data }: NodeProps) {
   const { problem } = data as { problem: string }
   return (
-    <div className="ep-node-enter panel px-4 py-3.5" style={{ width: 280 }}>
+    <div
+      data-testid="root-research-problem-node"
+      className="ep-node-enter panel px-4 py-3.5"
+      style={{ width: 280 }}
+    >
       <Handle type="source" position={Position.Right} style={HIDDEN_HANDLE} />
       <div className="text-[11px] font-medium text-[var(--mute)]">Research problem</div>
       <p className="mt-1 text-[13px] font-medium leading-relaxed">{problem}</p>
@@ -1769,7 +1649,8 @@ function ProblemNode({ data }: NodeProps) {
 }
 
 function AgentNode({ data }: NodeProps) {
-  const { name, color, meta, onOpen } = data as {
+  const { agentId, name, color, meta, onOpen } = data as {
+    agentId: number
     name: string
     color: string
     meta: string
@@ -1778,6 +1659,7 @@ function AgentNode({ data }: NodeProps) {
   return (
     <button
       type="button"
+      data-testid={`agent-node-${agentId}`}
       onClick={onOpen}
       className="ep-node-enter panel nodrag nopan block px-3.5 py-3 text-left"
       style={{ width: 280 }}
@@ -1794,12 +1676,12 @@ function AgentNode({ data }: NodeProps) {
 }
 
 function PanelNode({ data }: NodeProps) {
-  const { members, status, canJoin, onJoin, onMembers } = data as {
+  const { members, status, canJoin, ended, onJoin } = data as {
     members: { id: number; name: string; color: string }[]
     status: string
     canJoin: boolean
+    ended: boolean
     onJoin: () => void
-    onMembers: () => void
   }
   return (
     <div className="ep-node-enter panel px-3.5 py-3" style={{ width: 280 }}>
@@ -1815,29 +1697,18 @@ function PanelNode({ data }: NodeProps) {
         {!members.length && <span className="text-[11px] text-[var(--mute)]">No members yet</span>}
       </div>
       <div className="mt-1.5 text-[11px] font-medium text-[var(--mute)]">{status}</div>
-      <div className="mt-2.5 flex gap-1.5">
+      <div className="mt-2.5">
         <Button
-          variant="primary"
+          variant={ended ? "outline" : "primary"}
           size="sm"
-          className="nodrag nopan flex-1"
+          className="nodrag nopan w-full"
           disabled={!canJoin}
           onClick={(event) => {
             event.stopPropagation()
             onJoin()
           }}
         >
-          Join
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          className="nodrag nopan"
-          onClick={(event) => {
-            event.stopPropagation()
-            onMembers()
-          }}
-        >
-          Members
+          {ended ? "Review" : "Join"}
         </Button>
       </div>
     </div>

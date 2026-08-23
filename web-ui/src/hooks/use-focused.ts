@@ -11,7 +11,7 @@ import type {
   HypothesisPart,
   PaperDetail,
   Perspective,
-  RoundRating,
+  DeliberationRating,
   QuestionStatus,
   WorkspaceView,
 } from "@/types/focused"
@@ -263,49 +263,6 @@ export function useFocusedPanel() {
     [call, sessionId],
   )
 
-  const wireAgents = useCallback(
-    (deliberationId: string, agentIids: number[]) =>
-      call(
-        "Seating the panel",
-        `sessions/${sessionId}/deliberations/${deliberationId}/agents`,
-        {
-          method: "POST",
-          body: JSON.stringify({ agent_iids: agentIids }),
-        },
-      ),
-    [call, sessionId],
-  )
-
-  const addAgent = useCallback(
-    async (perspectiveId: string) => {
-      // Auto-seat is driven by THIS event — the only proof of "newly
-      // placed". It runs exactly once per placement (no effect scanning,
-      // so no retry loops, and a member the researcher removed is never
-      // mistaken for new on remount).
-      const before = useFocusedStore.getState().session
-      const known = new Set(before?.agents.map((a) => a.iid) ?? [])
-      const state = await call("Placing agent", `sessions/${sessionId}/agents`, {
-        method: "POST",
-        body: JSON.stringify({ perspective_id: perspectiveId }),
-      })
-      const latest = state.deliberations[state.deliberations.length - 1]
-      if (latest) {
-        const fresh = state.agents
-          .filter((a) => !known.has(a.iid))
-          .map((a) => a.iid)
-          .filter((iid) => !latest.agent_iids.includes(iid))
-        if (fresh.length) {
-          try {
-            await wireAgents(latest.id, [...latest.agent_iids, ...fresh])
-          } catch {
-            // placed-but-unwired; Members is the manual path. No retry.
-          }
-        }
-      }
-      return state
-    },
-    [call, sessionId, wireAgents],
-  )
 
   const createDeliberation = useCallback(
     () =>
@@ -327,15 +284,26 @@ export function useFocusedPanel() {
       ),
     [call, sessionId],
   )
-  const rateRound = useCallback(
+  const completeDeliberation = useCallback(
+    (deliberationId: string) =>
+      call(
+        "Ending deliberation",
+        `sessions/${sessionId}/deliberations/${deliberationId}/complete`,
+        { method: "POST" },
+      ),
+    [call, sessionId],
+  )
+  const rateDeliberation = useCallback(
     (
       deliberationId: string,
-      roundNumber: number,
-      rating: Pick<RoundRating, "divergent" | "convergent" | "note">,
+      rating: Pick<
+        DeliberationRating,
+        "divergent" | "convergent" | "note"
+      >,
     ) =>
       call(
-        "Saving round scores",
-        `sessions/${sessionId}/deliberations/${deliberationId}/rounds/${roundNumber}/rating`,
+        "Saving deliberation scores",
+        `sessions/${sessionId}/deliberations/${deliberationId}/rating`,
         {
           method: "PUT",
           body: JSON.stringify(rating),
@@ -523,11 +491,10 @@ export function useFocusedPanel() {
     runSearch,
     generatePerspective,
     removePerspective,
-    addAgent,
     createDeliberation,
-    wireAgents,
     runRound,
-    rateRound,
+    completeDeliberation,
+    rateDeliberation,
     confirmHypothesis,
     saveHypothesis,
     createChildInvestigation,

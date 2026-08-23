@@ -228,7 +228,7 @@ class ParticipantReflection(BaseModel):
     revisions: list[FacetRevision] = Field(default_factory=list)
 
 
-class RoundRating(BaseModel):
+class DeliberationRating(BaseModel):
     divergent: int = Field(ge=1, le=7)
     convergent: int = Field(ge=1, le=7)
     note: str = Field(default="", max_length=1000)
@@ -238,13 +238,13 @@ class RoundRating(BaseModel):
 class DeliberationRound(BaseModel):
     n: int
     lead_iid: int
+    participant_iids: list[int] = Field(default_factory=list)
     facets: list[Facet] = Field(min_length=1, max_length=2)
     turns: list[Turn] = Field(default_factory=list)
     verdicts: list[FacetVerdict] = Field(default_factory=list)
     resolution: RoundResolution | None = None
     reflections: list[ParticipantReflection] = Field(default_factory=list)
     metrics: RoundMetrics | None = None
-    rating: RoundRating | None = None
     completed: bool = False
 
 
@@ -288,9 +288,20 @@ class DeliberationState(BaseModel):
     recommended_questions: list[RecommendedQuestion] = Field(default_factory=list)
     questions_generated: bool = False
     chat: list[Turn] = Field(default_factory=list)
+    completed_at: datetime | None = None
+    final_hypothesis_version_id: str | None = None
+    rating: DeliberationRating | None = None
 
     @model_validator(mode="after")
     def validate_hypothesis_state(self) -> Self:
+        if self.completed_at is None and (
+            self.final_hypothesis_version_id is not None or self.rating is not None
+        ):
+            raise ValueError(
+                "final hypothesis and rating require a completed deliberation"
+            )
+        if self.completed_at is not None and self.final_hypothesis_version_id is None:
+            raise ValueError("a completed deliberation requires a final hypothesis")
         if self.hypothesis_confirmed and (
             self.hypothesis is None
             or self.applied_hypothesis is None
@@ -301,10 +312,7 @@ class DeliberationState(BaseModel):
             self.working_hypothesis_source_kind,
             self.working_hypothesis_source_round,
         )
-        if any(source) and (
-            not all(source)
-            or self.applied_hypothesis is None
-        ):
+        if any(source) and (not all(source) or self.applied_hypothesis is None):
             raise ValueError(
                 "unsaved hypothesis provenance requires an applied working hypothesis"
             )
@@ -367,6 +375,7 @@ class SessionState(BaseModel):
     applied_hypothesis: HypothesisDev | None = None
     applied_hypothesis_version_id: str | None = None
     suggested_queries: list[SuggestedQuery] = Field(default_factory=list)
+    searched_queries: list[SearchQuery] = Field(default_factory=list)
     question_reach: list[QuestionReach] = Field(default_factory=list)
     papers: list[ExpPaper] = Field(default_factory=list)
     clusters: list[ClusterCard] = Field(default_factory=list)

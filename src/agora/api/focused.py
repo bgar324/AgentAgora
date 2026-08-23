@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from agora.focused.agents import FocusedAgentError
 from agora.focused.models import (
+    DeliberationRating,
     Facet,
     FacetEvidence,
     HypothesisConfirmationMode,
@@ -15,7 +16,6 @@ from agora.focused.models import (
     HypothesisPart,
     QuestionStatus,
     ResearchQuestion,
-    RoundRating,
     SearchQuery,
     SessionState,
     WorkspaceView,
@@ -108,23 +108,13 @@ class UpdateSessionRequest(BaseModel):
 
 
 class SearchRequest(BaseModel):
-    queries: list[SearchQuery] = Field(
-        min_length=1, max_length=MAX_SUGGESTED_QUERIES
-    )
+    queries: list[SearchQuery] = Field(min_length=1, max_length=MAX_SUGGESTED_QUERIES)
 
 
 class PerspectiveRequest(BaseModel):
     cluster_id: str = Field(min_length=1, max_length=200)
     facets: list[FacetEvidence] | None = Field(default=None, max_length=4)
     name: str | None = Field(default=None, min_length=1, max_length=200)
-
-
-class AgentRequest(BaseModel):
-    perspective_id: str = Field(min_length=1, max_length=200)
-
-
-class WireRequest(BaseModel):
-    agent_iids: list[int] = Field(min_length=1)
 
 
 class RoundRequest(BaseModel):
@@ -154,7 +144,7 @@ class HypothesisRequest(BaseModel):
     mode: HypothesisConfirmationMode
 
 
-class RoundRatingRequest(BaseModel):
+class DeliberationRatingRequest(BaseModel):
     divergent: int = Field(ge=1, le=7)
     convergent: int = Field(ge=1, le=7)
     note: str = Field(default="", max_length=1000)
@@ -370,27 +360,6 @@ async def remove_perspective(
 # --- stage ② multi-agent deliberation ----------------------------------------
 
 
-@focused_router.post("/sessions/{session_id}/agents")
-async def add_agent(
-    session_id: str,
-    request: AgentRequest,
-    service: Service,
-) -> WorkspaceView:
-    return await _acall_view(
-        service,
-        service.add_agent(session_id, request.perspective_id),
-    )
-
-
-@focused_router.delete("/sessions/{session_id}/agents/{iid}")
-async def remove_agent(
-    session_id: str,
-    iid: int,
-    service: Service,
-) -> WorkspaceView:
-    return await _acall_view(service, service.remove_agent(session_id, iid))
-
-
 @focused_router.post("/sessions/{session_id}/agents/{iid}/hypothesis")
 async def agent_hypothesis(
     session_id: str,
@@ -409,19 +378,6 @@ async def create_deliberation(
     service: Service,
 ) -> WorkspaceView:
     return await _acall_view(service, service.create_deliberation(session_id))
-
-
-@focused_router.post("/sessions/{session_id}/deliberations/{deliberation_id}/agents")
-async def wire_agents(
-    session_id: str,
-    deliberation_id: str,
-    request: WireRequest,
-    service: Service,
-) -> WorkspaceView:
-    return await _acall_view(
-        service,
-        service.wire_agents(session_id, deliberation_id, request.agent_iids),
-    )
 
 
 @focused_router.post("/sessions/{session_id}/deliberations/{deliberation_id}/rounds")
@@ -477,24 +433,31 @@ async def save_deliberation_hypothesis(
     )
 
 
-@focused_router.put(
-    "/sessions/{session_id}/deliberations/{deliberation_id}"
-    "/rounds/{round_number}/rating"
-)
-async def rate_round(
+@focused_router.post("/sessions/{session_id}/deliberations/{deliberation_id}/complete")
+async def complete_deliberation(
     session_id: str,
     deliberation_id: str,
-    round_number: int,
-    request: RoundRatingRequest,
     service: Service,
 ) -> WorkspaceView:
     return await _acall_view(
         service,
-        service.rate_round(
+        service.complete_deliberation(session_id, deliberation_id),
+    )
+
+
+@focused_router.put("/sessions/{session_id}/deliberations/{deliberation_id}/rating")
+async def rate_deliberation(
+    session_id: str,
+    deliberation_id: str,
+    request: DeliberationRatingRequest,
+    service: Service,
+) -> WorkspaceView:
+    return await _acall_view(
+        service,
+        service.rate_deliberation(
             session_id,
             deliberation_id,
-            round_number,
-            RoundRating(
+            DeliberationRating(
                 divergent=request.divergent,
                 convergent=request.convergent,
                 note=request.note,

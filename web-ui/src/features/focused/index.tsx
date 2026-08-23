@@ -104,6 +104,22 @@ export function FocusedWorkspace() {
   const hasInvestigationBranches = investigations.length > 1
   const activeScreen = hasInvestigationBranches ? workspaceScreen : "detail"
 
+  const toggleStage = () => {
+    setActionError(null)
+    if (stage === "deliberation") {
+      stageSet("extraction")
+      return
+    }
+    void focused
+      .createDeliberation()
+      .then(() => stageSet("deliberation"))
+      .catch((cause) =>
+        setActionError(
+          cause instanceof Error ? cause.message : "Could not open the panel",
+        ),
+      )
+  }
+
   return (
     <div className="flex min-h-screen flex-col">
       <header className="ep-fade-in sticky top-0 z-40 flex min-h-12 flex-wrap items-center gap-x-3 gap-y-2 border-b border-[var(--line)] bg-[var(--panel)] px-3 py-2 sm:h-12 sm:flex-nowrap sm:px-5 sm:py-0">
@@ -238,9 +254,7 @@ export function FocusedWorkspace() {
                   busy !== null ||
                   (stage === "extraction" && !canDeliberate)
                 }
-                onClick={() =>
-                  stageSet(stage === "extraction" ? "deliberation" : "extraction")
-                }
+                onClick={toggleStage}
                 title={
                   stage === "extraction" && !canDeliberate
                     ? "Generate at least two perspectives first"
@@ -248,7 +262,15 @@ export function FocusedWorkspace() {
                 }
                 className="flex items-center gap-1.5 whitespace-nowrap pl-3.5 pr-3 text-[12.5px] font-medium disabled:cursor-default focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--bg)]"
               >
-                {stage === "extraction" ? "Continue" : "Extraction"}
+                {busy === "Setting up the panel" ? (
+                  <>
+                    <Spinner /> Opening panel…
+                  </>
+                ) : stage === "extraction" ? (
+                  "Continue"
+                ) : (
+                  "Extraction"
+                )}
               </button>
               <div className="my-2 w-px shrink-0 bg-current opacity-15" />
               <button

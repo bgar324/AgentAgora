@@ -11,25 +11,26 @@ Each workspace begins with one research problem and one root Investigation.
 Perspectives contain four abstract-grounded areas—Scope, Explanation,
 Approach, and Significance—and the researcher selects one or two areas per
 round. Each completed round remains on the canvas with a process-first summary.
-Consensus-only updates can be applied to the four-step working hypothesis;
-saving creates an immutable Hypothesis node. Disagreement and unsettled points
-remain Research Problem nodes that can open child Investigations.
-Each round also records separate 1–7 researcher scores for divergent and
-convergent thinking.
+Consensus-only updates can be applied to the four-step working hypothesis, and
+saving creates an immutable checkpoint. The researcher explicitly ends the
+deliberation after the current hypothesis is saved. That terminal action reveals
+the final Hypothesis and Research Problem nodes and opens one 1–7 divergent- and
+convergent-thinking score for the deliberation as a whole.
 
 An open question can explicitly start a child Investigation. The child receives
-fresh literature, fresh Perspectives, and a fresh fixed panel while inheriting
-the parent’s last applied hypothesis checkpoint. A pending parent update never
+fresh literature, fresh Perspectives, and a fresh panel while inheriting the
+parent’s last applied hypothesis checkpoint. A pending parent update never
 leaks into the child. The workspace map records question-labeled lineage and
 opens one Investigation detail at a time.
 
 Hypothesis checkpoints form an immutable version graph. Researchers can promote
 a branch, preserve alternatives, merge selected Problem / Previous work /
 Reasoning / Hypothesis steps with per-step provenance, archive a superseded
-checkpoint, and restore it later. A focused panel requires at least two
-Perspectives but has no product-level maximum; the researcher may seat every
-relevant Perspective before the first round locks membership. Open questions
-move through Open, Investigating, Addressed, and Archived states.
+checkpoint, and restore it later. A panel requires at least two Perspectives but
+has no product-level maximum. Every matrix Perspective automatically becomes an
+agent on the canvas, and Perspectives added before the deliberation ends join
+subsequent rounds without clearing prior work. Open questions move through Open,
+Investigating, Addressed, and Archived states.
 
 Focused workspaces use revision-checked aggregate snapshots in local SQLite or
 production Supabase. Concurrent stale writers receive a conflict instead of

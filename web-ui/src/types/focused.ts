@@ -146,7 +146,7 @@ export interface ParticipantReflection {
   revisions: FacetRevision[]
 }
 
-export interface RoundRating {
+export interface DeliberationRating {
   divergent: number
   convergent: number
   note: string
@@ -156,13 +156,13 @@ export interface RoundRating {
 export interface DeliberationRound {
   n: number
   lead_iid: number
+  participant_iids: number[]
   facets: Facet[]
   turns: Turn[]
   verdicts: FacetVerdict[]
   resolution: RoundResolution | null
   reflections: ParticipantReflection[]
   metrics: RoundMetrics | null
-  rating: RoundRating | null
   completed: boolean
 }
 
@@ -199,6 +199,9 @@ export interface DeliberationState {
   recommended_questions: RecommendedQuestion[]
   questions_generated: boolean
   chat: Turn[]
+  completed_at: string | null
+  final_hypothesis_version_id: string | null
+  rating: DeliberationRating | null
 }
 
 export interface AgentState {
@@ -263,6 +266,7 @@ export interface SessionState {
   applied_hypothesis: HypothesisDev | null
   applied_hypothesis_version_id: string | null
   suggested_queries: SuggestedQuery[]
+  searched_queries: string[]
   question_reach: QuestionReach[]
   papers: ExpPaper[]
   clusters: ClusterCard[]
