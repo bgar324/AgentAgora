@@ -1082,6 +1082,16 @@ class FocusedPanelService:
         self._workspace_locks.pop(workspace.id, None)
         self._durable_snapshots.pop(workspace.id, None)
 
+    @staticmethod
+    def _retryable_empty_search(state: SessionState) -> bool:
+        return (
+            state.searched
+            and not state.papers
+            and not state.clusters
+            and not state.perspectives
+            and not state.deliberations
+        )
+
     def update_brief(
         self,
         session_id: str,
@@ -1093,7 +1103,7 @@ class FocusedPanelService:
         state = session.state
         workspace = self._workspace_for(state)
         self._ensure_workspace_idle(workspace)
-        if state.searched:
+        if state.searched and not self._retryable_empty_search(state):
             raise SessionError(
                 "Start a new investigation to change the brief after retrieving papers.",
                 status=409,
@@ -1116,14 +1126,14 @@ class FocusedPanelService:
         state.research_questions = [
             question.strip() for question in research_questions if question.strip()
         ]
+        state.searched = False
         state.suggested_queries = []
         state.searched_queries = []
         state.question_reach = []
         return self._save_state(state)
 
-    @staticmethod
-    def _ensure_searchable(state: SessionState) -> None:
-        if state.searched:
+    def _ensure_searchable(self, state: SessionState) -> None:
+        if state.searched and not self._retryable_empty_search(state):
             raise SessionError(
                 "This Investigation already has literature. Start a child "
                 "Investigation to search new papers without replacing it."
@@ -1236,47 +1246,60 @@ class FocusedPanelService:
         scored.sort(key=lambda pair: -pair[0])
         return [p.model_copy(deep=True) for _, p in scored[:20]]
 
-    async def _live_retrieve(self, queries: list[str]) -> list[ExpPaper]:
+    async def _live_retrieve(self, queries: list[str]) -> tuple[list[ExpPaper], bool]:
         papers: dict[str, ExpPaper] = {}
+        search_succeeded = False
         for query in queries:
-            try:
-                results = await self._s2.search(query, limit=8)
-            except Exception as exc:
-                logger.warning("focused paper search failed for %r: %s", query, exc)
-                if " returned 429:" in str(exc):
-                    raise SessionError(
-                        "Paper search is temporarily rate-limited. "
-                        "Wait a minute and try again.",
-                        status=503,
-                    ) from exc
-                continue
-            for r in results:
-                if r.id in papers:
+            variants = [query]
+            relaxed = agents.relaxed_search_query(query)
+            if relaxed and relaxed.casefold() != query.casefold():
+                variants.append(relaxed)
+            for variant in variants:
+                try:
+                    results = await self._s2.search(variant, limit=8)
+                except Exception as exc:
+                    logger.warning(
+                        "focused paper search failed for %r: %s",
+                        variant,
+                        exc,
+                    )
+                    if " returned 429:" in str(exc):
+                        raise SessionError(
+                            "Paper search is temporarily rate-limited. "
+                            "Wait a minute and try again.",
+                            status=503,
+                        ) from exc
                     continue
-                abstract_sentences = agents.split_sentences(r.abstract)
-                papers[r.id] = ExpPaper(
-                    id=r.id,
-                    title=r.title,
-                    abstract=r.abstract,
-                    abstract_sentences=abstract_sentences,
-                    year=r.year,
-                    venue=r.venue,
-                    authors=[a.name for a in r.authors[:4]],
-                    source_query=query,
-                    tldr=r.tldr,
-                    open_access_pdf_url=r.open_access_pdf_url,
-                    specter_v2=r.specter_v2,
-                )
-        return list(papers.values())[:30]
+                search_succeeded = True
+                for result in results:
+                    if result.id in papers:
+                        continue
+                    abstract_sentences = agents.split_sentences(result.abstract)
+                    papers[result.id] = ExpPaper(
+                        id=result.id,
+                        title=result.title,
+                        abstract=result.abstract,
+                        abstract_sentences=abstract_sentences,
+                        year=result.year,
+                        venue=result.venue,
+                        authors=[author.name for author in result.authors[:4]],
+                        source_query=variant,
+                        tldr=result.tldr,
+                        open_access_pdf_url=result.open_access_pdf_url,
+                        specter_v2=result.specter_v2,
+                    )
+                if results:
+                    break
+        return list(papers.values())[:30], search_succeeded
 
     async def _retrieve_queries(
         self, session: _Session, queries: list[str]
-    ) -> list[ExpPaper]:
+    ) -> tuple[list[ExpPaper], bool]:
         clean = [query.strip() for query in queries if query.strip()]
         if not clean:
-            return []
+            return [], False
         if self._demo(session):
-            return self._demo_retrieve(clean)
+            return self._demo_retrieve(clean), True
         return await self._live_retrieve(clean)
 
     @staticmethod
@@ -1455,10 +1478,11 @@ class FocusedPanelService:
                 + [query for query in queries if query not in known_queries]
             )
         )
-        paper_by_id = {
-            paper.id: paper
-            for paper in await self._retrieve_queries(session, angle_queries)
-        }
+        angle_papers, search_succeeded = await self._retrieve_queries(
+            session,
+            angle_queries,
+        )
+        paper_by_id = {paper.id: paper for paper in angle_papers}
 
         reaches = [
             reach.model_copy(
@@ -1489,10 +1513,12 @@ class FocusedPanelService:
                 )
             )
             reach.queries_r1 = round1
-            hits = {
-                paper.id: paper
-                for paper in await self._retrieve_queries(session, round1)
-            }
+            question_papers, question_search_succeeded = await self._retrieve_queries(
+                session,
+                round1,
+            )
+            search_succeeded = search_succeeded or question_search_succeeded
+            hits = {paper.id: paper for paper in question_papers}
             assessment = await agents.assess_question_papers(
                 reach.question,
                 reach.candidates,
@@ -1511,6 +1537,17 @@ class FocusedPanelService:
                     paper_by_id.setdefault(paper_id, paper)
         state.question_reach = reaches
         papers = list(paper_by_id.values())
+        if not papers:
+            if not search_succeeded:
+                raise SessionError(
+                    "Paper search is temporarily unavailable. Try again.",
+                    status=503,
+                )
+            raise SessionError(
+                "No papers matched those searches. The search was not saved; "
+                "try again with shorter academic keywords.",
+                status=422,
+            )
 
         if self._demo(session):
             groups = self._demo_cluster(papers) if papers else []

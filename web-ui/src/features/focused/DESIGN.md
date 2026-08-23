@@ -19,6 +19,9 @@ Surfaces:
   each grounded in an abstract sentence.
   After retrieval, the exact submitted queries remain visible as a read-only
   record beside the resulting clusters.
+  Wrapped research-question lines are joined through their closing question
+  mark. Live searches use compact academic phrases; a zero-result search stays
+  retryable and never seals the Investigation.
   Adding a Perspective inserts a pending matrix card immediately. The server
   response replaces the card and creates its matching canvas agent; a failed
   request removes the card. Continue opens the canvas directly with every matrix

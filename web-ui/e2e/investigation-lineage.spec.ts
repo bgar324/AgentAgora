@@ -175,6 +175,38 @@ test.beforeEach(async ({ page }) => {
   await page.evaluate(() => localStorage.clear())
 })
 
+test("joins wrapped lines into complete research questions", async ({ page }) => {
+  await page
+    .getByRole("textbox", { name: "Research questions" })
+    .fill(
+      "What trade-off exists between prompt compression and\n" +
+        "obligation preservation?\n\n" +
+        "Can the compiler produce auditable evidence that\n" +
+        "Pₓ covers every critical obligation?\n" +
+        "How does compression change latency\n" +
+        "Which obligations require the full prompt\n" +
+        "Impact of compression on latency\n" +
+        "Obligation coverage in adversarial requests",
+    )
+  await page.getByRole("button", { name: "Begin" }).click()
+  await expect(page).toHaveURL(/workspace=[a-f0-9]+/)
+  const workspaceId = new URL(page.url()).searchParams.get("workspace")
+  expect(workspaceId).toBeTruthy()
+  const view = await requestJson(
+    page.request,
+    `/api/focused/workspaces/${workspaceId}`,
+    "get",
+  )
+  expect(view.research_questions).toEqual([
+    "What trade-off exists between prompt compression and obligation preservation?",
+    "Can the compiler produce auditable evidence that Pₓ covers every critical obligation?",
+    "How does compression change latency",
+    "Which obligations require the full prompt",
+    "Impact of compression on latency",
+    "Obligation coverage in adversarial requests",
+  ])
+})
+
 test("continues an open question on the existing canvas", async ({ page }) => {
   const duplicateKeyWarnings: string[] = []
   const reactFlowWarnings: string[] = []

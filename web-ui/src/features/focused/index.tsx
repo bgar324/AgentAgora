@@ -4,7 +4,11 @@
 import { ChevronDown } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 
-import { ApiError, useFocusedPanel } from "@/hooks/use-focused"
+import {
+  ApiError,
+  parseResearchQuestions,
+  useFocusedPanel,
+} from "@/hooks/use-focused"
 import { useFocusedStore } from "@/store/focused"
 import type { PaperDetail } from "@/types/focused"
 
@@ -449,7 +453,7 @@ function StartScreen() {
     try {
       await createWorkspace(
         problem.trim(),
-        questions.split("\n").map((q) => q.trim()).filter(Boolean),
+        parseResearchQuestions(questions),
         demo,
       )
     } catch (err) {
