@@ -12,12 +12,13 @@ The exact queries submitted for retrieval remain visible beside the resulting
 literature clusters and are included in workspace exports.
 Perspectives contain four abstract-grounded areas—Scope, Explanation,
 Approach, and Significance—and the researcher selects one or two areas per
-round. Each completed round remains on the canvas with a process-first summary.
-Consensus-only updates can be applied to the four-step working hypothesis, and
-saving creates an immutable checkpoint. The researcher explicitly ends the
-deliberation after the current hypothesis is saved. That terminal action reveals
-the final Hypothesis and Research Problem nodes and opens one dialog that records
-separate 1–7 divergent- and convergent-thinking scores.
+round. Agent turns and the moderator summary remain in the panel drawer, with
+the summary below the conversation. Shared-ground proposals label every changed
+hypothesis part with Before and Proposed values and require confirmation before
+application. Saving creates an immutable checkpoint. The researcher explicitly
+ends the deliberation after the current hypothesis is saved. That terminal
+action reveals only the final Hypothesis and Research Problem outputs and opens
+one dialog that records separate 1–7 divergent- and convergent-thinking scores.
 
 An open question can explicitly start a child Investigation. The child receives
 fresh literature, fresh Perspectives, and a fresh panel while inheriting the
@@ -30,8 +31,9 @@ a branch, preserve alternatives, merge selected Problem / Previous work /
 Reasoning / Hypothesis steps with per-step provenance, archive a superseded
 checkpoint, and restore it later. A panel requires at least two Perspectives but
 has no product-level maximum. Every matrix Perspective automatically becomes an
-agent on the canvas, and Perspectives added before the deliberation ends join
-subsequent rounds without clearing prior work. Open questions move through Open,
+agent on the canvas. The Canvas Add Perspective action appends another
+literature-grounded agent to the same open deliberation; prior rounds, questions,
+and hypothesis checkpoints remain unchanged. Open questions move through Open,
 Investigating, Addressed, and Archived states.
 
 Focused workspaces use revision-checked aggregate snapshots in local SQLite or

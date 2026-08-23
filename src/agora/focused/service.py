@@ -1622,6 +1622,21 @@ class FocusedPanelService:
         return deliberation
 
     @staticmethod
+    def _same_hypothesis(
+        proposed: HypothesisDev,
+        current: HypothesisDev,
+    ) -> bool:
+        def normalized(value: str) -> str:
+            text = value.strip()
+            return "" if text == "Not established yet." else text
+
+        parts = ("problem", "previous_work", "reasoning", "hypothesis")
+        return all(
+            normalized(getattr(proposed, part)) == normalized(getattr(current, part))
+            for part in parts
+        )
+
+    @staticmethod
     def _require_open_deliberation(deliberation: DeliberationState) -> None:
         if deliberation.completed_at is not None:
             raise SessionError("This deliberation has ended.")
@@ -2062,12 +2077,21 @@ class FocusedPanelService:
 
         if resolution.consensus_points:
             deliberation.no_agreement = False
-            deliberation.hypothesis = await agents.develop_hypothesis_from_consensus(
+            proposed_hypothesis = await agents.develop_hypothesis_from_consensus(
                 resolution,
                 current=deliberation.applied_hypothesis,
                 provider=self._provider_for(session),
             )
-            deliberation.hypothesis_confirmed = False
+            current_hypothesis = deliberation.applied_hypothesis
+            if current_hypothesis is not None and self._same_hypothesis(
+                proposed_hypothesis,
+                current_hypothesis,
+            ):
+                deliberation.hypothesis = current_hypothesis.model_copy(deep=True)
+                deliberation.hypothesis_confirmed = True
+            else:
+                deliberation.hypothesis = proposed_hypothesis
+                deliberation.hypothesis_confirmed = False
         else:
             deliberation.no_agreement = True
 

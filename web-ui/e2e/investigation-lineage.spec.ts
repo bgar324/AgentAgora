@@ -57,6 +57,23 @@ async function addPerspective(page: Page, name: string) {
   ).toBeVisible()
 }
 
+
+async function applyHypothesisChanges(
+  page: Page,
+  triggerName: "Apply shared ground" | "Apply edits",
+) {
+  await page.getByRole("button", { name: triggerName }).click()
+  const confirmation = page.getByRole("dialog", {
+    name: "Apply hypothesis changes?",
+  })
+  await expect(confirmation).toBeVisible()
+  await confirmation.getByRole("button", { name: "Apply changes" }).click()
+  await expect(confirmation).toHaveCount(0)
+}
+
+async function applySharedGround(page: Page) {
+  await applyHypothesisChanges(page, "Apply shared ground")
+}
 const DEMO_QUERIES = [
   "broad-spectrum antibiotic use antimicrobial resistance population",
   "broad-spectrum antibiotics gut microbiome recovery",
@@ -235,28 +252,55 @@ test("branches an open question into an isolated child Investigation", async ({ 
   const discussionBox = await page
     .getByTestId("round-1-discussion")
     .boundingBox()
-  expect(summaryBox?.y).toBeLessThan(discussionBox?.y ?? 0)
+  expect(summaryBox?.y).toBeGreaterThan(
+    (discussionBox?.y ?? 0) + (discussionBox?.height ?? 0),
+  )
   await expect(page.getByText(/of 4 parts changed/)).toBeVisible()
   await expect(
     page.getByRole("dialog", { name: "Rate this deliberation" }),
   ).toHaveCount(0)
   await page.getByRole("button", { name: "Apply shared ground" }).click()
+  const applyConfirmation = page.getByRole("dialog", {
+    name: "Apply hypothesis changes?",
+  })
+  await expect(applyConfirmation).toBeVisible()
+  await expect(
+    applyConfirmation.locator('[data-testid^="changed-hypothesis-part-"]'),
+  ).toHaveCount(2)
+  await applyConfirmation.getByRole("button", { name: "Cancel" }).click()
+  await expect(page.getByText("Update ready", { exact: true })).toBeVisible()
+  await applySharedGround(page)
   await expect(page.getByText("Applied, not saved", { exact: true })).toBeVisible()
   await page.getByRole("button", { name: "Save hypothesis" }).click()
   await expect(page.getByText("Saved H1", { exact: true })).toBeVisible()
   await page.keyboard.press("Escape")
-  await expect(page.getByTestId("round-result-node-1")).toBeVisible()
+  await expect(page.locator('[data-testid^="round-result-node-"]')).toHaveCount(0)
   await expect(page.getByTestId("saved-hypothesis-node-H1")).toHaveCount(0)
   await expect(
     page.locator('[data-testid^="research-problem-node-"]'),
   ).toHaveCount(0)
 
-  await page.getByRole("button", { name: "Extraction" }).click()
-  await addPerspective(page, "Acute outcomes")
-  await expect(page.getByText("Perspective matrix (3)", { exact: true })).toBeVisible()
-  await page.getByRole("button", { name: "Continue" }).click()
+  await page.getByRole("button", { name: "Add Perspective" }).click()
+  const addPerspectiveDialog = page.getByRole("dialog", {
+    name: "Add a Perspective",
+  })
+  await expect(addPerspectiveDialog).toContainText(
+    "Existing rounds and the working hypothesis stay in place.",
+  )
+  await addPerspectiveDialog
+    .getByRole("button", { name: "Add Acute outcomes" })
+    .click()
+  await expect(addPerspectiveDialog).toHaveCount(0)
   await expect(page.locator('[data-testid^="agent-node-"]')).toHaveCount(3)
-  await expect(page.getByTestId("round-result-node-1")).toBeVisible()
+  const continued = await requestJson(
+    page.request,
+    `/api/focused/sessions/${rootId}`,
+    "get",
+  )
+  expect(continued.deliberations[0].rounds).toHaveLength(1)
+  expect(continued.applied_hypothesis_version_id).toBe("H1")
+  expect(continued.deliberations[0].agent_iids).toHaveLength(3)
+  await expect(page.locator('[data-testid^="round-result-node-"]')).toHaveCount(0)
 
   await page.getByRole("button", { name: "Join" }).click()
   await page.getByRole("button", { name: /Explanation How/ }).click()
@@ -275,7 +319,7 @@ test("branches an open question into an isolated child Investigation", async ({ 
   await expect(
     page.locator('[data-hypothesis-part="hypothesis"]'),
   ).not.toContainText("Not established yet.")
-  await page.getByRole("button", { name: "Apply shared ground" }).click()
+  await applySharedGround(page)
   await page.getByRole("button", { name: "Save hypothesis" }).click()
   await expect(page.getByText("Saved H2", { exact: true })).toBeVisible()
   await expect(page.getByTestId("saved-hypothesis-node-H2")).toHaveCount(0)
@@ -316,6 +360,7 @@ test("branches an open question into an isolated child Investigation", async ({ 
   await page.keyboard.press("Escape")
   await expect(page.getByTestId("saved-hypothesis-node-H2")).toBeVisible()
   await expect(page.getByTestId("saved-hypothesis-node-H1")).toHaveCount(0)
+  await expect(page.locator('[data-testid^="round-result-node-"]')).toHaveCount(0)
   const researchNode = page.locator(
     '[data-testid^="research-problem-node-"]',
   ).first()
@@ -440,7 +485,7 @@ test("promotes and merges versioned hypotheses through the workspace map", async
   expect(pendingRoot.deliberations[0].hypothesis_confirmed).toBe(false)
   await page.goto(`/focused?workspace=${workspaceId}`)
   await page.getByRole("button", { name: "Join" }).click()
-  await page.getByRole("button", { name: "Apply shared ground" }).click()
+  await applySharedGround(page)
   await expect(page.getByText("Applied, not saved", { exact: true })).toBeVisible()
   await page.getByRole("button", { name: "Save hypothesis" }).click()
   await expect(page.getByText("Saved H1", { exact: true })).toBeVisible()
@@ -521,13 +566,19 @@ test("edits an applied hypothesis without reusing pending-update semantics", asy
   await prepareConsensusCheckpoint(page.request, rootId, false)
   await page.goto(`/focused?workspace=${workspaceId}`)
   await page.getByRole("button", { name: "Join" }).click()
-  await page.getByRole("button", { name: "Apply shared ground" }).click()
+  await applySharedGround(page)
   await page.getByRole("button", { name: "Save hypothesis" }).click()
+  await page.getByRole("button", { name: "Edit hypothesis" }).click()
+  await expect(
+    page.getByRole("button", { name: "Apply edits" }),
+  ).toBeDisabled()
+  await page.getByRole("button", { name: "Cancel editing" }).click()
+  await expect(page.getByRole("button", { name: "Edit hypothesis" })).toBeVisible()
   await page.getByRole("button", { name: "Edit hypothesis" }).click()
   await page
     .getByRole("textbox", { name: "Reasoning hypothesis step" })
     .fill("Researcher-edited reasoning")
-  await page.getByRole("button", { name: "Apply edits" }).click()
+  await applyHypothesisChanges(page, "Apply edits")
   await page.getByRole("button", { name: "Save hypothesis" }).click()
   await page.keyboard.press("Escape")
   const workspace = await page.request.get(

@@ -26,16 +26,19 @@ Surfaces:
   Before round 1, the drawer explains the multi-round flow and the follow-up
   question step, then asks the researcher to choose one or two areas.
 - Panel — React Flow canvas (nodes/wires/dot grid) + guided drawer:
-  each completed round stays visible as a Deliberation Result node. Its
-  process-first summary precedes the transcript. Shared ground proposes an
-  inspectable before/after update to the four-step working hypothesis.
-  Applying changes the working hypothesis; saving creates an immutable
-  checkpoint. End deliberation closes the round/chat/edit lifecycle, reveals
-  the final Hypothesis and Research Problem nodes, and opens one deliberation-
-  level divergent/convergent scoring dialog.
+  while open, the canvas shows the Research Problem, Perspective agents, and
+  panel. Add Perspective uses an unrepresented cluster and appends its agent to
+  the same deliberation without clearing prior work. Round conversations stay in
+  the drawer; each moderator summary follows its agent turns.
+  Shared ground shows explicit Before and Proposed values for every changed
+  hypothesis part, then requires a separate Apply changes confirmation. Saving
+  creates an immutable checkpoint. End deliberation closes the round/chat/edit
+  lifecycle and reveals only the final Hypothesis and Research Problem outputs,
+  followed by one deliberation-level divergent/convergent scoring dialog.
 
-Overlays: modals (Perspective detail, hypothesis, scoring, reset) share
-ModalShell; the 1180px/96vw panel drawer is the only side sheet.
+Overlays: modals (add Perspective, Perspective detail, apply changes,
+hypothesis, scoring, reset) share ModalShell; the 1180px/96vw panel drawer is
+the only side sheet.
 
 IA rules:
 - One primary action per surface; it advances the flow.
@@ -98,7 +101,8 @@ border affordance. CheckRow(checked, onToggle) — 13px checklist row.
 Sentence case, never uppercase labels. No arrows, no emojis, plain language;
 prefer “panel” in explanatory copy. The explicit terminal action is
 “End deliberation.” Empty states are one actionable line. Buttons say what they
-do (Generate search queries, Start round, Apply shared ground, End deliberation).
+do (Generate search queries, Add Perspective, Start round, Apply shared ground,
+Apply changes, End deliberation).
 Busy = spinner inside the triggering button.
 Visible labels start with a capital letter. Internal agent and paper IDs
 never render; use the Perspective name and complete, wrapping

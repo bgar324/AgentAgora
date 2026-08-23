@@ -607,6 +607,52 @@ def test_demo_hypothesis_progresses_across_separate_rounds() -> None:
     asyncio.run(go())
 
 
+def test_unchanged_consensus_does_not_create_pending_update(monkeypatch) -> None:
+    async def go() -> None:
+        service, session_id, deliberation_id, agent_iids = await _demo_panel()
+        state = await service.run_round(
+            session_id,
+            deliberation_id,
+            lead_iid=agent_iids[0],
+            facets=["scope"],
+        )
+        candidate = state.deliberations[0].hypothesis
+        assert candidate is not None
+        state = await service.confirm_deliberation_hypothesis(
+            session_id,
+            deliberation_id,
+            candidate,
+        )
+        applied = state.deliberations[0].applied_hypothesis
+        assert applied is not None
+
+        async def unchanged_hypothesis(*_args, **_kwargs):
+            return applied.model_copy(
+                deep=True,
+                update={
+                    "problem": f"  {applied.problem}  ",
+                    "reasoning": "   ",
+                },
+            )
+
+        monkeypatch.setattr(
+            agents,
+            "develop_hypothesis_from_consensus",
+            unchanged_hypothesis,
+        )
+        state = await service.run_round(
+            session_id,
+            deliberation_id,
+            lead_iid=agent_iids[1],
+            facets=["explanation"],
+        )
+        deliberation = state.deliberations[0]
+        assert deliberation.hypothesis == applied
+        assert deliberation.hypothesis_confirmed
+
+    asyncio.run(go())
+
+
 def test_round_accepts_only_one_or_two_unique_facets() -> None:
     async def go() -> None:
         service, session_id, deliberation_id, agent_iids = await _demo_panel()
