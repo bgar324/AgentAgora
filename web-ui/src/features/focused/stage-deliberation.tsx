@@ -413,6 +413,7 @@ function PanelDrawer({
   const session = useFocusedStore((state) => state.session)
   const busy = useFocusedStore((state) => state.busy)
   const {
+    createChildInvestigation,
     runRound,
     completeDeliberation,
     confirmHypothesis,
@@ -779,6 +780,9 @@ function PanelDrawer({
               onSave={saveDraft}
               onEnd={endDeliberation}
               onRate={onRate}
+              onInvestigateQuestion={(questionId) => {
+                void act(() => createChildInvestigation(questionId))
+              }}
               onOpenChild={(investigationId) =>
                 act(() => switchInvestigation(investigationId))
               }
@@ -1081,6 +1085,7 @@ function WorkingHypothesisPanel({
   onSave,
   onEnd,
   onRate,
+  onInvestigateQuestion,
   onOpenChild,
   onSetQuestionStatus,
 }: {
@@ -1098,6 +1103,7 @@ function WorkingHypothesisPanel({
   onSave: () => Promise<boolean>
   onEnd: () => Promise<boolean>
   onRate: () => void
+  onInvestigateQuestion: (questionId: string) => void
   onOpenChild: (investigationId: string) => void
   onSetQuestionStatus: (
     questionId: string,
@@ -1379,9 +1385,19 @@ function WorkingHypothesisPanel({
                       <>
                         <span className="self-center text-[9.5px] text-[var(--mute)]">
                           {completed
-                            ? "Open its Research Problem node on the canvas to search."
+                            ? "Start a child Investigation with fresh literature and Perspectives."
                             : "Its Research Problem node appears when you end the deliberation."}
                         </span>
+                        {completed && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={busy}
+                            onClick={() => onInvestigateQuestion(item.id)}
+                          >
+                            Start paper search
+                          </Button>
+                        )}
                         <Button
                           variant="ghost"
                           size="sm"

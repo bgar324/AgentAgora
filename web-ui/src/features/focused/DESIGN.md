@@ -35,6 +35,9 @@ Surfaces:
   creates an immutable checkpoint. End deliberation closes the round/chat/edit
   lifecycle and reveals only the final Hypothesis and Research Problem outputs,
   followed by one deliberation-level divergent/convergent scoring dialog.
+  Completed open questions expose Start paper search both in the drawer and on
+  their Research Problem node; neither surface forces the user to hunt for the
+  other.
 
 Overlays: modals (add Perspective, Perspective detail, apply changes,
 hypothesis, scoring, reset) share ModalShell; the 1180px/96vw panel drawer is

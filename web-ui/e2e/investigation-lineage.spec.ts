@@ -365,7 +365,13 @@ test("branches an open question into an isolated child Investigation", async ({ 
     '[data-testid^="research-problem-node-"]',
   ).first()
   await expect(researchNode).toBeVisible()
-  await researchNode.click()
+  await page.getByRole("button", { name: "Review" }).click()
+  const endedDrawer = page.getByRole("dialog", { name: "Focused panel" })
+  const startPaperSearch = endedDrawer
+    .getByRole("button", { name: "Start paper search" })
+    .first()
+  await expect(startPaperSearch).toBeVisible()
+  await startPaperSearch.click()
   await expect(page.getByText("Child Investigation", { exact: true })).toBeVisible()
   await expect(page.getByText(/This branch begins from H2/)).toBeVisible()
   const childId = await page
