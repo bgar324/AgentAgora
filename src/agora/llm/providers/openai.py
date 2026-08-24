@@ -52,10 +52,12 @@ def _request(
     if reasoning_effort is not None:
         request["reasoning"] = {"effort": reasoning_effort}
 
-    key = _prompt_cache_key(messages, cache_namespace)
-    if key is not None:
-        request["prompt_cache_key"] = key
-
+    if cache_namespace == "":
+        request["prompt_cache_options"] = {"mode": "explicit"}
+    else:
+        key = _prompt_cache_key(messages, cache_namespace)
+        if key is not None:
+            request["prompt_cache_key"] = key
     return request
 
 

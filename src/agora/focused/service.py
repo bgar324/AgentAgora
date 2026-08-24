@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 
 from agora.focused import agents
+from agora.focused.clustering import density_partition
 from agora.focused.demo_data import (
     DEMO_CLUSTERS,
     DEMO_FACETS,
@@ -65,6 +66,11 @@ from agora.focused.persistence import PersistenceConflict
 
 logger = logging.getLogger(__name__)
 MAX_SUGGESTED_QUERIES = 5
+PAPERS_PER_QUERY = 20
+MAX_RETRIEVED_PAPERS = 200
+TARGET_CLUSTER_PAPERS = 20
+MAX_CLUSTERS = 6
+CLUSTER_REPRESENTATIVE_PAPERS = 5
 
 
 class SessionError(Exception):
@@ -144,6 +150,8 @@ def _serialized_parent_mutation(method):
 
 class _Session:
     def __init__(self, state: SessionState) -> None:
+        for deliberation in state.deliberations:
+            FocusedPanelService._materialize_completion_history(deliberation)
         self.state = state
         self._turn_seq = max(
             (
@@ -155,6 +163,18 @@ class _Session:
                         turn
                         for round_state in deliberation.rounds
                         for turn in round_state.turns
+                    ),
+                    *(
+                        turn
+                        for completion in deliberation.completion_history
+                        for turn in [
+                            *completion.chat,
+                            *(
+                                turn
+                                for round_state in completion.rounds
+                                for turn in round_state.turns
+                            ),
+                        ]
                     ),
                 ]
             ),
@@ -227,10 +247,16 @@ class FocusedPanelService:
         embedding_model: str = "unconfigured",
         s2: Any | None = None,
         persistence: WorkspacePersistence | None = None,
+        retain_search_embeddings: bool = False,
     ) -> None:
         self._sessions: dict[str, _Session] = {}
         self._workspaces: dict[str, WorkspaceState] = {}
         self._workspace_locks: dict[str, asyncio.Lock] = {}
+        self._retain_search_embeddings = retain_search_embeddings
+        self._search_progress: dict[str, list[dict[str, Any]]] = {}
+        self._search_progress_sequence: dict[str, int] = {}
+        self._search_progress_generation: dict[str, int] = {}
+        self._search_progress_active_generation: dict[str, int] = {}
         self._durable_snapshots: dict[
             str,
             tuple[
@@ -262,6 +288,69 @@ class FocusedPanelService:
         if session is None:
             raise SessionError(f"session '{session_id}' not found", status=404)
         return session
+
+    def start_search_progress(self, session_id: str) -> int:
+        self._require(session_id)
+        generation = self._search_progress_generation.get(session_id, 0) + 1
+        self._search_progress_generation[session_id] = generation
+        self._search_progress[session_id] = []
+        self._search_progress_sequence[session_id] = 0
+        return generation
+
+    def search_progress(
+        self,
+        session_id: str,
+        *,
+        generation: int | None = None,
+        after: int = 0,
+    ) -> dict[str, Any]:
+        self._require(session_id)
+        current_generation = self._search_progress_generation.get(session_id, 0)
+        if generation is not None and generation != current_generation:
+            return {
+                "generation": current_generation,
+                "items": [],
+                "next": after,
+            }
+        items = [
+            item
+            for item in self._search_progress.get(session_id, [])
+            if item["sequence"] > after
+        ]
+        return {
+            "generation": current_generation,
+            "items": items,
+            "next": items[-1]["sequence"] if items else after,
+        }
+
+    def _publish_search_progress(
+        self,
+        session_id: str,
+        query: str,
+        retrieved: int,
+    ) -> None:
+        generation = self._search_progress_active_generation.get(session_id)
+        if generation != self._search_progress_generation.get(session_id):
+            return
+        sequence = self._search_progress_sequence.get(session_id, 0) + 1
+        self._search_progress_sequence[session_id] = sequence
+        payload = {
+            "generation": generation,
+            "sequence": sequence,
+            "query": query,
+            "retrieved": retrieved,
+            "message": f"Searched {query}...retrieved {retrieved} papers",
+        }
+        history = self._search_progress.setdefault(session_id, [])
+        history.append(payload)
+        if len(history) > 64:
+            del history[:-64]
+
+    def _forget_search_progress(self, session_id: str) -> None:
+        self._search_progress.pop(session_id, None)
+        self._search_progress_sequence.pop(session_id, None)
+        self._search_progress_generation.pop(session_id, None)
+        self._search_progress_active_generation.pop(session_id, None)
 
     def _workspace_lock(self, workspace_id: str) -> asyncio.Lock:
         return self._workspace_locks.setdefault(workspace_id, asyncio.Lock())
@@ -313,6 +402,7 @@ class FocusedPanelService:
                 and investigation_id not in restored_sessions
             ):
                 self._sessions.pop(investigation_id)
+                self._forget_search_progress(investigation_id)
         self._workspaces[restored_workspace.id] = restored_workspace
         for investigation_id, session_snapshot in restored_sessions.items():
             session = self._sessions.get(investigation_id)
@@ -340,6 +430,7 @@ class FocusedPanelService:
         for investigation_id, session in list(self._sessions.items()):
             if session.state.workspace_id == workspace_id:
                 self._sessions.pop(investigation_id)
+                self._forget_search_progress(investigation_id)
         if workspace is None:
             self._workspaces.pop(workspace_id, None)
             self._workspace_locks.pop(workspace_id, None)
@@ -423,11 +514,21 @@ class FocusedPanelService:
             round_state.completed
             for deliberation in state.deliberations
             for round_state in deliberation.rounds
+        ) + sum(
+            round_state.completed
+            for deliberation in state.deliberations
+            for completion in deliberation.completion_history
+            for round_state in completion.rounds
         )
         open_questions = sum(
             question.status == "open"
             for deliberation in state.deliberations
             for question in deliberation.recommended_questions
+        ) + sum(
+            question.status == "open"
+            for deliberation in state.deliberations
+            for completion in deliberation.completion_history
+            for question in completion.recommended_questions
         )
         return InvestigationSummary(
             id=state.id,
@@ -480,6 +581,10 @@ class FocusedPanelService:
             for question in deliberation.recommended_questions:
                 if question.id == question_id:
                     return deliberation, question
+            for completion in deliberation.completion_history:
+                for question in completion.recommended_questions:
+                    if question.id == question_id:
+                        return deliberation, question
         raise SessionError(f"open question '{question_id}' not found", status=404)
 
     @staticmethod
@@ -515,7 +620,7 @@ class FocusedPanelService:
                 workspace,
                 state.applied_hypothesis_version_id,
             )
-            if state.applied_hypothesis_version_id
+            if parent_ids is None and state.applied_hypothesis_version_id
             else None
         )
         parents = (
@@ -649,6 +754,7 @@ class FocusedPanelService:
             self._remember_durable(workspace.id)
         except Exception:
             self._sessions.pop(state.id, None)
+            self._forget_search_progress(state.id)
             self._workspaces.pop(workspace.id, None)
             self._workspace_locks.pop(workspace.id, None)
             self._durable_snapshots.pop(workspace.id, None)
@@ -706,6 +812,7 @@ class FocusedPanelService:
         workspace_id: str,
         parent_investigation_id: str,
         child_investigation_id: str,
+        invited_perspective_ids: list[str] | None = None,
     ) -> WorkspaceView:
         workspace = self._require_workspace(workspace_id)
         parent = self._require(parent_investigation_id)
@@ -734,6 +841,16 @@ class FocusedPanelService:
                 "Return to the parent panel and end its current deliberation "
                 "before adding this research branch."
             )
+        agent_by_iid = {agent.iid: agent for agent in parent.state.agents}
+        invited = (
+            list(invited_perspective_ids)
+            if invited_perspective_ids is not None
+            else [
+                agent_by_iid[iid].perspective_id
+                for iid in deliberation.agent_iids
+                if iid in agent_by_iid
+            ]
+        )
         if child_state.origin_question_id is None:
             raise SessionError("The research branch has no source question.")
         _, source_question = self._recommended_question(
@@ -746,37 +863,6 @@ class FocusedPanelService:
                 status=409,
             )
 
-        recorded_question_ids: set[str] = set()
-        for prior in deliberation.completion_history:
-            if prior.question_ids:
-                recorded_question_ids.update(prior.question_ids)
-                continue
-            recorded_question_ids.update(
-                question.id
-                for question in deliberation.recommended_questions
-                if question.source_round is not None
-                and question.source_round <= prior.round_count
-            )
-        completion = DeliberationCompletion(
-            completed_at=deliberation.completed_at,
-            final_hypothesis_version_id=deliberation.final_hypothesis_version_id,
-            round_count=len(deliberation.rounds),
-            agent_iids=list(deliberation.agent_iids),
-            question_ids=[
-                question.id
-                for question in deliberation.recommended_questions
-                if question.id not in recorded_question_ids
-            ],
-            rating=(
-                deliberation.rating.model_copy(deep=True)
-                if deliberation.rating is not None
-                else None
-            ),
-        )
-        deliberation.completion_history.append(completion)
-        deliberation.completed_at = None
-        deliberation.final_hypothesis_version_id = None
-        deliberation.rating = None
 
         paper_ids = {paper.id for paper in parent.state.papers}
         paper_by_content = {
@@ -819,6 +905,10 @@ class FocusedPanelService:
                             paper_map.get(paper_id, paper_id)
                             for paper_id in cluster.paper_ids
                         ],
+                        "representative_paper_ids": [
+                            paper_map.get(paper_id, paper_id)
+                            for paper_id in cluster.representative_paper_ids
+                        ],
                         "facets": [
                             evidence.model_copy(
                                 deep=True,
@@ -835,6 +925,7 @@ class FocusedPanelService:
                 )
             )
 
+        imported_perspective_ids: list[str] = []
         for perspective in child_state.perspectives:
             imported = perspective.model_copy(
                 deep=True,
@@ -848,7 +939,7 @@ class FocusedPanelService:
                         f"{child_state.id[:8]}-{perspective.origin}",
                     ),
                     "source_question_id": child_state.origin_question_id,
-                    "panel_cycle": len(deliberation.completion_history),
+                    "panel_cycle": 0,
                     "sources": [
                         paper_map.get(paper_id, paper_id)
                         for paper_id in perspective.sources
@@ -868,14 +959,22 @@ class FocusedPanelService:
                 },
             )
             parent.state.perspectives.append(imported)
-            self._ensure_perspective_agent(parent, imported)
+            imported_perspective_ids.append(imported.id)
+
+        source_question.status = "addressed"
+        self._restart_deliberation(
+            parent,
+            [*imported_perspective_ids, *invited],
+        )
+        for perspective in parent.state.perspectives:
+            if perspective.id in imported_perspective_ids:
+                perspective.panel_cycle = len(deliberation.completion_history)
 
         parent.state.searched_queries = list(
             dict.fromkeys(
                 [*parent.state.searched_queries, *child_state.searched_queries]
             )
         )
-        source_question.status = "addressed"
         child_state.integrated_into_parent_at = utcnow()
         workspace.active_investigation_id = parent.state.id
         return self._save_view(workspace.id)
@@ -1078,6 +1177,7 @@ class FocusedPanelService:
                 raise WorkspaceConflict() from error
         for investigation_id in workspace.investigation_ids:
             self._sessions.pop(investigation_id, None)
+            self._forget_search_progress(investigation_id)
         self._workspaces.pop(workspace.id, None)
         self._workspace_locks.pop(workspace.id, None)
         self._durable_snapshots.pop(workspace.id, None)
@@ -1246,17 +1346,26 @@ class FocusedPanelService:
         scored.sort(key=lambda pair: -pair[0])
         return [p.model_copy(deep=True) for _, p in scored[:20]]
 
-    async def _live_retrieve(self, queries: list[str]) -> tuple[list[ExpPaper], bool]:
+    async def _live_retrieve(
+        self,
+        queries: list[str],
+        *,
+        session_id: str | None = None,
+    ) -> tuple[list[ExpPaper], bool]:
         papers: dict[str, ExpPaper] = {}
         search_succeeded = False
         for query in queries:
+            retrieved_for_query = 0
             variants = [query]
             relaxed = agents.relaxed_search_query(query)
             if relaxed and relaxed.casefold() != query.casefold():
                 variants.append(relaxed)
             for variant in variants:
                 try:
-                    results = await self._s2.search(variant, limit=8)
+                    results = await self._s2.search(
+                        variant,
+                        limit=PAPERS_PER_QUERY,
+                    )
                 except Exception as exc:
                     logger.warning(
                         "focused paper search failed for %r: %s",
@@ -1271,6 +1380,7 @@ class FocusedPanelService:
                         ) from exc
                     continue
                 search_succeeded = True
+                retrieved_for_query = len(results)
                 for result in results:
                     if result.id in papers:
                         continue
@@ -1290,7 +1400,13 @@ class FocusedPanelService:
                     )
                 if results:
                     break
-        return list(papers.values())[:30], search_succeeded
+            if session_id is not None:
+                self._publish_search_progress(
+                    session_id,
+                    query,
+                    retrieved_for_query,
+                )
+        return list(papers.values())[:MAX_RETRIEVED_PAPERS], search_succeeded
 
     async def _retrieve_queries(
         self, session: _Session, queries: list[str]
@@ -1299,8 +1415,37 @@ class FocusedPanelService:
         if not clean:
             return [], False
         if self._demo(session):
+            for query in clean:
+                self._publish_search_progress(
+                    session.state.id,
+                    query,
+                    len(self._demo_retrieve([query])),
+                )
             return self._demo_retrieve(clean), True
-        return await self._live_retrieve(clean)
+
+        return await self._live_retrieve(clean, session_id=session.state.id)
+
+    @staticmethod
+    def _bounded_corpus(
+        answering: dict[str, ExpPaper],
+        angle: dict[str, ExpPaper],
+    ) -> list[ExpPaper]:
+        papers = list(answering.values())
+        papers.extend(
+            paper for paper_id, paper in angle.items() if paper_id not in answering
+        )
+        return papers[:MAX_RETRIEVED_PAPERS]
+
+
+    @staticmethod
+    def _target_cluster_count(paper_count: int) -> int:
+        if paper_count < 2:
+            return 1
+        return max(
+            2,
+            min(MAX_CLUSTERS, paper_count // TARGET_CLUSTER_PAPERS),
+        )
+
 
     @staticmethod
     def _kmeans_clusters(papers: list[ExpPaper], k: int) -> list[list[ExpPaper]]:
@@ -1364,6 +1509,8 @@ class FocusedPanelService:
         method: str,
         papers: list[ExpPaper],
         groups: list[list[ExpPaper]],
+        *,
+        requested_clusters: int,
     ) -> ClusteringDiagnostics:
         """Record what actually ran: method, embedding coverage, sizes, and
         a cosine silhouette when there are ≥2 valid clusters.
@@ -1400,6 +1547,7 @@ class FocusedPanelService:
             method=method,  # type: ignore[arg-type]
             embedded=sum(1 for p in papers if p.specter_v2),
             total=len(papers),
+            requested_clusters=requested_clusters,
             cluster_sizes=[len(g) for g in groups],
             silhouette=silhouette,
         )
@@ -1456,10 +1604,93 @@ class FocusedPanelService:
             )
         return mapped
 
+    async def _retrieve_question(
+        self,
+        session: _Session,
+        reach: QuestionReach,
+        round1_queries: list[str],
+    ) -> tuple[dict[str, ExpPaper], bool, list[str]]:
+        reach.queries_r1 = list(round1_queries)
+        round1_papers, round1_succeeded = await self._retrieve_queries(
+            session,
+            round1_queries,
+        )
+        hits = {paper.id: paper for paper in round1_papers}
+        assessment = await agents.assess_question_papers(
+            reach.question,
+            reach.candidates,
+            list(hits.values()),
+            provider=self._provider_for(session),
+        )
+        reach.vocabulary = assessment.vocabulary
+        selected: dict[str, Any] = {
+            item.paper_id: item for item in assessment.selected
+        }
+        selected_papers = [
+            hits[paper_id] for paper_id in selected if paper_id in hits
+        ]
+        expansion = await agents.expand_question_search(
+            reach.question,
+            reach.candidates,
+            reach.vocabulary,
+            selected_papers,
+            provider=self._provider_for(session),
+        )
+        round2_queries = list(
+            dict.fromkeys(
+                query.query.strip()
+                for query in expansion
+                if query.query.strip() and query.query.strip() not in round1_queries
+            )
+        )
+        reach.queries_r2 = round2_queries
+        round2_papers, round2_succeeded = await self._retrieve_queries(
+            session,
+            round2_queries,
+        )
+        fresh = [paper for paper in round2_papers if paper.id not in hits]
+        if fresh:
+            follow_up = await agents.assess_question_papers(
+                reach.question,
+                reach.candidates,
+                fresh,
+                provider=self._provider_for(session),
+            )
+            for item in follow_up.selected:
+                selected.setdefault(item.paper_id, item)
+            for paper in fresh:
+                hits.setdefault(paper.id, paper)
+        reach.retrieved = len(hits)
+        reach.selected = list(selected.values())
+        reach.reached = bool(reach.selected)
+        answering = {
+            paper_id: hits[paper_id]
+            for paper_id in selected
+            if paper_id in hits
+        }
+        return (
+            answering,
+            round1_succeeded or round2_succeeded,
+            round2_queries,
+        )
+
     @_serialized_session_mutation
-    async def run_search(self, session_id: str, queries: list[str]) -> SessionState:
+    async def run_search(
+        self,
+        session_id: str,
+        queries: list[str],
+        *,
+        progress_generation: int | None = None,
+    ) -> SessionState:
         session = self._require(session_id)
         state = session.state
+        if progress_generation is None:
+            self.start_search_progress(state.id)
+        elif self._search_progress_generation.get(state.id) != progress_generation:
+            raise SessionError("Search progress generation is stale.", status=409)
+        self._search_progress_active_generation[state.id] = (
+            self._search_progress_generation[state.id]
+        )
         self._ensure_searchable(state)
         queries = [q.strip() for q in queries if q.strip()]
         if not queries:
@@ -1482,7 +1713,8 @@ class FocusedPanelService:
             session,
             angle_queries,
         )
-        paper_by_id = {paper.id: paper for paper in angle_papers}
+        angle_by_id = {paper.id: paper for paper in angle_papers}
+        answering_by_id: dict[str, ExpPaper] = {}
 
         reaches = [
             reach.model_copy(
@@ -1502,6 +1734,7 @@ class FocusedPanelService:
             question = state.research_questions[len(reaches)]
             reaches.append(QuestionReach(question=question, candidates=[question]))
 
+        automatic_queries: list[str] = []
         for question_index, reach in enumerate(reaches):
             round1 = list(
                 dict.fromkeys(
@@ -1512,31 +1745,15 @@ class FocusedPanelService:
                     and suggestion.question_index == question_index
                 )
             )
-            reach.queries_r1 = round1
-            question_papers, question_search_succeeded = await self._retrieve_queries(
-                session,
-                round1,
+            answering, question_search_succeeded, round2 = (
+                await self._retrieve_question(session, reach, round1)
             )
             search_succeeded = search_succeeded or question_search_succeeded
-            hits = {paper.id: paper for paper in question_papers}
-            assessment = await agents.assess_question_papers(
-                reach.question,
-                reach.candidates,
-                list(hits.values()),
-                provider=self._provider_for(session),
-                want_round2=False,
-            )
-            reach.vocabulary = assessment.vocabulary
-            selected_evidence = {item.paper_id: item for item in assessment.selected}
-            reach.retrieved = len(hits)
-            reach.selected = list(selected_evidence.values())
-            reach.reached = bool(reach.selected)
-            for paper_id in selected_evidence:
-                paper = hits.get(paper_id)
-                if paper is not None:
-                    paper_by_id.setdefault(paper_id, paper)
+            automatic_queries.extend(round2)
+            for paper_id, paper in answering.items():
+                answering_by_id.setdefault(paper_id, paper)
         state.question_reach = reaches
-        papers = list(paper_by_id.values())
+        papers = self._bounded_corpus(answering_by_id, angle_by_id)
         if not papers:
             if not search_succeeded:
                 raise SessionError(
@@ -1549,25 +1766,47 @@ class FocusedPanelService:
                 status=422,
             )
 
+        partition_representatives: list[list[ExpPaper]] | None = None
+        unassigned_papers: list[ExpPaper] = []
         if self._demo(session):
             groups = self._demo_cluster(papers) if papers else []
+            requested_clusters = len(groups)
             method = "demo_seeds"
         else:
-            groups = self._embedding_clusters(papers)
-            method = "specter_kmeans"
-            if len(groups) < 2:
-                groups = (
-                    self._kmeans_clusters(papers, k=6)
-                    if len(papers) >= 4
-                    else ([papers] if papers else [])
-                )
-                method = "tfidf_kmeans" if len(papers) >= 4 else "single_group"
+            requested_clusters = self._target_cluster_count(len(papers))
+            partition = density_partition(
+                papers,
+                requested_clusters=requested_clusters,
+            )
+            if partition is not None:
+                groups = partition.groups
+                partition_representatives = partition.representatives
+                unassigned_papers = partition.unassigned
+                method = "specter_hdbscan_dpp"
+            else:
+                groups = self._embedding_clusters(papers, k=requested_clusters)
+                method = "specter_kmeans"
+                if len(groups) < 2:
+                    groups = (
+                        self._kmeans_clusters(papers, k=requested_clusters)
+                        if len(papers) >= 4
+                        else ([papers] if papers else [])
+                    )
+                    method = "tfidf_kmeans" if len(papers) >= 4 else "single_group"
 
-        state.clustering = self._clustering_diagnostics(method, papers, groups)
+        state.clustering = self._clustering_diagnostics(
+            method,
+            papers,
+            groups,
+            requested_clusters=requested_clusters,
+        )
 
         state.papers = papers
+        state.unassigned_paper_ids = [paper.id for paper in unassigned_papers]
         state.searched = True
-        state.searched_queries = list(dict.fromkeys(queries))
+        state.searched_queries = list(
+            dict.fromkeys([*queries, *automatic_queries])
+        )
 
         clusters: list[ClusterCard] = []
         ordered_groups = [self._centroid_order(group) for group in groups]
@@ -1586,26 +1825,36 @@ class FocusedPanelService:
                 if self._demo(session)
                 else None
             )
+            representatives = (
+                partition_representatives[idx]
+                if partition_representatives is not None
+                and idx < len(partition_representatives)
+                else group[:CLUSTER_REPRESENTATIVE_PAPERS]
+            )
             facets = await agents.extract_cluster_facets(
-                group,
+                representatives,
                 provider=self._provider_for(session),
                 demo_facets=demo_facets,
             )
-            # Provenance is enforced at the service boundary: an extracted
-            # facet survives only when it maps to this cluster's abstracts.
-            by_id = {paper.id: paper for paper in group}
-            grounded: list[FacetEvidence] = []
-            seen_facets: set[Facet] = set()
+            # Provenance is enforced against the abstracts the model read.
+            by_id = {paper.id: paper for paper in representatives}
+            grounded_by_facet: dict[Facet, FacetEvidence] = {}
             for evidence in facets:
-                if evidence.facet in seen_facets:
+                if evidence.facet in grounded_by_facet:
                     continue
-                seen_facets.add(evidence.facet)
-                grounded.append(self._validate_facet_source(evidence, by_id))
-            grounded.extend(
-                FacetEvidence(facet=facet, text="")
+                validated = self._validate_facet_source(evidence, by_id)
+                if validated.text.strip():
+                    grounded_by_facet[evidence.facet] = validated
+            fallback_by_facet = {
+                evidence.facet: evidence
+                for evidence in agents.fallback_cluster_facets(representatives)
+            }
+            grounded = [
+                grounded_by_facet.get(facet)
+                or fallback_by_facet.get(facet)
+                or FacetEvidence(facet=facet, text="")
                 for facet in FACETS
-                if facet not in seen_facets
-            )
+            ]
             clusters.append(
                 ClusterCard(
                     id=f"cluster-{idx + 1}",
@@ -1617,8 +1866,21 @@ class FocusedPanelService:
                     else (DEMO_CLUSTERS[idx % len(DEMO_CLUSTERS)]["blurb"]),
                     facets=grounded,
                     paper_ids=[p.id for p in group],
+                    representative_paper_ids=[p.id for p in representatives],
                 )
             )
+        known_ids = {paper.id for paper in state.papers}
+        clustered_ids = {
+            paper_id for cluster in clusters for paper_id in cluster.paper_ids
+        }
+        unassigned_ids = set(state.unassigned_paper_ids)
+        if clustered_ids & unassigned_ids or clustered_ids | unassigned_ids != known_ids:
+            raise RuntimeError(
+                "clustering must assign or explicitly unassign every paper"
+            )
+        if not self._retain_search_embeddings:
+            for paper in state.papers:
+                paper.specter_v2 = None
         state.clusters = clusters
         return self._save_state(state)
 
@@ -1629,6 +1891,206 @@ class FocusedPanelService:
                 return paper
         raise SessionError(f"paper '{paper_id}' not in this session", status=404)
 
+    def _new_panel_agent(
+        self,
+        session: _Session,
+        perspective: Perspective,
+    ) -> AgentState:
+        agent = AgentState(
+            iid=session.next_agent_iid(),
+            perspective_id=perspective.id,
+            label=perspective.name,
+            facets={
+                facet: evidence.model_copy(deep=True)
+                for facet, evidence in perspective.facets.items()
+            },
+        )
+        session.state.agents.append(agent)
+        return agent
+
+    @staticmethod
+    def _recorded_question_ids(deliberation: DeliberationState) -> set[str]:
+        return {
+            question_id
+            for completion in deliberation.completion_history
+            for question_id in completion.question_ids
+        }
+
+    @staticmethod
+    def _materialize_completion_history(
+        deliberation: DeliberationState,
+    ) -> tuple[int, int]:
+        has_legacy_cumulative_history = any(
+            completion.round_count > 0 and not completion.rounds
+            for completion in deliberation.completion_history
+        )
+        if not has_legacy_cumulative_history:
+            return 0, 0
+        rounds = list(deliberation.rounds)
+        chat = list(deliberation.chat)
+        previous_round_count = 0
+        previous_chat_count = 0
+        by_question_id = {
+            question.id: question for question in deliberation.recommended_questions
+        }
+        for completion in deliberation.completion_history:
+            cumulative_round_count = completion.round_count
+            if not completion.rounds:
+                completion.rounds = [
+                    item.model_copy(deep=True)
+                    for item in rounds[
+                        previous_round_count:cumulative_round_count
+                    ]
+                ]
+                completion.round_count = len(completion.rounds)
+            if not completion.question_ids:
+                completion.question_ids = [
+                    question.id
+                    for question in deliberation.recommended_questions
+                    if question.source_round is not None
+                    and previous_round_count
+                    < question.source_round
+                    <= cumulative_round_count
+                ]
+            if not completion.recommended_questions:
+                completion.recommended_questions = [
+                    by_question_id[question_id].model_copy(deep=True)
+                    for question_id in completion.question_ids
+                    if question_id in by_question_id
+                ]
+            if completion.chat_count and not completion.chat:
+                completion.chat = [
+                    item.model_copy(deep=True)
+                    for item in chat[
+                        previous_chat_count:previous_chat_count
+                        + completion.chat_count
+                    ]
+                ]
+            previous_round_count = cumulative_round_count
+            previous_chat_count += completion.chat_count
+        archived_question_ids = {
+            question_id
+            for completion in deliberation.completion_history
+            for question_id in completion.question_ids
+        }
+        deliberation.rounds = rounds[previous_round_count:]
+        deliberation.recommended_questions = [
+            question
+            for question in deliberation.recommended_questions
+            if question.id not in archived_question_ids
+        ]
+        deliberation.chat = chat[previous_chat_count:]
+        return 0, 0
+
+    def _archive_current_deliberation(
+        self,
+        deliberation: DeliberationState,
+        applied_hypothesis_version_id: str | None,
+    ) -> None:
+        previous_round_count, previous_chat_count = (
+            self._materialize_completion_history(deliberation)
+        )
+        recorded_questions = self._recorded_question_ids(deliberation)
+        current_rounds = deliberation.rounds[previous_round_count:]
+        current_chat = deliberation.chat[previous_chat_count:]
+        current_questions = [
+            question
+            for question in deliberation.recommended_questions
+            if question.id not in recorded_questions
+        ]
+        has_activity = (
+            bool(current_rounds)
+            or bool(current_chat)
+            or bool(current_questions)
+            or deliberation.hypothesis is not None
+            or deliberation.completed_at is not None
+        )
+        if not has_activity:
+            return
+        reason: Literal["completed", "restarted"] = (
+            "completed" if deliberation.completed_at is not None else "restarted"
+        )
+        deliberation.completion_history.append(
+            DeliberationCompletion(
+                archived_at=utcnow(),
+                reason=reason,
+                completed_at=deliberation.completed_at,
+                final_hypothesis_version_id=deliberation.final_hypothesis_version_id,
+                round_count=len(current_rounds),
+                chat_count=len(current_chat),
+                agent_iids=list(deliberation.agent_iids),
+                question_ids=[question.id for question in current_questions],
+                rating=(
+                    deliberation.rating.model_copy(deep=True)
+                    if deliberation.rating is not None
+                    else None
+                ),
+                rounds=[item.model_copy(deep=True) for item in current_rounds],
+                recommended_questions=[
+                    item.model_copy(deep=True) for item in current_questions
+                ],
+                chat=[item.model_copy(deep=True) for item in current_chat],
+                revised_perspective=(
+                    deliberation.revised_perspective.model_copy(deep=True)
+                    if deliberation.revised_perspective is not None
+                    else None
+                ),
+                hypothesis=(
+                    deliberation.hypothesis.model_copy(deep=True)
+                    if deliberation.hypothesis is not None
+                    else None
+                ),
+                applied_hypothesis_version_id=applied_hypothesis_version_id,
+                applied_hypothesis=(
+                    deliberation.applied_hypothesis.model_copy(deep=True)
+                    if deliberation.applied_hypothesis is not None
+                    else None
+                ),
+                hypothesis_confirmed=deliberation.hypothesis_confirmed,
+                no_agreement=deliberation.no_agreement,
+            )
+        )
+
+    def _restart_deliberation(
+        self,
+        session: _Session,
+        perspective_ids: list[str],
+    ) -> DeliberationState:
+        state = session.state
+        if not state.deliberations:
+            raise SessionError("This Investigation has no deliberation.")
+        roster = list(dict.fromkeys(perspective_ids))
+        if len(roster) < 2:
+            raise SessionError("A panel needs at least two Perspectives.")
+        perspectives = {perspective.id: perspective for perspective in state.perspectives}
+        unknown = [perspective_id for perspective_id in roster if perspective_id not in perspectives]
+        if unknown:
+            raise SessionError(f"unknown Perspectives: {unknown}", status=404)
+        deliberation = state.deliberations[0]
+        self._archive_current_deliberation(
+            deliberation,
+            state.applied_hypothesis_version_id,
+        )
+        deliberation.rounds = []
+        deliberation.recommended_questions = []
+        deliberation.chat = []
+        deliberation.agent_iids = [
+            self._new_panel_agent(session, perspectives[perspective_id]).iid
+            for perspective_id in roster
+        ]
+        deliberation.revised_perspective = None
+        deliberation.hypothesis = None
+        deliberation.applied_hypothesis = None
+        deliberation.hypothesis_confirmed = False
+        deliberation.working_hypothesis_source_kind = None
+        deliberation.working_hypothesis_source_round = None
+        deliberation.no_agreement = False
+        deliberation.questions_generated = False
+        deliberation.completed_at = None
+        deliberation.final_hypothesis_version_id = None
+        deliberation.rating = None
+        return deliberation
+
     def _ensure_perspective_agent(
         self,
         session: _Session,
@@ -1636,25 +2098,23 @@ class FocusedPanelService:
     ) -> AgentState:
         state = session.state
         existing = next(
-            (agent for agent in state.agents if agent.perspective_id == perspective.id),
+            (
+                agent
+                for agent in reversed(state.agents)
+                if agent.perspective_id == perspective.id
+            ),
             None,
         )
         if existing is None:
-            existing = AgentState(
-                iid=session.next_agent_iid(),
-                perspective_id=perspective.id,
-                label=perspective.name,
-                facets={
-                    facet: evidence.model_copy(deep=True)
-                    for facet, evidence in perspective.facets.items()
-                },
-            )
-            state.agents.append(existing)
+            existing = self._new_panel_agent(session, perspective)
+        agent_by_iid = {agent.iid: agent for agent in state.agents}
         for deliberation in state.deliberations:
-            if (
-                deliberation.completed_at is None
-                and existing.iid not in deliberation.agent_iids
-            ):
+            has_perspective = any(
+                iid in agent_by_iid
+                and agent_by_iid[iid].perspective_id == perspective.id
+                for iid in deliberation.agent_iids
+            )
+            if deliberation.completed_at is None and not has_perspective:
                 deliberation.agent_iids.append(existing.iid)
         return existing
 
@@ -1666,6 +2126,7 @@ class FocusedPanelService:
         cluster_id: str,
         facets: list[FacetEvidence] | None = None,
         name: str | None = None,
+        invited_perspective_ids: list[str] | None = None,
     ) -> SessionState:
         session = self._require(session_id)
         state = session.state
@@ -1673,14 +2134,6 @@ class FocusedPanelService:
             raise SessionError(
                 "This research branch was already continued.",
                 status=409,
-            )
-        if any(
-            deliberation.completed_at is not None
-            for deliberation in state.deliberations
-        ):
-            raise SessionError(
-                "This deliberation has ended. Start from a Research Problem "
-                "before adding more Perspectives."
             )
         cluster = next((item for item in state.clusters if item.id == cluster_id), None)
         if cluster is None:
@@ -1731,11 +2184,7 @@ class FocusedPanelService:
                 }
             ),
             origin=cluster.id,
-            panel_cycle=(
-                len(state.deliberations[0].completion_history)
-                if state.deliberations
-                else 0
-            ),
+            panel_cycle=0,
         )
         perspective.framing = await agents.derive_framing(
             perspective, provider=self._provider_for(session)
@@ -1751,7 +2200,25 @@ class FocusedPanelService:
                 status=409,
             )
         state.perspectives.append(perspective)
-        self._ensure_perspective_agent(session, perspective)
+        if state.deliberations:
+            current = state.deliberations[0]
+            agent_by_iid = {agent.iid: agent for agent in state.agents}
+            invited = (
+                list(invited_perspective_ids)
+                if invited_perspective_ids is not None
+                else [
+                    agent_by_iid[iid].perspective_id
+                    for iid in current.agent_iids
+                    if iid in agent_by_iid
+                ]
+            )
+            self._restart_deliberation(
+                session,
+                [perspective.id, *invited],
+            )
+            perspective.panel_cycle = len(current.completion_history)
+        else:
+            self._ensure_perspective_agent(session, perspective)
         return self._save_state(state)
 
     @_serialized_session_mutation
@@ -1766,7 +2233,20 @@ class FocusedPanelService:
                 status=409,
             )
         orphaned = {a.iid for a in state.agents if a.perspective_id == perspective_id}
-        if any(
+        archived_iids = {
+            iid
+            for deliberation in state.deliberations
+            for completion in deliberation.completion_history
+            for iid in [
+                *completion.agent_iids,
+                *(
+                    participant_iid
+                    for round_state in completion.rounds
+                    for participant_iid in round_state.participant_iids
+                ),
+            ]
+        }
+        if orphaned & archived_iids or any(
             deliberation.rounds
             and any(iid in deliberation.agent_iids for iid in orphaned)
             for deliberation in state.deliberations
@@ -1877,27 +2357,28 @@ class FocusedPanelService:
     async def create_deliberation(self, session_id: str) -> SessionState:
         session = self._require(session_id)
         state = session.state
+        if state.deliberations:
+            return state
         for perspective in state.perspectives:
             self._ensure_perspective_agent(session, perspective)
-        if not state.deliberations:
-            inherited = (
-                state.applied_hypothesis.model_copy(deep=True)
-                if state.applied_hypothesis is not None
-                else None
+        inherited = (
+            state.applied_hypothesis.model_copy(deep=True)
+            if state.applied_hypothesis is not None
+            else None
+        )
+        state.deliberations.append(
+            DeliberationState(
+                id=session.next_deliberation_id(),
+                agent_iids=[agent.iid for agent in state.agents],
+                hypothesis=inherited,
+                applied_hypothesis=(
+                    inherited.model_copy(deep=True)
+                    if inherited is not None
+                    else None
+                ),
+                hypothesis_confirmed=inherited is not None,
             )
-            state.deliberations.append(
-                DeliberationState(
-                    id=session.next_deliberation_id(),
-                    agent_iids=[agent.iid for agent in state.agents],
-                    hypothesis=inherited,
-                    applied_hypothesis=(
-                        inherited.model_copy(deep=True)
-                        if inherited is not None
-                        else None
-                    ),
-                    hypothesis_confirmed=inherited is not None,
-                )
-            )
+        )
         return self._save_state(state)
 
     def _agent_view(
@@ -2332,12 +2813,25 @@ class FocusedPanelService:
             revised,
             provider=self._provider_for(session),
         )
+        prior_questions = [
+            *(
+                question
+                for completion in deliberation.completion_history
+                for question in completion.recommended_questions
+            ),
+            *deliberation.recommended_questions,
+        ]
         unresolved = {
             " ".join(item.question.casefold().split())
-            for item in deliberation.recommended_questions
+            for item in prior_questions
             if item.status in {"open", "investigating"}
         }
         new_questions: list[RecommendedQuestion] = []
+        cycle_suffix = (
+            f"-c{len(deliberation.completion_history) + 1}"
+            if deliberation.completion_history
+            else ""
+        )
         for index, question in enumerate(questions, start=1):
             identity = " ".join(question.question.casefold().split())
             if identity in unresolved:
@@ -2346,7 +2840,10 @@ class FocusedPanelService:
             new_questions.append(
                 question.model_copy(
                     update={
-                        "id": f"{deliberation.id}-r{round_state.n}-q{index}",
+                        "id": (
+                            f"{deliberation.id}{cycle_suffix}"
+                            f"-r{round_state.n}-q{index}"
+                        ),
                         "source_round": round_state.n,
                     }
                 )
@@ -2371,14 +2868,6 @@ class FocusedPanelService:
         if not deliberation.rounds or not deliberation.rounds[-1].completed:
             raise SessionError(
                 "Complete a focused round before ending the deliberation."
-            )
-        if (
-            deliberation.completion_history
-            and len(deliberation.rounds)
-            <= deliberation.completion_history[-1].round_count
-        ):
-            raise SessionError(
-                "Complete a new focused round before ending the continued deliberation."
             )
         if (
             not deliberation.hypothesis_confirmed
@@ -2491,16 +2980,28 @@ class FocusedPanelService:
         working = deliberation.applied_hypothesis
         if not deliberation.hypothesis_confirmed or working is None:
             raise SessionError("Apply the working hypothesis before saving it.")
+        workspace = self._workspace_for(session.state)
+        current_version_id = session.state.applied_hypothesis_version_id
+        latest_archive = (
+            deliberation.completion_history[-1]
+            if deliberation.completion_history
+            else None
+        )
+        fresh_cycle = (
+            latest_archive is not None
+            and current_version_id
+            == latest_archive.applied_hypothesis_version_id
+        )
         if (
-            session.state.applied_hypothesis_version_id is not None
+            not fresh_cycle
+            and current_version_id is not None
             and session.state.applied_hypothesis == working
         ):
             return session.state
 
-        workspace = self._workspace_for(session.state)
-        current_version_id = session.state.applied_hypothesis_version_id
         advances_promoted_branch = (
-            current_version_id is not None
+            not fresh_cycle
+            and current_version_id is not None
             and workspace.promoted_hypothesis_version_id == current_version_id
             and self._hypothesis_version(
                 workspace,
@@ -2513,6 +3014,7 @@ class FocusedPanelService:
             deliberation,
             working,
             source_kind=deliberation.working_hypothesis_source_kind or "applied",
+            parent_ids=[] if fresh_cycle else None,
             source_round=deliberation.working_hypothesis_source_round,
         )
         if advances_promoted_branch:

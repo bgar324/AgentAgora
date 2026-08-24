@@ -1,0 +1,77 @@
+[
+  {
+    "id": "hci-decision-transparency",
+    "problem": "How should transparency in human-AI decision systems affect user trust, control, and decision quality?",
+    "research_questions": [
+      "Which forms of AI explanation improve calibrated trust rather than blind reliance?",
+      "When do user-control mechanisms improve decisions without increasing cognitive load?"
+    ],
+    "expected_concepts": [
+      "explainable artificial intelligence",
+      "calibrated trust",
+      "human-AI decision making",
+      "user control",
+      "cognitive load"
+    ]
+  },
+  {
+    "id": "ai-writing-diversity",
+    "problem": "How do generative AI writing suggestions affect the diversity and quality of knowledge work?",
+    "research_questions": [
+      "When do early draft suggestions reduce output diversity?",
+      "Which interaction designs preserve independent reasoning before AI assistance?"
+    ],
+    "expected_concepts": [
+      "generative AI writing",
+      "output diversity",
+      "idea homogenization",
+      "knowledge work",
+      "automation bias"
+    ]
+  },
+  {
+    "id": "clinical-antibiotic-resistance",
+    "problem": "Which evidence should guide antibiotic treatment when clinical outcomes and resistance risk point in different directions?",
+    "research_questions": [
+      "When should short-term clinical response outweigh population-level resistance risk?",
+      "Which patient or pathogen characteristics change the preferred treatment strategy?"
+    ],
+    "expected_concepts": [
+      "antimicrobial resistance",
+      "antibiotic stewardship",
+      "clinical outcomes",
+      "pathogen susceptibility",
+      "treatment duration"
+    ]
+  },
+  {
+    "id": "autonomous-driving-explanations",
+    "problem": "How should automated vehicles explain their behavior to improve safety, trust, and driver performance?",
+    "research_questions": [
+      "Which explanation timing and modality reduce cognitive load during safety-critical events?",
+      "How does driver expertise change the effect of vehicle explanations?"
+    ],
+    "expected_concepts": [
+      "automated driving",
+      "explanation modality",
+      "driver trust",
+      "cognitive load",
+      "situation awareness"
+    ]
+  },
+  {
+    "id": "educational-chatbots-learning",
+    "problem": "Under what conditions do conversational AI tutors improve learning without weakening student self-regulation?",
+    "research_questions": [
+      "Which tutoring strategies improve durable learning rather than short-term task completion?",
+      "When does chatbot assistance reduce productive struggle or metacognitive monitoring?"
+    ],
+    "expected_concepts": [
+      "intelligent tutoring systems",
+      "conversational agents",
+      "self-regulated learning",
+      "productive struggle",
+      "metacognition"
+    ]
+  }
+]

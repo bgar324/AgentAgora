@@ -9,14 +9,18 @@ from agora.focused import agents
 from agora.focused.models import (
     FACETS,
     AgentState,
+    DeliberationCompletion,
     DeliberationRound,
+    DeliberationState,
     FacetEvidence,
     HypothesisDev,
     Perspective,
     RecommendedQuestion,
+    SessionState,
+    utcnow,
 )
 from agora.focused.persistence import FocusedPersistence
-from agora.focused.service import FocusedPanelService, SessionError
+from agora.focused.service import FocusedPanelService, SessionError, _Session
 
 PROBLEM = (
     "How should broad antibiotic coverage balance acute benefit and ecological harm?"
@@ -46,6 +50,40 @@ def panel_perspective(perspective_id: str, name: str, prefix: str) -> Perspectiv
             for facet in FACETS
         },
     )
+
+def test_legacy_completion_history_materializes_on_session_load() -> None:
+    round_state = DeliberationRound(
+        n=1,
+        lead_iid=1,
+        participant_iids=[1, 2],
+        facets=["scope"],
+        completed=True,
+    )
+    completion = DeliberationCompletion(
+        completed_at=utcnow(),
+        final_hypothesis_version_id="H1",
+        round_count=1,
+        agent_iids=[1, 2],
+    )
+    state = SessionState(
+        id="legacy",
+        workspace_id="workspace",
+        deliberations=[
+            DeliberationState(
+                id="delib-1",
+                rounds=[round_state],
+                completion_history=[completion],
+            )
+        ],
+    )
+
+    restored = _Session(state).state
+
+    archived = restored.deliberations[0].completion_history[0]
+    assert [round_item.n for round_item in archived.rounds] == [1]
+    assert archived.round_count == 1
+    assert restored.deliberations[0].rounds == []
+
 
 
 async def apply_checkpoint(

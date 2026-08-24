@@ -14,11 +14,13 @@ from agora.focused.models import (
     ClusterNaming,
     ClusterNamings,
     ExpPaper,
+    FacetCandidate,
     FacetEvidence,
     FacetExtraction,
     QuerySuggestions,
     QuestionAssessment,
     QuestionEvidence,
+    QuestionExpansion,
     QuestionPlan,
     SuggestedQuery,
     VocabularyPair,
@@ -31,6 +33,7 @@ from agora.schemas.research import Paper
 class HermeticRetrieval:
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.limits: list[int] = []
         self.failures: set[str] = set()
         self.papers = {
             "angle-1": FocusedSearchResult(
@@ -65,6 +68,7 @@ class HermeticRetrieval:
 
     async def search(self, query: str, limit: int = 8):
         self.calls.append(query)
+        self.limits.append(limit)
         if query in self.failures:
             raise RuntimeError("provider unavailable")
         return [self.papers[paper_id] for paper_id in self.results.get(query, [])][
@@ -157,14 +161,6 @@ class HermeticProvider:
                             theirs="homogenization",
                         )
                     ],
-                    round2=[
-                        SuggestedQuery(
-                            query="ai suggestion homogenization",
-                            rationale="Observed literature vocabulary.",
-                            kind="question",
-                            round=2,
-                        )
-                    ],
                 )
             elif "[q-follow]" in user:
                 parsed = QuestionAssessment(
@@ -182,6 +178,21 @@ class HermeticProvider:
                 )
             else:
                 parsed = QuestionAssessment()
+        elif schema is QuestionExpansion:
+            parsed = QuestionExpansion(
+                queries=(
+                    [
+                        SuggestedQuery(
+                            query="ai suggestion homogenization",
+                            rationale="Observed literature vocabulary.",
+                            kind="question",
+                            round=2,
+                        )
+                    ]
+                    if "q-answer" in user
+                    else []
+                )
+            )
         elif schema is ClusterNamings:
             cluster_count = len(re.findall(r"^## CLUSTER \d+", user, re.MULTILINE))
             repeated_names = [
@@ -205,7 +216,7 @@ class HermeticProvider:
             sentence = self.retrieval.papers[paper_id].abstract or ""
             parsed = FacetExtraction(
                 facets=[
-                    FacetEvidence(
+                    FacetCandidate(
                         facet=facet,
                         text=sentence,
                         paper_id=paper_id,
@@ -252,15 +263,36 @@ def test_question_search_records_reach_and_miss() -> None:
             (query.kind, query.question_index) for query in state.suggested_queries[:2]
         ] == [("question", 0), ("question", 1)]
         assert len({query.query.casefold() for query in state.suggested_queries}) == 5
-        state = await service.run_search(state.id, selected)
+        generation = service.start_search_progress(state.id)
+        state = await service.run_search(
+            state.id,
+            selected,
+            progress_generation=generation,
+        )
+        progress = service.search_progress(
+            state.id,
+            generation=generation,
+        )
+        assert {
+            update["message"] for update in progress["items"]
+        } >= {"Searched ai suggestion homogenization...retrieved 1 papers"}
+        assert [item["sequence"] for item in progress["items"]] == list(
+            range(1, progress["next"] + 1)
+        )
 
-        assert "ai suggestion homogenization" not in retrieval.calls
+        assert "ai suggestion homogenization" in retrieval.calls
         assert "withdrawn tool capability" in retrieval.calls
-        assert all(not reach.queries_r2 for reach in state.question_reach)
+        assert state.question_reach[0].queries_r2 == [
+            "ai suggestion homogenization"
+        ]
         assert state.question_reach[0].reached
         assert {evidence.paper_id for evidence in state.question_reach[0].selected} == {
-            "q-answer"
+            "q-answer",
+            "q-follow",
         }
+        assert set(retrieval.limits) == {20}
+        assert state.clustering is not None
+        assert state.clustering.requested_clusters == 2
         assert state.question_reach[1].reached is False
         assert state.question_reach[1].selected == []
         assert state.clusters
@@ -270,6 +302,9 @@ def test_question_search_records_reach_and_miss() -> None:
         assert provider.schemas.count("ClusterNamings") == 1
         papers = {paper.id: paper for paper in state.papers}
         for cluster in state.clusters:
+            assert cluster.representative_paper_ids
+            assert set(cluster.representative_paper_ids) <= set(cluster.paper_ids)
+            assert len(cluster.representative_paper_ids) <= 5
             assert [item.facet for item in cluster.facets] == FACETS
             assert all(item.paper_id for item in cluster.facets)
             assert all(
@@ -278,6 +313,11 @@ def test_question_search_records_reach_and_miss() -> None:
                 for item in cluster.facets
                 if item.paper_id
             )
+        clustered = {
+            paper_id for cluster in state.clusters for paper_id in cluster.paper_ids
+        }
+        assert not clustered & set(state.unassigned_paper_ids)
+        assert clustered | set(state.unassigned_paper_ids) == set(papers)
 
     asyncio.run(go())
 
@@ -455,6 +495,18 @@ def test_citation_filter_accepts_only_known_allowed_sources() -> None:
     assert citations == ["p1"]
 
 
+def test_facet_extraction_schema_excludes_server_owned_provenance() -> None:
+    properties = FacetExtraction.model_json_schema()["$defs"]["FacetCandidate"][
+        "properties"
+    ]
+
+    assert set(properties) == {"facet", "text", "paper_id", "sentence_index"}
+    assert "edited" not in properties
+    assert "sentence" not in properties
+
+
+
+
 def test_focused_retrieval_uses_one_full_paper_search() -> None:
     class FullPaperClient:
         def __init__(self) -> None:
@@ -490,3 +542,17 @@ def test_focused_retrieval_uses_one_full_paper_search() -> None:
         assert papers[0].specter_v2 == [0.1, 0.2]
 
     asyncio.run(go())
+
+
+def test_corpus_budget_prioritizes_question_answers() -> None:
+    answering = {
+        "q-answer": ExpPaper(id="q-answer", title="Answering paper")
+    }
+    angle = {
+        f"angle-{index}": ExpPaper(id=f"angle-{index}", title=f"Angle {index}")
+        for index in range(250)
+    }
+    papers = FocusedPanelService._bounded_corpus(answering, angle)
+    assert len(papers) == 200
+    assert papers[0].id == "q-answer"
+    assert "angle-249" not in {paper.id for paper in papers}

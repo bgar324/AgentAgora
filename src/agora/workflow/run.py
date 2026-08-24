@@ -1,10 +1,13 @@
+# ruff: noqa: I001
 import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import asdict
 from datetime import UTC, datetime
 from uuid import uuid4
 
+import numpy as _numpy  # noqa: F401 — load before dspy's lazy numpy alias
 import dspy
 
 from agora.config.deliberation import DeliberationConfig
@@ -63,21 +66,26 @@ from agora.panel.perspective import (
 )
 from agora.research.cluster import project
 from agora.research.corpus import build_corpus
-from agora.research.discovery import ResearchDiscovery
+from agora.research.discovery import ResearchDiscovery, distinct_directions
 from agora.research.evidence import (
-    text_citations,
     EvidenceSearch,
     merge_observations,
     observations_by_id,
+    text_citations,
 )
-from agora.research.rerank import rerank
 from agora.research.model import LiteratureModel
-from agora.research.search import LiteratureSearch
+from agora.research.rerank import rerank
+from agora.research.search import (
+    LiteratureSearch,
+    RetrievalProgress,
+    retrieval_progress_message,
+)
 from agora.schemas.api import EventEnvelope
 from agora.schemas.deliberation import Contribution, Resolution, Suggestion, Thread
 from agora.schemas.research import (
     ClusteredLiterature,
     PaperCorpus,
+    ResearchDirection,
     ResearchIdea,
     SearchPlan,
 )
@@ -134,6 +142,7 @@ PUBLIC_EVENT_TYPES = {
     "investigation.updated": "investigation.updated",
     "brief.ready": "brief.ready",
     "perspectives.ready": "perspectives.ready",
+    "retrieval.progress": "retrieval.progress",
     "proposals.ready": "proposals.ready",
     "workflow.waiting": "workflow.waiting",
     "workflow.failed": "workflow.failed",
@@ -394,6 +403,15 @@ class Runner:
         row = self.investigation(investigation_id)
         return row["question"] or ""
 
+    def _literature_search(self, investigation_id: str) -> LiteratureSearch:
+        async def progress(update: RetrievalProgress) -> None:
+            payload = asdict(update)
+            if message := retrieval_progress_message(update):
+                payload["message"] = message
+            self.emit(investigation_id, "retrieval.progress", payload)
+
+        return LiteratureSearch(self.s2, progress=progress)
+
     def start_brief(self, investigation_id: str, *, idea: str, n: int) -> None:
         self._spawn(
             investigation_id,
@@ -402,7 +420,7 @@ class Runner:
 
     async def _run_brief(self, investigation_id: str, idea: str, n: int) -> None:
         self._transition(investigation_id, status="active")
-        literature_search = LiteratureSearch(self.s2)
+        literature_search = self._literature_search(investigation_id)
         discovery = ResearchDiscovery(literature_search)
 
         with dspy.context(lm=self.lms["brief"]):
@@ -437,6 +455,7 @@ class Runner:
         version: int,
         title: str | None,
         research_question: str | None,
+        research_directions: list[ResearchDirection] | None,
     ) -> None:
         self.require_version(investigation_id, version)
         directory = self._dir(investigation_id)
@@ -448,8 +467,12 @@ class Runner:
 
         if research_question is not None:
             fields["question"] = " ".join(research_question.split())
+        if research_directions is not None and not plan_path.exists():
+            raise Conflict("wrong_stage", "The Investigation has no search plan yet")
+        directions: list[ResearchDirection] = []
 
-        if plan_path.exists() and fields:
+        changed = bool(fields) or research_directions is not None
+        if plan_path.exists() and changed:
             plan = SearchPlan.model_validate_json(plan_path.read_text())
             question = plan.research_question.model_copy(
                 update={
@@ -461,12 +484,39 @@ class Runner:
                     if value is not None
                 }
             )
-            plan = plan.model_copy(update={"research_question": question})
+            directions = plan.research_directions
+            if research_directions is not None:
+                try:
+                    directions = (
+                        distinct_directions(
+                            research_directions,
+                            seeds=plan.retrieval_seeds,
+                            n=len(research_directions),
+                        )
+                        if research_directions
+                        else []
+                    )
+                except ValueError as error:
+                    raise Conflict(
+                        "invalid_directions",
+                        str(error),
+                    ) from error
+            plan = plan.model_copy(
+                update={
+                    "research_question": question,
+                    "research_directions": directions,
+                }
+            )
             plan_path.write_text(plan.model_dump_json(indent=2))
 
-        if fields:
+        if changed:
             self._transition(investigation_id, **fields)
-            self.emit(investigation_id, "investigation.updated", fields)
+            payload = dict(fields)
+            if research_directions is not None:
+                payload["research_directions"] = [
+                    item.model_dump(mode="json") for item in directions
+                ]
+            self.emit(investigation_id, "investigation.updated", payload)
 
     def start_perspectives(self, investigation_id: str, *, n: int) -> None:
         directory = self._dir(investigation_id)
@@ -490,7 +540,7 @@ class Runner:
         if corpus_path.exists():
             corpus = PaperCorpus.model_validate_json(corpus_path.read_text())
         else:
-            literature_search = LiteratureSearch(self.s2)
+            literature_search = self._literature_search(investigation_id)
             result = await literature_search.search(
                 corpus_id=f"corpus_{investigation_id}",
                 investigation_id=investigation_id,

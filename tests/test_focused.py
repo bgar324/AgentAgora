@@ -142,7 +142,7 @@ def test_compacts_prose_queries_and_relaxes_to_broad_terms() -> None:
     )
 
 
-def test_perspectives_join_open_deliberation_without_reset_and_end_once() -> None:
+def test_added_perspective_restarts_deliberation_from_scratch() -> None:
     async def go() -> None:
         service = FocusedPanelService()
         state = service.create_workspace(
@@ -155,105 +155,101 @@ def test_perspectives_join_open_deliberation_without_reset_and_end_once() -> Non
             state.id,
             [query.query for query in state.suggested_queries[:3]],
         )
-        assert state.searched_queries == [
-            query.query for query in state.suggested_queries[:3]
-        ]
-
         for cluster in state.clusters[:2]:
             state = await service.generate_perspective(
                 state.id,
                 cluster_id=cluster.id,
             )
-        assert len(state.agents) == 2
-
         state = await service.create_deliberation(state.id)
         deliberation = state.deliberations[0]
-        assert deliberation.agent_iids == [agent.iid for agent in state.agents]
-
         state = await service.run_round(
             state.id,
             deliberation.id,
             lead_iid=deliberation.agent_iids[0],
             facets=["scope"],
         )
-        first = state.deliberations[0]
-        assert first.rounds[0].participant_iids == first.agent_iids
-        assert first.hypothesis is not None
+        deliberation = state.deliberations[0]
+        assert deliberation.hypothesis is not None
         state = await service.confirm_deliberation_hypothesis(
             state.id,
-            first.id,
-            first.hypothesis,
+            deliberation.id,
+            deliberation.hypothesis,
         )
-        state = await service.save_deliberation_hypothesis(state.id, first.id)
+        state = await service.save_deliberation_hypothesis(
+            state.id,
+            deliberation.id,
+        )
         saved_version_id = state.applied_hypothesis_version_id
-        saved_hypothesis = state.applied_hypothesis
-        question_ids = [
-            question.id for question in state.deliberations[0].recommended_questions
-        ]
+        invited_id = state.perspectives[0].id
+        previous_iids = set(state.deliberations[0].agent_iids)
 
         state = await service.generate_perspective(
             state.id,
             cluster_id=state.clusters[2].id,
+            invited_perspective_ids=[invited_id],
         )
-        updated = state.deliberations[0]
-        assert len(state.agents) == 3
-        assert len(updated.rounds) == 1
-        assert state.applied_hypothesis_version_id == saved_version_id
-        assert state.applied_hypothesis == saved_hypothesis
-        assert [
-            question.id for question in updated.recommended_questions
-        ] == question_ids
-        assert updated.agent_iids == [agent.iid for agent in state.agents]
+
+        deliberation = state.deliberations[0]
+        assert len(deliberation.completion_history) == 1
+        archived = deliberation.completion_history[0]
+        assert archived.reason == "restarted"
+        assert len(archived.rounds) == 1
+        assert archived.hypothesis is not None
+        assert archived.applied_hypothesis_version_id == saved_version_id
+        archived_json = archived.model_dump_json()
+        assert deliberation.rounds == []
+        assert deliberation.recommended_questions == []
+        assert deliberation.chat == []
+        assert deliberation.hypothesis is None
+        assert deliberation.applied_hypothesis is None
+        assert not deliberation.hypothesis_confirmed
+        assert deliberation.completed_at is None
+        assert deliberation.final_hypothesis_version_id is None
+        assert deliberation.rating is None
+        assert previous_iids.isdisjoint(deliberation.agent_iids)
+        roster = {
+            next(agent for agent in state.agents if agent.iid == iid).perspective_id
+            for iid in deliberation.agent_iids
+        }
+        assert roster == {invited_id, state.perspectives[-1].id}
+        roster_iids = list(deliberation.agent_iids)
+        state = await service.create_deliberation(state.id)
+        deliberation = state.deliberations[0]
+        assert deliberation.agent_iids == roster_iids
+        with pytest.raises(SessionError, match="cannot be removed"):
+            await service.remove_perspective(state.id, invited_id)
+        for iid in deliberation.agent_iids:
+            agent = next(item for item in state.agents if item.iid == iid)
+            perspective = next(
+                item
+                for item in state.perspectives
+                if item.id == agent.perspective_id
+            )
+            assert agent.facets == perspective.facets
+            assert agent.facet_version == 1
 
         state = await service.run_round(
             state.id,
-            updated.id,
-            lead_iid=updated.agent_iids[-1],
+            deliberation.id,
+            lead_iid=deliberation.agent_iids[0],
             facets=["explanation"],
         )
-        updated = state.deliberations[0]
-        assert updated.rounds[0].participant_iids == updated.agent_iids[:2]
-        assert updated.rounds[1].participant_iids == updated.agent_iids
-        assert updated.hypothesis is not None
+        assert state.deliberations[0].completion_history[0].model_dump_json() == archived_json
+        current = state.deliberations[0]
+        assert len(current.rounds) == 1
+        assert current.hypothesis is not None
         state = await service.confirm_deliberation_hypothesis(
             state.id,
-            updated.id,
-            updated.hypothesis,
+            current.id,
+            current.hypothesis,
         )
-        state = await service.save_deliberation_hypothesis(state.id, updated.id)
-        final_version_id = state.applied_hypothesis_version_id
-
-        with pytest.raises(SessionError, match="End the deliberation"):
-            await service.rate_deliberation(
-                state.id,
-                updated.id,
-                DeliberationRating(divergent=6, convergent=5),
-            )
-
-        state = await service.complete_deliberation(state.id, updated.id)
-        completed = state.deliberations[0]
-        assert completed.completed_at is not None
-        assert completed.final_hypothesis_version_id == final_version_id
-
-        with pytest.raises(SessionError, match="ended"):
-            await service.run_round(
-                state.id,
-                completed.id,
-                lead_iid=completed.agent_iids[0],
-                facets=["approach"],
-            )
-
-        state = await service.rate_deliberation(
-            state.id,
-            completed.id,
-            DeliberationRating(divergent=6, convergent=5),
-        )
-        assert state.deliberations[0].rating is not None
-        assert state.deliberations[0].rating.divergent == 6
-        assert all(
-            "rating" not in round_state.model_dump()
-            for round_state in state.deliberations[0].rounds
-        )
+        state = await service.save_deliberation_hypothesis(state.id, current.id)
+        view = service.workspace_view(state.workspace_id)
+        latest = view.workspace.hypothesis_versions[-1]
+        assert latest.parent_ids == []
+        assert set(latest.step_sources.values()) == {latest.id}
+        summary = next(item for item in view.investigations if item.id == state.id)
+        assert summary.completed_rounds == 2
 
     asyncio.run(go())
 
@@ -609,7 +605,7 @@ def test_full_facet_round_records_resolution_metrics_rating_and_child_branch() -
     asyncio.run(go())
 
 
-def test_child_research_continues_existing_deliberation() -> None:
+def test_child_research_starts_a_fresh_deliberation_cycle() -> None:
     async def go() -> None:
         service, session_id, deliberation_id, agent_iids = await _demo_panel()
         state = await service.run_round(
@@ -663,22 +659,29 @@ def test_child_research_continues_existing_deliberation() -> None:
         assert view.active.id == parent.id
         continued = service.get(parent.id)
         deliberation = continued.deliberations[0]
-        assert len(deliberation.rounds) == 1
+        assert deliberation.rounds == []
+        assert deliberation.recommended_questions == []
+        assert deliberation.chat == []
+        assert deliberation.hypothesis is None
+        assert deliberation.applied_hypothesis is None
         assert continued.applied_hypothesis_version_id == "H1"
         assert deliberation.completed_at is None
         assert deliberation.final_hypothesis_version_id is None
         assert deliberation.rating is None
         assert len(deliberation.completion_history) == 1
         completion = deliberation.completion_history[0]
+        assert completion.reason == "completed"
         assert completion.final_hypothesis_version_id == "H1"
-        assert completion.round_count == 1
+        assert completion.applied_hypothesis_version_id == "H1"
+        assert len(completion.rounds) == 1
         assert completion.agent_iids == agent_iids
         assert question.id in completion.question_ids
+        assert completion.recommended_questions[0].status == "addressed"
         assert completion.rating is not None
         assert completion.rating.divergent == 6
-        assert len(continued.agents) == 4
-        assert deliberation.agent_iids == [agent.iid for agent in continued.agents]
-        assert continued.deliberations[0].recommended_questions[0].status == "addressed"
+        assert len(continued.agents) == 6
+        assert len(deliberation.agent_iids) == 4
+        assert set(deliberation.agent_iids).isdisjoint(agent_iids)
         imported_perspectives = [
             perspective
             for perspective in continued.perspectives
@@ -697,7 +700,7 @@ def test_child_research_continues_existing_deliberation() -> None:
                 child.id,
                 cluster_id=child.clusters[0].id,
             )
-        with pytest.raises(SessionError, match="new focused round"):
+        with pytest.raises(SessionError, match="Complete a focused round"):
             await service.complete_deliberation(parent.id, deliberation.id)
 
         state = await service.run_round(

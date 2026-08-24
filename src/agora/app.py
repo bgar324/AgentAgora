@@ -20,7 +20,7 @@ from agora.focused.retrieval import FocusedSemanticScholar
 from agora.focused.persistence import FocusedPersistence
 from agora.focused.supabase_persistence import SupabaseFocusedPersistence
 from agora.focused.service import FocusedPanelService
-from agora.llm.providers.openrouter import OpenRouterProvider
+from agora.llm.providers.openai import OpenAIProvider
 from agora.workflow.run import Runner
 
 
@@ -58,10 +58,10 @@ async def lifespan(app: FastAPI):
         s2_client=s2_client,
     )
     focused_provider = None
-    if settings.openrouter.api_key:
+    if settings.openai.api_key:
         focused_provider = FocusedProvider(
-            llm=OpenRouterProvider(settings.openrouter),
-            phase=settings.models.deliberation,
+            llm=OpenAIProvider(settings.openai),
+            models=settings.focused_models,
         )
     focused_s2 = FocusedSemanticScholar(s2_client)
     app.state.focused_provider = focused_provider

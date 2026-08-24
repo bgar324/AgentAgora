@@ -13,6 +13,7 @@ import type {
   Perspective,
   DeliberationRating,
   QuestionStatus,
+  SessionState,
   WorkspaceView,
 } from "@/types/focused"
 
@@ -24,6 +25,15 @@ export class ApiError extends Error {
     super(message)
     this.name = "ApiError"
   }
+}
+
+type SearchProgressResponse = {
+  generation: number
+  items: {
+    sequence: number
+    message: string
+  }[]
+  next: number
 }
 
 const WRAPPED_LINE_END =
@@ -84,6 +94,8 @@ export function useFocusedPanel() {
   const perspectiveViewSet = useFocusedStore((s) => s.perspectiveViewSet)
   const busySet = useFocusedStore((s) => s.busySet)
   const queriesCleared = useFocusedStore((s) => s.queriesCleared)
+  const searchProgressAdded = useFocusedStore((s) => s.searchProgressAdded)
+  const searchProgressCleared = useFocusedStore((s) => s.searchProgressCleared)
   const optimisticPerspectiveAdd = useFocusedStore(
     (s) => s.optimisticPerspectiveAdd,
   )
@@ -230,16 +242,75 @@ export function useFocusedPanel() {
   }, [call, queriesCleared, sessionId])
 
   const runSearch = useCallback(
-    (queries: string[]) =>
-      call("Searching literature", `sessions/${sessionId}/search`, {
-        method: "POST",
-        body: JSON.stringify({ queries }),
-      }),
-    [call, sessionId],
+    async (queries: string[]) => {
+      if (!sessionId) throw new Error("No active Investigation.")
+      if (useFocusedStore.getState().busy !== null) {
+        throw new Error("Wait for the current action to finish.")
+      }
+      const started = await api<{ generation: number }>(
+        `sessions/${sessionId}/search-progress`,
+        { method: "POST" },
+      )
+      const generation = started.generation
+      searchProgressCleared()
+      let polling = true
+      let cursor = 0
+      const collect = async () => {
+        const progress = await api<SearchProgressResponse>(
+          `sessions/${sessionId}/search-progress?generation=${generation}&after=${cursor}`,
+        )
+        for (const item of progress.items) {
+          searchProgressAdded(item.message)
+        }
+        cursor = progress.next
+      }
+      const poll = async () => {
+        while (polling) {
+          try {
+            await collect()
+          } catch {
+            // Progress is advisory; the search request owns error reporting.
+          }
+          if (polling) {
+            await new Promise<void>((resolve) => {
+              window.setTimeout(resolve, 150)
+            })
+          }
+        }
+      }
+      const search = call(
+        "Searching literature",
+        `sessions/${sessionId}/search`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            queries,
+            progress_generation: generation,
+          }),
+        },
+      )
+      const progress = poll()
+      try {
+        return await search
+      } finally {
+        polling = false
+        await progress
+        try {
+          await collect()
+        } catch {
+          // The completed search result remains authoritative.
+        }
+      }
+    },
+    [call, searchProgressAdded, searchProgressCleared, sessionId],
   )
 
   const generatePerspective = useCallback(
-    async (clusterId: string, facets: FacetEvidence[] | null) => {
+    async (
+      clusterId: string,
+      facets: FacetEvidence[] | null,
+      invitedPerspectiveIds?: string[],
+    ) => {
       const current = useFocusedStore.getState()
       if (current.busy !== null) {
         throw new Error("Wait for the current action to finish.")
@@ -291,7 +362,11 @@ export function useFocusedPanel() {
           `sessions/${sessionId}/perspectives`,
           {
             method: "POST",
-            body: JSON.stringify({ cluster_id: clusterId, facets }),
+            body: JSON.stringify({
+              cluster_id: clusterId,
+              facets,
+              invited_perspective_ids: invitedPerspectiveIds,
+            }),
           },
           perspectiveViewSet,
         )
@@ -411,19 +486,33 @@ export function useFocusedPanel() {
     [sessionId, viewCall, workspaceId],
   )
 
-  const integrateChildInvestigation = useCallback(async () => {
-    const active = useFocusedStore.getState().session
-    const parentId = active?.parent_investigation_id
-    if (!workspaceId || !sessionId || !parentId) {
-      throw new Error("No active research branch to integrate.")
-    }
-    const view = await viewCall(
-      "Adding research branch to panel",
-      `workspaces/${workspaceId}/investigations/${parentId}/children/${sessionId}/integrate`,
-      { method: "POST" },
-    )
-    return view.active
-  }, [sessionId, viewCall, workspaceId])
+  const loadSession = useCallback(
+    (investigationId: string) =>
+      api<SessionState>(`sessions/${investigationId}`),
+    [],
+  )
+
+  const integrateChildInvestigation = useCallback(
+    async (invitedPerspectiveIds?: string[]) => {
+      const active = useFocusedStore.getState().session
+      const parentId = active?.parent_investigation_id
+      if (!workspaceId || !sessionId || !parentId) {
+        throw new Error("No active research branch to integrate.")
+      }
+      const view = await viewCall(
+        "Adding research branch to panel",
+        `workspaces/${workspaceId}/investigations/${parentId}/children/${sessionId}/integrate`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            invited_perspective_ids: invitedPerspectiveIds,
+          }),
+        },
+      )
+      return view.active
+    },
+    [sessionId, viewCall, workspaceId],
+  )
 
   const switchInvestigation = useCallback(
     async (investigationId: string) => {
@@ -551,6 +640,7 @@ export function useFocusedPanel() {
     confirmHypothesis,
     saveHypothesis,
     createChildInvestigation,
+    loadSession,
     integrateChildInvestigation,
     switchInvestigation,
     updateQuestionStatus,

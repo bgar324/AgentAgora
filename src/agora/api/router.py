@@ -312,6 +312,7 @@ async def patch_investigation(
             version=body.version,
             title=body.title,
             research_question=body.research_question,
+            research_directions=body.research_directions,
         )
     )
 

@@ -1,0 +1,18 @@
+{
+  "measured_at": "2026-08-24",
+  "environment": {
+    "platform": "darwin-arm64",
+    "python": "3.14.6",
+    "venv_symlink": true
+  },
+  "pipelines": {
+    "professor": {
+      "module": "agora.evaluation.professor",
+      "import_peak_rss_mb": 169.96875
+    },
+    "kat": {
+      "module": "agora.evaluation.kat",
+      "import_peak_rss_mb": 818.578125
+    }
+  }
+}

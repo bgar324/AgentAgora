@@ -24,6 +24,7 @@ type FocusedState = {
   openClusterId: string | null
   openPaperId: string | null
   busy: string | null
+  searchProgress: string[]
 }
 
 type FocusedActions = {
@@ -35,6 +36,8 @@ type FocusedActions = {
   stageSet: (stage: Stage) => void
   queryToggled: (query: string) => void
   queriesCleared: () => void
+  searchProgressAdded: (message: string) => void
+  searchProgressCleared: () => void
   openClusterSet: (id: string | null) => void
   openPaperSet: (id: string | null) => void
   busySet: (label: string | null) => void
@@ -52,6 +55,7 @@ const initialState: FocusedState = {
   openClusterId: null,
   openPaperId: null,
   busy: null,
+  searchProgress: [],
 }
 
 function workspaceViewPatch(
@@ -110,6 +114,7 @@ function workspaceViewPatch(
     pickedQueries: activeChanged ? [] : state.pickedQueries,
     openClusterId: activeChanged ? null : state.openClusterId,
     openPaperId: activeChanged ? null : state.openPaperId,
+    searchProgress: activeChanged ? [] : state.searchProgress,
   }
 }
 
@@ -157,6 +162,11 @@ export const useFocusedStore = create<FocusedState & FocusedActions>()(
           : [...state.pickedQueries, query],
       })),
     queriesCleared: () => set({ pickedQueries: [] }),
+    searchProgressAdded: (message) =>
+      set((state) => ({
+        searchProgress: [...state.searchProgress, message].slice(-20),
+      })),
+    searchProgressCleared: () => set({ searchProgress: [] }),
     openClusterSet: (openClusterId) => set({ openClusterId }),
     openPaperSet: (openPaperId) => set({ openPaperId }),
     busySet: (busy) => set({ busy }),

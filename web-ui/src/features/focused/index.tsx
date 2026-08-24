@@ -10,7 +10,7 @@ import {
   useFocusedPanel,
 } from "@/hooks/use-focused"
 import { useFocusedStore } from "@/store/focused"
-import type { PaperDetail } from "@/types/focused"
+import type { PaperDetail, Perspective } from "@/types/focused"
 
 import { StageExtraction } from "./stage-extraction"
 import { StageDeliberation } from "./stage-deliberation"
@@ -41,6 +41,11 @@ export function FocusedWorkspace() {
     sessionId: string
     message: string
   } | null>(null)
+  const [integrationOptions, setIntegrationOptions] = useState<Perspective[] | null>(
+    null,
+  )
+  const [integrationInvited, setIntegrationInvited] = useState<string[]>([])
+  const [integrationError, setIntegrationError] = useState<string | null>(null)
   const focused = useFocusedPanel()
   const loadWorkspace = focused.loadWorkspace
   useEffect(() => {
@@ -124,11 +129,32 @@ export function FocusedWorkspace() {
       stageSet("extraction")
       return
     }
-    const continueToCanvas =
-      session.parent_investigation_id && session.origin_question_id
-        ? focused.integrateChildInvestigation
-        : focused.createDeliberation
-    void continueToCanvas()
+    if (session.parent_investigation_id && session.origin_question_id) {
+      void focused
+        .loadSession(session.parent_investigation_id)
+        .then((parent) => {
+          const options = parent.perspectives.filter(
+            (perspective) =>
+              !perspective.evolved &&
+              !perspective.id.startsWith("optimistic:"),
+          )
+          setIntegrationOptions(options)
+          setIntegrationInvited(options.map((perspective) => perspective.id))
+          setIntegrationError(null)
+        })
+        .catch((cause) =>
+          setActionError({
+            sessionId: session.id,
+            message:
+              cause instanceof Error
+                ? cause.message
+                : "Could not load parent Perspectives",
+          }),
+        )
+      return
+    }
+    void focused
+      .createDeliberation()
       .then(() => stageSet("deliberation"))
       .catch((cause) =>
         setActionError({
@@ -298,6 +324,43 @@ export function FocusedWorkspace() {
       )}
 
       <PaperModal />
+      {integrationOptions && (
+        <InvitePerspectivesDialog
+          perspectives={integrationOptions}
+          invited={integrationInvited}
+          required={matrixCount < 2}
+          busy={busy === "Adding research branch to panel"}
+          error={integrationError}
+          onToggle={(perspectiveId) =>
+            setIntegrationInvited((current) =>
+              current.includes(perspectiveId)
+                ? current.filter((id) => id !== perspectiveId)
+                : [...current, perspectiveId],
+            )
+          }
+          onClose={() => {
+            if (busy !== "Adding research branch to panel") {
+              setIntegrationOptions(null)
+            }
+          }}
+          onConfirm={() => {
+            setIntegrationError(null)
+            void focused
+              .integrateChildInvestigation(integrationInvited)
+              .then(() => {
+                setIntegrationOptions(null)
+                stageSet("deliberation")
+              })
+              .catch((cause) =>
+                setIntegrationError(
+                  cause instanceof Error
+                    ? cause.message
+                    : "Could not add this research branch",
+                ),
+              )
+          }}
+        />
+      )}
       {resetOpen && (
         <ResetDialog
           onClose={() => {
@@ -331,6 +394,103 @@ export function FocusedWorkspace() {
     </div>
   )
 }
+
+function InvitePerspectivesDialog({
+  perspectives,
+  invited,
+  required,
+  busy,
+  error,
+  onToggle,
+  onClose,
+  onConfirm,
+}: {
+  perspectives: Perspective[]
+  invited: string[]
+  required: boolean
+  busy: boolean
+  error: string | null
+  onToggle: (perspectiveId: string) => void
+  onClose: () => void
+  onConfirm: () => void
+}) {
+  return (
+    <ModalShell title="Start a new panel" onClose={onClose}>
+      <p className="mb-4 text-[12px] leading-relaxed text-[var(--ink-2)]">
+        The research branch’s new Perspectives always participate. Choose which
+        existing Perspectives to invite. The new deliberation starts without
+        prior rounds or a working hypothesis.
+      </p>
+      <fieldset>
+        <legend className="mb-1.5 text-[12px] font-medium text-[var(--ink-2)]">
+          Existing Perspectives
+        </legend>
+        <div className="flex flex-col gap-1.5">
+          {perspectives.map((perspective) => {
+            const selected = invited.includes(perspective.id)
+            return (
+              <button
+                key={perspective.id}
+                type="button"
+                aria-pressed={selected}
+                disabled={busy}
+                onClick={() => onToggle(perspective.id)}
+                className="flex items-center gap-2 rounded-lg border border-[var(--line-strong)] px-3 py-2 text-left disabled:opacity-50"
+              >
+                <span
+                  className="grid size-4 place-items-center rounded-[4px] text-[10px] text-white"
+                  style={{
+                    background: selected ? "var(--ink)" : "transparent",
+                    border: `1px solid ${
+                      selected ? "var(--ink)" : "var(--line-strong)"
+                    }`,
+                  }}
+                  aria-hidden
+                >
+                  {selected ? "✓" : ""}
+                </span>
+                <span className="text-[12px] font-medium">
+                  {perspective.name}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      </fieldset>
+      {required && invited.length === 0 && (
+        <p className="mt-2 text-[11px] text-[var(--amber)]">
+          Invite at least one existing Perspective so the panel has two
+          participants.
+        </p>
+      )}
+      {error && (
+        <p role="alert" className="mt-3 text-[12px] text-[var(--red)]">
+          {error}
+        </p>
+      )}
+      <div className="mt-5 flex justify-end gap-2">
+        <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>
+          Cancel
+        </Button>
+        <Button
+          variant="primary"
+          size="sm"
+          onClick={onConfirm}
+          disabled={busy || (required && invited.length === 0)}
+        >
+          {busy ? (
+            <>
+              <Spinner /> Starting new panel…
+            </>
+          ) : (
+            "Add to panel"
+          )}
+        </Button>
+      </div>
+    </ModalShell>
+  )
+}
+
 
 function RestoreErrorScreen({
   onRetry,

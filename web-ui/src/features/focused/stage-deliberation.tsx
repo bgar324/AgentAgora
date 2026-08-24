@@ -23,6 +23,7 @@ import {
   type AgentState,
   type ClusterCard,
   type DeliberationPoint,
+  type DeliberationCompletion,
   type DeliberationRound,
   type DeliberationState,
   type Facet,
@@ -104,6 +105,7 @@ export function StageDeliberation() {
   const [addingPerspective, setAddingPerspective] = useState(false)
   const [canvasError, setCanvasError] = useState<string | null>(null)
   const [drawerId, setDrawerId] = useState<string | null>(null)
+  const [archiveIndex, setArchiveIndex] = useState<number | null>(null)
   const availableClusters = useMemo(() => {
     if (!session) return []
     const represented = new Set(
@@ -127,6 +129,10 @@ export function StageDeliberation() {
     if (!deliberation) return result
 
     const history = deliberation.completion_history
+    const allQuestions = [
+      ...history.flatMap((completion) => completion.recommended_questions),
+      ...deliberation.recommended_questions,
+    ]
     const panelX = (cycle: number) => 720 + cycle * 1060
     const artifactX = (cycle: number) => panelX(cycle) + 360
     const branchAgentX = (cycle: number) => panelX(cycle) + 700
@@ -151,27 +157,13 @@ export function StageDeliberation() {
     ) =>
       completion.agent_iids.length
         ? completion.agent_iids
-        : (deliberation.rounds[completion.round_count - 1]?.participant_iids ??
-          [])
+        : (completion.rounds.at(-1)?.participant_iids ?? [])
     const questionIdsForCompletion = (
       completion: DeliberationState["completion_history"][number],
-      cycle: number,
-    ) => {
-      if (completion.question_ids.length) return completion.question_ids
-      const previousRoundCount =
-        cycle === 0 ? 0 : history[cycle - 1].round_count
-      return deliberation.recommended_questions
-        .filter(
-          (question) =>
-            question.source_round !== null &&
-            question.source_round > previousRoundCount &&
-            question.source_round <= completion.round_count,
-        )
-        .map((question) => question.id)
-    }
+    ) => completion.question_ids
     const questionCycle = new Map<string, number>()
     history.forEach((completion, cycle) => {
-      questionIdsForCompletion(completion, cycle).forEach((questionId) => {
+      questionIdsForCompletion(completion).forEach((questionId) => {
         questionCycle.set(questionId, cycle)
       })
     })
@@ -231,7 +223,7 @@ export function StageDeliberation() {
           ? workspace?.hypothesis_versions.find((item) => item.id === versionId)
           : undefined
       if (version) renderedVersionIds.add(version.id)
-      const questions = deliberation.recommended_questions.filter((question) =>
+      const questions = allQuestions.filter((question) =>
         questionIds.includes(question.id),
       )
       const artifacts = [
@@ -303,7 +295,7 @@ export function StageDeliberation() {
 
     history.forEach((completion, cycle) => {
       const fallbackAgentIids =
-        deliberation.rounds[completion.round_count - 1]?.participant_iids ?? []
+        completion.rounds.at(-1)?.participant_iids ?? []
       result.push({
         id: historyPanelId(cycle),
         type: "epPanel",
@@ -314,18 +306,20 @@ export function StageDeliberation() {
               ? completion.agent_iids
               : fallbackAgentIids,
           ),
-          status: `Ended after ${completion.round_count} ${
+          status: `${
+            completion.reason === "restarted" ? "Restarted" : "Ended"
+          } after ${completion.round_count} ${
             completion.round_count === 1 ? "round" : "rounds"
           }`,
           canJoin: true,
           ended: true,
-          onJoin: () => setDrawerId(deliberation.id),
+          onJoin: () => setArchiveIndex(cycle),
         },
       })
       addArtifacts(
         cycle,
         completion.final_hypothesis_version_id,
-        questionIdsForCompletion(completion, cycle),
+        questionIdsForCompletion(completion),
       )
     })
 
@@ -356,8 +350,8 @@ export function StageDeliberation() {
     })
     if (ended && completedRounds.length > 0) {
       const historicalQuestionIds = new Set(
-        history.flatMap((completion, cycle) =>
-          questionIdsForCompletion(completion, cycle),
+        history.flatMap((completion) =>
+          questionIdsForCompletion(completion),
         ),
       )
       addArtifacts(
@@ -397,23 +391,10 @@ export function StageDeliberation() {
       cycle < history.length ? historyPanelId(cycle) : currentPanelId
     const questionIdsForCompletion = (
       completion: DeliberationState["completion_history"][number],
-      cycle: number,
-    ) => {
-      if (completion.question_ids.length) return completion.question_ids
-      const previousRoundCount =
-        cycle === 0 ? 0 : history[cycle - 1].round_count
-      return deliberation.recommended_questions
-        .filter(
-          (question) =>
-            question.source_round !== null &&
-            question.source_round > previousRoundCount &&
-            question.source_round <= completion.round_count,
-        )
-        .map((question) => question.id)
-    }
+    ) => completion.question_ids
     const questionCycle = new Map<string, number>()
     history.forEach((completion, cycle) => {
-      questionIdsForCompletion(completion, cycle).forEach((questionId) => {
+      questionIdsForCompletion(completion).forEach((questionId) => {
         questionCycle.set(questionId, cycle)
       })
     })
@@ -423,8 +404,7 @@ export function StageDeliberation() {
     ) =>
       completion.agent_iids.length
         ? completion.agent_iids
-        : (deliberation.rounds[completion.round_count - 1]?.participant_iids ??
-          [])
+        : (completion.rounds.at(-1)?.participant_iids ?? [])
     for (const agent of session.agents) {
       const perspective = session.perspectives.find(
         (item) => item.id === agent.perspective_id,
@@ -512,13 +492,13 @@ export function StageDeliberation() {
       addArtifactEdges(
         cycle,
         completion.final_hypothesis_version_id,
-        questionIdsForCompletion(completion, cycle),
+        questionIdsForCompletion(completion),
       )
     })
     if (deliberation.completed_at !== null) {
       const historicalQuestionIds = new Set(
-        history.flatMap((completion, cycle) =>
-          questionIdsForCompletion(completion, cycle),
+        history.flatMap((completion) =>
+          questionIdsForCompletion(completion),
         ),
       )
       addArtifactEdges(
@@ -553,19 +533,18 @@ export function StageDeliberation() {
           color="rgba(16,24,40,0.07)"
         />
         <RefitOnNodes count={nodes.length} />
-        {session.deliberations[0]?.completed_at === null &&
-          availableClusters.length > 0 && (
-            <Panel position="top-left" className="!m-3">
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={busy !== null || addingPerspective}
-                onClick={() => setAddPerspectiveOpen(true)}
-              >
-                Add Perspective
-              </Button>
-            </Panel>
-          )}
+        {availableClusters.length > 0 && (
+          <Panel position="top-left" className="!m-3">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={busy !== null || addingPerspective}
+              onClick={() => setAddPerspectiveOpen(true)}
+            >
+              Add Perspective
+            </Button>
+          </Panel>
+        )}
         {canvasError && (
           <Panel position="bottom-left" className="!m-3">
             <p role="alert" className="text-[11px] text-[var(--red)]">
@@ -575,6 +554,16 @@ export function StageDeliberation() {
         )}
       </ReactFlow>
 
+      {archiveIndex !== null &&
+        session.deliberations[0]?.completion_history[archiveIndex] && (
+          <ArchivedPanelDialog
+            completion={
+              session.deliberations[0].completion_history[archiveIndex]
+            }
+            onClose={() => setArchiveIndex(null)}
+            onOpenAgent={setAgentModal}
+          />
+        )}
       {drawerId && (
         <PanelDrawer
           deliberationId={drawerId}
@@ -587,12 +576,21 @@ export function StageDeliberation() {
       {addPerspectiveOpen && (
         <AddPerspectiveDialog
           clusters={availableClusters}
+          perspectives={session.perspectives.filter(
+            (perspective) =>
+              !perspective.evolved &&
+              !perspective.id.startsWith("optimistic:"),
+          )}
           busy={busy !== null || addingPerspective}
           adding={addingPerspective}
-          onAdd={async (clusterId) => {
+          onAdd={async (clusterId, invitedPerspectiveIds) => {
             setAddingPerspective(true)
             try {
-              await generatePerspective(clusterId, null)
+              await generatePerspective(
+                clusterId,
+                null,
+                invitedPerspectiveIds,
+              )
               setAddPerspectiveOpen(false)
             } finally {
               setAddingPerspective(false)
@@ -604,6 +602,8 @@ export function StageDeliberation() {
       <AgentModal agent={agentModal} onClose={() => setAgentModal(null)} />
       <SavedHypothesisModal
         version={savedHypothesisModal}
+
+
         onClose={() => setSavedHypothesisModal(null)}
       />
       {scoringId && (
@@ -613,6 +613,107 @@ export function StageDeliberation() {
         />
       )}
     </div>
+  )
+}
+function ArchivedPanelDialog({
+  completion,
+  onClose,
+  onOpenAgent,
+}: {
+  completion: DeliberationCompletion
+  onClose: () => void
+  onOpenAgent: (agent: AgentState) => void
+}) {
+  const session = useFocusedStore((state) => state.session)
+  if (!session) return null
+  const agents = completion.agent_iids
+    .map((iid) => session.agents.find((agent) => agent.iid === iid))
+    .filter((agent): agent is AgentState => agent !== undefined)
+  const hypothesis = completion.applied_hypothesis ?? completion.hypothesis
+
+  return (
+    <ModalShell title="Panel history" onClose={onClose} wide>
+      <p className="mb-3 text-[12px] text-[var(--ink-2)]">
+        {completion.reason === "restarted"
+          ? "This panel was archived when a new Perspective restarted deliberation."
+          : "This panel ended with a saved hypothesis."}
+      </p>
+      <div className="mb-4 flex flex-wrap gap-1.5">
+        {agents.map((agent) => {
+          const perspective = session.perspectives.find(
+            (item) => item.id === agent.perspective_id,
+          )
+          return (
+            <IdentityChip
+              key={agent.iid}
+              color={perspective?.color ?? "var(--ink-2)"}
+              name={perspective?.name ?? agent.label}
+              onClick={() => onOpenAgent(agent)}
+            />
+          )
+        })}
+      </div>
+      <div className="flex flex-col gap-4">
+        {completion.rounds.map((round) => (
+          <section
+            key={round.n}
+            aria-label={`Archived round ${round.n}`}
+            className="rounded-lg border border-[var(--line)] p-3"
+          >
+            <SectionLabel>Round {round.n}</SectionLabel>
+            <div className="mt-2 flex flex-col gap-2">
+              {round.turns.map((turn) => (
+                <TurnBubble key={turn.id} turn={turn} />
+              ))}
+            </div>
+            {round.resolution && (
+              <div className="mt-3">
+                <ResolutionCard resolution={round.resolution} />
+              </div>
+            )}
+          </section>
+        ))}
+      </div>
+      {hypothesis && (
+        <section className="mt-4 rounded-lg border border-[var(--line)] p-3">
+          <SectionLabel>Last working hypothesis</SectionLabel>
+          <dl className="mt-2 grid gap-2">
+            {(
+              [
+                ["Problem", hypothesis.problem],
+                ["Previous work", hypothesis.previous_work],
+                ["Reasoning", hypothesis.reasoning],
+                ["Hypothesis", hypothesis.hypothesis],
+              ] as const
+            ).map(([label, value]) => (
+              <div key={label}>
+                <dt className="text-[10.5px] font-medium text-[var(--mute)]">
+                  {label}
+                </dt>
+                <dd className="text-[12px] leading-relaxed text-[var(--ink-2)]">
+                  {value}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+      )}
+      {completion.recommended_questions.length > 0 && (
+        <section className="mt-4 rounded-lg border border-[var(--line)] p-3">
+          <SectionLabel>Research Problems</SectionLabel>
+          <ul className="mt-2 flex flex-col gap-1.5">
+            {completion.recommended_questions.map((question) => (
+              <li
+                key={question.id}
+                className="text-[12px] leading-relaxed text-[var(--ink-2)]"
+              >
+                {question.question}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+    </ModalShell>
   )
 }
 
@@ -1370,10 +1471,6 @@ function WorkingHypothesisPanel({
     if (original) onChange({ ...original })
     setEditing(false)
   }
-  const previousCompletion = deliberation.completion_history.at(-1)
-  const needsNewRound =
-    previousCompletion !== undefined &&
-    deliberation.rounds.length <= previousCompletion.round_count
 
   return (
     <aside className="min-w-0">
@@ -1697,8 +1794,8 @@ function WorkingHypothesisPanel({
         ) : (
           <>
             <p className="text-[10.5px] leading-relaxed text-[var(--mute)]">
-              {needsNewRound
-                ? "Complete a round with the added Perspectives before ending again."
+              {deliberation.rounds.length === 0
+                ? "Complete a round before ending this deliberation."
                 : "End after the current hypothesis is applied and saved. This closes the panel and reveals its final outputs on the canvas."}
             </p>
             <Button
@@ -1708,7 +1805,6 @@ function WorkingHypothesisPanel({
               disabled={
                 busy ||
                 deliberation.rounds.length === 0 ||
-                needsNewRound ||
                 pending ||
                 unsaved ||
                 editing ||
@@ -1883,23 +1979,28 @@ function TurnBubble({ turn }: { turn: Turn }) {
 
 function AddPerspectiveDialog({
   clusters,
+  perspectives,
   busy,
   adding,
   onAdd,
   onClose,
 }: {
   clusters: ClusterCard[]
+  perspectives: Perspective[]
   busy: boolean
   adding: boolean
-  onAdd: (clusterId: string) => Promise<void>
+  onAdd: (clusterId: string, invitedPerspectiveIds: string[]) => Promise<void>
   onClose: () => void
 }) {
   const [error, setError] = useState<string | null>(null)
+  const [invited, setInvited] = useState<string[]>(() =>
+    perspectives.map((perspective) => perspective.id),
+  )
 
   const add = async (cluster: ClusterCard) => {
     setError(null)
     try {
-      await onAdd(cluster.id)
+      await onAdd(cluster.id, invited)
     } catch (cause) {
       setError(
         cause instanceof Error ? cause.message : "Could not add the Perspective",
@@ -1915,16 +2016,64 @@ function AddPerspectiveDialog({
       }}
     >
       <p className="mb-4 text-[12px] leading-relaxed text-[var(--ink-2)]">
-        Add another literature-grounded voice to the current panel. Existing
-        rounds and the working hypothesis stay in place.
+        The added Perspective starts a new deliberation from scratch. Prior
+        rounds and hypotheses remain in panel history.
       </p>
+      <fieldset className="mb-4">
+        <legend className="mb-1.5 text-[12px] font-medium text-[var(--ink-2)]">
+          Invite existing Perspectives
+        </legend>
+        <div className="flex flex-col gap-1.5">
+          {perspectives.map((perspective) => {
+            const selected = invited.includes(perspective.id)
+            return (
+              <button
+                key={perspective.id}
+                type="button"
+                aria-pressed={selected}
+                disabled={busy}
+                onClick={() =>
+                  setInvited((current) =>
+                    current.includes(perspective.id)
+                      ? current.filter((id) => id !== perspective.id)
+                      : [...current, perspective.id],
+                  )
+                }
+                className="flex items-center gap-2 rounded-lg border border-[var(--line-strong)] px-3 py-2 text-left disabled:opacity-50"
+              >
+                <span
+                  className="grid size-4 place-items-center rounded-[4px] text-[10px] text-white"
+                  style={{
+                    background: selected ? "var(--ink)" : "transparent",
+                    border: `1px solid ${
+                      selected ? "var(--ink)" : "var(--line-strong)"
+                    }`,
+                  }}
+                  aria-hidden
+                >
+                  {selected ? "✓" : ""}
+                </span>
+                <span className="text-[12px] font-medium">
+                  {perspective.name}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+        {invited.length === 0 && (
+          <p className="mt-1.5 text-[11px] text-[var(--amber)]">
+            Invite at least one existing Perspective so the panel has two
+            participants.
+          </p>
+        )}
+      </fieldset>
       <div className="flex flex-col gap-2">
         {clusters.map((cluster) => (
           <button
             key={cluster.id}
             type="button"
             aria-label={`Add ${cluster.name}`}
-            disabled={busy}
+            disabled={busy || invited.length === 0}
             onClick={() => void add(cluster)}
             className="rounded-lg border border-[var(--line-strong)] px-3 py-2.5 text-left transition hover:border-[var(--ink-2)] disabled:cursor-default disabled:opacity-50"
           >

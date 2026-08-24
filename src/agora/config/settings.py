@@ -50,6 +50,16 @@ def _env_optional_float(name: str) -> float | None:
         raise ConfigurationError(f"{name} must be a number, got {raw!r}") from exc
 
 
+def _env_reasoning_effort(name: str, default: str | None) -> str | None:
+    value = _env(name) or default
+    allowed = {"none", "low", "medium", "high", "xhigh", "max"}
+    if value is not None and value not in allowed:
+        raise ConfigurationError(
+            f"{name} must be one of {sorted(allowed)}, got {value!r}"
+        )
+    return value
+
+
 @dataclass
 class OpenAISettings:
     api_key: str | None = field(default=None, repr=False)
@@ -91,8 +101,33 @@ class SupabaseSettings:
 @dataclass
 class PhaseModel:
     model: str
-    temperature: float
+    temperature: float | None
     max_tokens: int
+    reasoning_effort: str | None = None
+
+
+@dataclass(frozen=True)
+class FocusedModelSettings:
+    corpus: PhaseModel = field(
+        default_factory=lambda: PhaseModel(
+            "gpt-5.6-luna", None, 6_000, reasoning_effort="low"
+        )
+    )
+    query: PhaseModel = field(
+        default_factory=lambda: PhaseModel(
+            "gpt-5.6-terra", None, 2_000, reasoning_effort="low"
+        )
+    )
+    reasoning: PhaseModel = field(
+        default_factory=lambda: PhaseModel(
+            "gpt-5.6-terra", None, 2_000, reasoning_effort="medium"
+        )
+    )
+    evaluation: PhaseModel = field(
+        default_factory=lambda: PhaseModel(
+            "gpt-5.6-sol", None, 4_000, reasoning_effort="high"
+        )
+    )
 
 
 @dataclass
@@ -126,6 +161,7 @@ class Settings:
     )
     supabase: SupabaseSettings = field(default_factory=SupabaseSettings)
     models: ModelSettings = field(default_factory=ModelSettings)
+    focused_models: FocusedModelSettings = field(default_factory=FocusedModelSettings)
     server: ServerSettings = field(default_factory=ServerSettings)
 
 
@@ -141,6 +177,7 @@ def load_settings() -> Settings:
     )
     supabase_url = _env("SUPABASE_URL")
     supabase_secret_key = _env("SUPABASE_SECRET_KEY")
+    openai_api_key = _env("OPENAI_API_KEY")
     proxy_token = _env("AGORA_PROXY_TOKEN")
     if persistence_backend == "supabase" and (
         not supabase_url or not supabase_secret_key
@@ -152,11 +189,15 @@ def load_settings() -> Settings:
         raise ConfigurationError(
             "Supabase deployment requires AGORA_PROXY_TOKEN"
         )
+    if persistence_backend == "supabase" and not openai_api_key:
+        raise ConfigurationError(
+            "Supabase deployment requires OPENAI_API_KEY for focused GPT-5.6 models"
+        )
 
 
     return Settings(
         openai=OpenAISettings(
-            api_key=_env("OPENAI_API_KEY"),
+            api_key=openai_api_key,
             base_url=_env("OPENAI_BASE_URL"),
             max_retries=_env_int("OPENAI_MAX_RETRIES", 2),
             timeout=_env_float("OPENAI_TIMEOUT", 180.0),
@@ -202,6 +243,40 @@ def load_settings() -> Settings:
                 model=(_env("AGORA_DELIBERATION_MODEL") or "openai/gpt-4o-mini"),
                 temperature=_env_float("AGORA_DELIBERATION_TEMPERATURE", 0.0),
                 max_tokens=_env_int("AGORA_DELIBERATION_MAX_TOKENS", 800),
+            ),
+        ),
+        focused_models=FocusedModelSettings(
+            corpus=PhaseModel(
+                model=_env("AGORA_FOCUSED_CORPUS_MODEL") or "gpt-5.6-luna",
+                temperature=None,
+                max_tokens=_env_int("AGORA_FOCUSED_CORPUS_MAX_TOKENS", 6_000),
+                reasoning_effort=_env_reasoning_effort(
+                    "AGORA_FOCUSED_CORPUS_REASONING_EFFORT", "low"
+                ),
+            ),
+            query=PhaseModel(
+                model=_env("AGORA_FOCUSED_QUERY_MODEL") or "gpt-5.6-terra",
+                temperature=None,
+                max_tokens=_env_int("AGORA_FOCUSED_QUERY_MAX_TOKENS", 2_000),
+                reasoning_effort=_env_reasoning_effort(
+                    "AGORA_FOCUSED_QUERY_REASONING_EFFORT", "low"
+                ),
+            ),
+            reasoning=PhaseModel(
+                model=_env("AGORA_FOCUSED_REASONING_MODEL") or "gpt-5.6-terra",
+                temperature=None,
+                max_tokens=_env_int("AGORA_FOCUSED_REASONING_MAX_TOKENS", 2_000),
+                reasoning_effort=_env_reasoning_effort(
+                    "AGORA_FOCUSED_REASONING_EFFORT", "medium"
+                ),
+            ),
+            evaluation=PhaseModel(
+                model=_env("AGORA_FOCUSED_EVALUATION_MODEL") or "gpt-5.6-sol",
+                temperature=None,
+                max_tokens=_env_int("AGORA_FOCUSED_EVALUATION_MAX_TOKENS", 4_000),
+                reasoning_effort=_env_reasoning_effort(
+                    "AGORA_FOCUSED_EVALUATION_REASONING_EFFORT", "high"
+                ),
             ),
         ),
         server=ServerSettings(

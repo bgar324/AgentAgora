@@ -33,6 +33,7 @@ export interface ClusterCard {
   blurb: string
   facets: FacetEvidence[]
   paper_ids: string[]
+  representative_paper_ids: string[]
 }
 
 export interface FramingPosition {
@@ -156,12 +157,24 @@ export interface DeliberationRating {
 }
 
 export interface DeliberationCompletion {
-  completed_at: string
-  final_hypothesis_version_id: string
+  archived_at: string
+  reason: "completed" | "restarted"
+  completed_at: string | null
+  final_hypothesis_version_id: string | null
   round_count: number
+  chat_count: number
   agent_iids: number[]
   question_ids: string[]
   rating: DeliberationRating | null
+  rounds: DeliberationRound[]
+  recommended_questions: RecommendedQuestion[]
+  chat: Turn[]
+  revised_perspective: Perspective | null
+  hypothesis: HypothesisDev | null
+  applied_hypothesis_version_id: string | null
+  applied_hypothesis: HypothesisDev | null
+  hypothesis_confirmed: boolean
+  no_agreement: boolean
 }
 
 export interface DeliberationRound {
@@ -258,9 +271,16 @@ export interface QuestionReach {
 }
 
 export interface ClusteringDiagnostics {
-  method: "specter_kmeans" | "tfidf_kmeans" | "demo_seeds" | "single_group"
+  method:
+    | "position_llm"
+    | "specter_hdbscan_dpp"
+    | "specter_kmeans"
+    | "tfidf_kmeans"
+    | "demo_seeds"
+    | "single_group"
   embedded: number
   total: number
+  requested_clusters: number
   cluster_sizes: number[]
   silhouette: number | null
 }
@@ -283,6 +303,7 @@ export interface SessionState {
   question_reach: QuestionReach[]
   papers: ExpPaper[]
   clusters: ClusterCard[]
+  unassigned_paper_ids: string[]
   perspectives: Perspective[]
   agents: AgentState[]
   deliberations: DeliberationState[]

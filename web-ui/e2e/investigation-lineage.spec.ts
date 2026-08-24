@@ -37,6 +37,13 @@ async function searchDemoLiterature(page: Page) {
   await page.getByRole("button", { name: /early broad coverage sepsis/ }).click()
   await page.getByRole("button", { name: "Search papers (3 queries)" }).click()
   await expect(page.getByText("Resistance ecology", { exact: true })).toBeVisible()
+  const retrievalProgress = page.getByRole("status", {
+    name: "Retrieval progress",
+  })
+  await expect(retrievalProgress).toContainText(
+    "Searched broad-spectrum antibiotic use antimicrobial",
+  )
+  await expect(retrievalProgress).toContainText("retrieved")
   const searchedQueries = page.getByRole("region", {
     name: "Queries searched",
   })
@@ -207,6 +214,68 @@ test("joins wrapped lines into complete research questions", async ({ page }) =>
   ])
 })
 
+test("keeps unassigned density-noise papers inspectable", async ({ page }) => {
+  const { rootId } = await startWorkspace(page)
+  await page.getByRole("button", { name: "Load demo queries" }).click()
+  for (const query of DEMO_QUERIES) {
+    await page.getByRole("button", { name: new RegExp(query) }).click()
+  }
+  let unassignedTitle = ""
+  let representativeTitles: string[] = []
+  await page.route(`**/api/focused/sessions/${rootId}/search`, async (route) => {
+    const response = await route.fetch()
+    const payload = await response.json()
+    const active = payload.active
+    const sourceCluster = active.clusters[active.clusters.length - 1]
+    const paperId = sourceCluster.paper_ids[sourceCluster.paper_ids.length - 1]
+    const paper = active.papers.find(
+      (item: { id: string; title: string }) => item.id === paperId,
+    )
+    if (!paper) throw new Error("mocked unassigned paper was not found")
+    unassignedTitle = paper.title
+    const representativeCluster = active.clusters[0]
+    representativeCluster.representative_paper_ids.reverse()
+    representativeTitles = representativeCluster.representative_paper_ids.map(
+      (id: string) =>
+        active.papers.find((item: { id: string }) => item.id === id).title,
+    )
+    active.unassigned_paper_ids = [paperId]
+    for (const cluster of active.clusters) {
+      cluster.paper_ids = cluster.paper_ids.filter((id: string) => id !== paperId)
+      cluster.representative_paper_ids = cluster.representative_paper_ids.filter(
+        (id: string) => id !== paperId,
+      )
+    }
+    await route.fulfill({ response, json: payload })
+  })
+
+  await page.getByRole("button", { name: "Search papers (3 queries)" }).click()
+  const firstClusterHeading = page.getByRole("heading", {
+    name: "Resistance ecology",
+  })
+  await firstClusterHeading.click()
+  const firstClusterCard = firstClusterHeading.locator(
+    "xpath=ancestor::div[contains(@class, 'panel')][1]",
+  )
+  const clusterButtons = await firstClusterCard.getByRole("button").allTextContents()
+  const representativePositions = representativeTitles.map((title) =>
+    clusterButtons.findIndex((text) => text.includes(title)),
+  )
+  expect(representativePositions.every((position) => position >= 0)).toBe(true)
+  expect(representativePositions).toEqual(
+    [...representativePositions].sort((left, right) => left - right),
+  )
+  const unassigned = page.getByRole("button", {
+    name: /Unassigned literature/,
+  })
+  await expect(unassigned).toContainText("1 paper")
+  await unassigned.click()
+  expect(unassignedTitle).toBeTruthy()
+  await page.getByRole("button", { name: unassignedTitle }).click()
+  await expect(page.getByRole("dialog", { name: "Abstract evidence" })).toBeVisible()
+})
+
+
 test("keeps other matrix additions available while one loads", async ({ page }) => {
   const { rootId } = await startWorkspace(page)
   await searchDemoLiterature(page)
@@ -334,12 +403,12 @@ test("returns from a blocked research branch to its parent panel", async ({
   await page.unroute(`**/api/focused/sessions/${childId}/perspectives`)
 
   await page.getByRole("button", { name: "Add to panel" }).click()
-  const error = page.getByRole("alert").filter({
-    hasText: "Return to the parent panel and end its current deliberation",
-  })
-  await expect(error).toBeVisible()
-  await error.getByRole("button", { name: "Dismiss error" }).click()
-  await expect(error).toHaveCount(0)
+  const restartDialog = page.getByRole("dialog", { name: "Start a new panel" })
+  await restartDialog.getByRole("button", { name: "Add to panel" }).click()
+  await expect(restartDialog.getByRole("alert")).toContainText(
+    "Return to the parent panel and end its current deliberation",
+  )
+  await restartDialog.getByRole("button", { name: "Cancel" }).click()
 
   await backToPanel.click()
   await expect(page.locator('[data-testid^="panel-node-"]')).toBeVisible()
@@ -478,22 +547,43 @@ test("continues an open question on the existing canvas", async ({ page }) => {
     name: "Add a Perspective",
   })
   await expect(addPerspectiveDialog).toContainText(
-    "Existing rounds and the working hypothesis stay in place.",
+    "starts a new deliberation from scratch",
   )
+  await expect(
+    addPerspectiveDialog.getByRole("button", { name: "Resistance ecology" }),
+  ).toHaveAttribute("aria-pressed", "true")
   await addPerspectiveDialog
     .getByRole("button", { name: "Add Acute outcomes" })
     .click()
   await expect(addPerspectiveDialog).toHaveCount(0)
-  await expect(page.locator('[data-testid^="agent-node-"]')).toHaveCount(3)
-  const continued = await requestJson(
+  await expect(page.locator('[data-testid^="agent-node-"]')).toHaveCount(5)
+  const restarted = await requestJson(
     page.request,
     `/api/focused/sessions/${rootId}`,
     "get",
   )
-  expect(continued.deliberations[0].rounds).toHaveLength(1)
-  expect(continued.applied_hypothesis_version_id).toBe("H1")
-  expect(continued.deliberations[0].agent_iids).toHaveLength(3)
+  expect(restarted.deliberations[0].rounds).toHaveLength(0)
+  expect(restarted.deliberations[0].recommended_questions).toHaveLength(0)
+  expect(restarted.deliberations[0].hypothesis).toBeNull()
+  expect(restarted.deliberations[0].completion_history).toHaveLength(1)
+  expect(restarted.deliberations[0].completion_history[0].reason).toBe(
+    "restarted",
+  )
+  expect(restarted.deliberations[0].completion_history[0].rounds).toHaveLength(
+    1,
+  )
+  expect(restarted.applied_hypothesis_version_id).toBe("H1")
+  expect(restarted.deliberations[0].agent_iids).toHaveLength(3)
   await expect(page.locator('[data-testid^="round-result-node-"]')).toHaveCount(0)
+  await expect(page.locator('[data-testid^="panel-node-"]')).toHaveCount(2)
+  await page.getByRole("button", { name: "Review" }).click()
+  const archivedPanel = page.getByRole("dialog", { name: "Panel history" })
+  await expect(archivedPanel).toBeVisible()
+  await expect(
+    archivedPanel.getByRole("region", { name: "Archived round 1" }),
+  ).toBeVisible()
+  await expect(archivedPanel).toContainText("Last working hypothesis")
+  await page.keyboard.press("Escape")
 
   await page.getByRole("button", { name: "Join" }).click()
   await page.getByRole("button", { name: /Explanation How/ }).click()
@@ -501,24 +591,19 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   await expect(
     page
       .getByRole("dialog", { name: "Focused panel" })
-      .getByText("2 completed rounds", { exact: true }),
+      .getByText("1 completed rounds", { exact: true }),
   ).toBeVisible({ timeout: 30_000 })
   await expect(
     page.locator('[data-hypothesis-part="problem"]'),
-  ).not.toContainText("Not established yet.")
-  await expect(
-    page.locator('[data-hypothesis-part="reasoning"]'),
-  ).not.toContainText("Not established yet.")
-  await expect(
-    page.locator('[data-hypothesis-part="hypothesis"]'),
-  ).not.toContainText("Not established yet.")
+  ).toContainText("Not established yet.")
+  await expect(page.getByText("Update ready", { exact: true })).toBeVisible()
   await applySharedGround(page)
   await page.getByRole("button", { name: "Save hypothesis" }).click()
   await expect(page.getByText("Saved H2", { exact: true })).toBeVisible()
   await expect(page.getByTestId("saved-hypothesis-node-H2")).toHaveCount(0)
   await expect(
     page.locator('[data-testid^="research-problem-node-"]'),
-  ).toHaveCount(0)
+  ).toHaveCount(1)
   expect(duplicateKeyWarnings).toEqual([])
 
   await page.getByRole("button", { name: "End deliberation" }).click()
@@ -545,9 +630,16 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   expect(completed.final_hypothesis_version_id).toBe("H2")
   expect(completed.rating).toMatchObject({ divergent: 6, convergent: 5 })
   expect(completed.rounds[0]).not.toHaveProperty("rating")
-  expect(completed.rounds.map((round: { participant_iids: number[] }) =>
-    round.participant_iids.length,
-  )).toEqual([2, 3])
+  expect(
+    completed.rounds.map(
+      (round: { participant_iids: number[] }) => round.participant_iids.length,
+    ),
+  ).toEqual([3])
+  expect(
+    completed.completion_history[0].rounds.map(
+      (round: { participant_iids: number[] }) => round.participant_iids.length,
+    ),
+  ).toEqual([2])
   const sourceQuestionId = String(completed.recommended_questions[0].id)
 
   await page.keyboard.press("Escape")
@@ -558,7 +650,10 @@ test("continues an open question on the existing canvas", async ({ page }) => {
     `research-problem-node-${sourceQuestionId}`,
   )
   await expect(researchNode).toBeVisible()
-  await page.getByRole("button", { name: "Review" }).click()
+  await page
+    .getByTestId(`panel-node-panel-${completed.id}`)
+    .getByRole("button", { name: "Review" })
+    .click()
   const endedDrawer = page.getByRole("dialog", { name: "Focused panel" })
   const updateScores = endedDrawer.getByRole("button", { name: "Update scores" })
   await expect(updateScores).toBeVisible()
@@ -603,13 +698,18 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   await searchDemoLiterature(page)
   await addPerspective(page, "Diagnostics and targeting")
   await page.getByRole("button", { name: "Add to panel", exact: true }).click()
+  const inviteDialog = page.getByRole("dialog", { name: "Start a new panel" })
+  await expect(
+    inviteDialog.getByRole("button", { name: "Resistance ecology" }),
+  ).toHaveAttribute("aria-pressed", "true")
+  await inviteDialog.getByRole("button", { name: "Add to panel" }).click()
   const activeParent = await requestJson(
     page.request,
     `/api/focused/workspaces/${workspaceId}`,
     "get",
   )
   expect(activeParent.id).toBe(rootId)
-  await expect(page.locator('[data-testid^="agent-node-"]')).toHaveCount(4)
+  await expect(page.locator('[data-testid^="agent-node-"]')).toHaveCount(9)
   await expect(page.locator('[data-testid^="round-result-node-"]')).toHaveCount(0)
   const continuedState = await requestJson(
     page.request,
@@ -617,13 +717,14 @@ test("continues an open question on the existing canvas", async ({ page }) => {
     "get",
   )
   expect(continuedState.applied_hypothesis_version_id).toBe("H2")
-  expect(continuedState.deliberations[0].rounds).toHaveLength(2)
-  expect(continuedState.deliberations[0].completion_history).toHaveLength(1)
+  expect(continuedState.deliberations[0].rounds).toHaveLength(0)
+  expect(continuedState.deliberations[0].completion_history).toHaveLength(2)
   expect(continuedState.deliberations[0].completed_at).toBeNull()
   expect(continuedState.deliberations[0].agent_iids).toHaveLength(4)
-  expect(continuedState.deliberations[0].recommended_questions[0].status).toBe(
-    "addressed",
-  )
+  expect(
+    continuedState.deliberations[0].completion_history[1]
+      .recommended_questions[0].status,
+  ).toBe("addressed")
   const importedPerspective = continuedState.perspectives.find(
     (perspective: { source_question_id: string | null }) =>
       perspective.source_question_id === sourceQuestionId,
@@ -634,7 +735,7 @@ test("continues an open question on the existing canvas", async ({ page }) => {
       agent.perspective_id === importedPerspective.id,
   )
   expect(importedAgent).toBeTruthy()
-  await expect(page.locator('[data-testid^="panel-node-"]')).toHaveCount(2)
+  await expect(page.locator('[data-testid^="panel-node-"]')).toHaveCount(3)
   const historicalHypothesis = page.getByTestId("saved-hypothesis-node-H2")
   await expect(historicalHypothesis).toBeVisible()
   await expect
@@ -674,11 +775,11 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   const drawer = page.getByRole("dialog", { name: "Focused panel" })
   await expect(drawer).toBeVisible()
   const conversation = page.getByTestId("panel-conversation-scroll")
+  await expect(conversation).toBeVisible()
   await expect(
-    drawer.getByText(
-      "Complete a round with the added Perspectives before ending again.",
-      { exact: true },
-    ),
+    drawer.getByText("Complete a round before ending this deliberation.", {
+      exact: true,
+    }),
   ).toBeVisible()
   await expect(
     drawer.getByRole("button", { name: "End deliberation" }),
@@ -695,7 +796,7 @@ test("continues an open question on the existing canvas", async ({ page }) => {
     borderLeftWidth: "1px",
     overflowY: "auto",
   })
-  await expect(page.getByTestId("panel-chat-bar")).toBeVisible()
+  await expect(page.getByTestId("panel-chat-bar")).toHaveCount(0)
   const sidebarBottomGap = await drawer.evaluate((surface) => {
     const sidebar = surface.querySelector(
       '[data-testid="working-hypothesis-sidebar"]',
@@ -708,37 +809,18 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   expect(
     Math.abs(sidebarBottomGap ?? Number.POSITIVE_INFINITY),
   ).toBeLessThanOrEqual(1)
-  await conversation.evaluate((element) => {
-    element.scrollTop = 0
-  })
-  await hypothesisSidebar.hover()
-  await page.mouse.wheel(0, 400)
   await expect
     .poll(() => hypothesisSidebar.evaluate((element) => element.scrollTop))
-    .toBeGreaterThan(0)
+    .toBe(0)
   await expect
     .poll(() => conversation.evaluate((element) => element.scrollTop))
     .toBe(0)
-  const status = drawer.getByRole("combobox", { name: /Status for/ })
-  await expect(status).toHaveValue("addressed")
-  await status.selectOption("archived")
-  await expect(status).toHaveValue("archived")
-  await status.selectOption("investigating")
-  await expect(status).toHaveValue("investigating")
-  await expect(drawer.getByRole("button", { name: "Open Investigation" })).toBeEnabled()
-  const nestedSource = drawer
-    .getByRole("button", {
-      name: /Horizontal gene transfer under sub-inhibitory exposure/,
-    })
-    .first()
-  await nestedSource.click()
-  const nestedPaper = page.getByRole("dialog", {
-    name: "Horizontal gene transfer under sub-inhibitory exposure",
-  })
-  await expect(nestedPaper).toBeVisible()
-  await page.keyboard.press("Escape")
-  await expect(nestedPaper).toHaveCount(0)
-  await expect(drawer).toBeVisible()
+  await expect(
+    drawer.getByRole("combobox", { name: /Status for/ }),
+  ).toHaveCount(0)
+  await expect(
+    drawer.locator('[data-hypothesis-part="problem"]'),
+  ).toContainText("Not established yet.")
   await page.keyboard.press("Escape")
   await expect(drawer).toHaveCount(0)
   expect(reactFlowWarnings).toEqual([])

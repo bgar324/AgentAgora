@@ -3,7 +3,7 @@
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Any, Literal, TypeVar
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from agora.focused.agents import FocusedAgentError
@@ -109,12 +109,24 @@ class UpdateSessionRequest(BaseModel):
 
 class SearchRequest(BaseModel):
     queries: list[SearchQuery] = Field(min_length=1, max_length=MAX_SUGGESTED_QUERIES)
+    progress_generation: int | None = Field(default=None, ge=1)
 
 
 class PerspectiveRequest(BaseModel):
     cluster_id: str = Field(min_length=1, max_length=200)
     facets: list[FacetEvidence] | None = Field(default=None, max_length=4)
     name: str | None = Field(default=None, min_length=1, max_length=200)
+    invited_perspective_ids: list[str] | None = Field(
+        default=None,
+        max_length=12,
+    )
+
+
+class IntegrateChildRequest(BaseModel):
+    invited_perspective_ids: list[str] | None = Field(
+        default=None,
+        max_length=12,
+    )
 
 
 class RoundRequest(BaseModel):
@@ -218,12 +230,16 @@ async def integrate_child_investigation(
     parent_investigation_id: str,
     child_investigation_id: str,
     service: Service,
+    request: IntegrateChildRequest | None = None,
 ) -> WorkspaceView:
     return await _acall(
         service.integrate_child_investigation(
             workspace_id,
             parent_investigation_id,
             child_investigation_id,
+            invited_perspective_ids=(
+                request.invited_perspective_ids if request is not None else None
+            ),
         )
     )
 
@@ -297,6 +313,31 @@ async def get_session(session_id: str, service: Service) -> SessionState:
     return _guard(lambda: service.get(session_id))
 
 
+@focused_router.post("/sessions/{session_id}/search-progress")
+async def start_search_progress(
+    session_id: str,
+    service: Service,
+) -> dict[str, int]:
+    generation = _guard(lambda: service.start_search_progress(session_id))
+    return {"generation": generation}
+
+
+@focused_router.get("/sessions/{session_id}/search-progress")
+async def search_progress(
+    session_id: str,
+    service: Service,
+    generation: Annotated[int | None, Query(ge=1)] = None,
+    after: Annotated[int, Query(ge=0)] = 0,
+) -> dict[str, Any]:
+    return _guard(
+        lambda: service.search_progress(
+            session_id,
+            generation=generation,
+            after=after,
+        )
+    )
+
+
 @focused_router.patch("/sessions/{session_id}")
 async def update_session(
     session_id: str,
@@ -326,7 +367,11 @@ async def run_search(
 ) -> WorkspaceView:
     return await _acall_view(
         service,
-        service.run_search(session_id, request.queries),
+        service.run_search(
+            session_id,
+            request.queries,
+            progress_generation=request.progress_generation,
+        ),
     )
 
 
@@ -357,6 +402,7 @@ async def generate_perspective(
         service,
         service.generate_perspective(
             session_id,
+            invited_perspective_ids=request.invited_perspective_ids,
             cluster_id=request.cluster_id,
             facets=request.facets,
             name=request.name,

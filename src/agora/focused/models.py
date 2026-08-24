@@ -67,6 +67,7 @@ class ClusterCard(BaseModel):
     blurb: str
     facets: list[FacetEvidence] = Field(default_factory=list)
     paper_ids: list[str] = Field(default_factory=list)
+    representative_paper_ids: list[str] = Field(default_factory=list)
 
 
 class FramingPosition(BaseModel):
@@ -95,9 +96,17 @@ class Perspective(BaseModel):
 class ClusteringDiagnostics(BaseModel):
     """Which clustering path ran and how well it separated the corpus."""
 
-    method: Literal["specter_kmeans", "tfidf_kmeans", "demo_seeds", "single_group"]
+    method: Literal[
+        "position_llm",
+        "specter_hdbscan_dpp",
+        "specter_kmeans",
+        "tfidf_kmeans",
+        "demo_seeds",
+        "single_group",
+    ]
     embedded: int = 0
     total: int = 0
+    requested_clusters: int = 0
     cluster_sizes: list[int] = Field(default_factory=list)
     silhouette: float | None = None
 
@@ -237,13 +246,6 @@ class DeliberationRating(BaseModel):
     submitted_at: datetime = Field(default_factory=utcnow)
 
 
-class DeliberationCompletion(BaseModel):
-    completed_at: datetime
-    final_hypothesis_version_id: str
-    round_count: int = Field(ge=1)
-    agent_iids: list[int] = Field(default_factory=list)
-    question_ids: list[str] = Field(default_factory=list)
-    rating: DeliberationRating | None = None
 
 
 class DeliberationRound(BaseModel):
@@ -282,6 +284,47 @@ class RecommendedQuestion(BaseModel):
             and self.child_investigation_id is None
         ):
             raise ValueError(f"{self.status} questions require a child Investigation")
+        return self
+
+
+class DeliberationCompletion(BaseModel):
+    archived_at: datetime = Field(default_factory=utcnow)
+    reason: Literal["completed", "restarted"] = "completed"
+    completed_at: datetime | None = None
+    final_hypothesis_version_id: str | None = None
+    round_count: int = Field(default=0, ge=0)
+    chat_count: int = Field(default=0, ge=0)
+    agent_iids: list[int] = Field(default_factory=list)
+    question_ids: list[str] = Field(default_factory=list)
+    rating: DeliberationRating | None = None
+    rounds: list[DeliberationRound] = Field(default_factory=list)
+    recommended_questions: list[RecommendedQuestion] = Field(default_factory=list)
+    chat: list[Turn] = Field(default_factory=list)
+    revised_perspective: Perspective | None = None
+    hypothesis: HypothesisDev | None = None
+    applied_hypothesis_version_id: str | None = None
+    applied_hypothesis: HypothesisDev | None = None
+    hypothesis_confirmed: bool = False
+    no_agreement: bool = False
+
+    @model_validator(mode="after")
+    def validate_archive(self) -> Self:
+        if self.reason == "completed" and (
+            self.completed_at is None or self.final_hypothesis_version_id is None
+        ):
+            raise ValueError("a completed archive requires its final hypothesis")
+        if self.hypothesis_confirmed and (
+            self.hypothesis is None
+            or self.applied_hypothesis is None
+            or self.hypothesis != self.applied_hypothesis
+        ):
+            raise ValueError(
+                "a confirmed archived hypothesis must equal its applied hypothesis"
+            )
+        if self.rounds and self.round_count != len(self.rounds):
+            raise ValueError("archive round count must match its stored rounds")
+        if self.chat and self.chat_count != len(self.chat):
+            raise ValueError("archive chat count must match its stored chat")
         return self
 
 
@@ -392,6 +435,7 @@ class SessionState(BaseModel):
     question_reach: list[QuestionReach] = Field(default_factory=list)
     papers: list[ExpPaper] = Field(default_factory=list)
     clusters: list[ClusterCard] = Field(default_factory=list)
+    unassigned_paper_ids: list[str] = Field(default_factory=list)
     perspectives: list[Perspective] = Field(default_factory=list)
     agents: list[AgentState] = Field(default_factory=list)
     deliberations: list[DeliberationState] = Field(default_factory=list)
@@ -416,6 +460,17 @@ class SessionState(BaseModel):
             and self.parent_investigation_id is None
         ):
             raise ValueError("only a child Investigation can be integrated")
+        known_papers = {paper.id for paper in self.papers}
+        unassigned = set(self.unassigned_paper_ids)
+        if len(unassigned) != len(self.unassigned_paper_ids):
+            raise ValueError("unassigned paper IDs must be unique")
+        if not unassigned <= known_papers:
+            raise ValueError("unassigned IDs must reference retrieved papers")
+        clustered = {
+            paper_id for cluster in self.clusters for paper_id in cluster.paper_ids
+        }
+        if unassigned & clustered:
+            raise ValueError("a paper cannot be clustered and unassigned")
         return self
 
 
@@ -501,7 +556,11 @@ class QuestionPlan(BaseModel):
 class QuestionAssessment(BaseModel):
     selected: list[QuestionEvidence] = Field(default_factory=list)
     vocabulary: list[VocabularyPair] = Field(default_factory=list)
-    round2: list[SuggestedQuery] = Field(default_factory=list)
+
+
+class QuestionExpansion(BaseModel):
+    queries: list[SuggestedQuery] = Field(default_factory=list)
+
 
 
 class ClusterNaming(BaseModel):
@@ -515,8 +574,17 @@ class ClusterNamings(BaseModel):
     )
 
 
+class FacetCandidate(BaseModel):
+    """Model-proposed facet before server-side provenance validation."""
+
+    facet: Facet
+    text: str = Field(max_length=4000)
+    paper_id: str
+    sentence_index: int | None = None
+
+
 class FacetExtraction(BaseModel):
-    facets: list[FacetEvidence] = Field(
+    facets: list[FacetCandidate] = Field(
         description="Four abstract-grounded facets: scope, explanation, "
         "approach, and significance."
     )

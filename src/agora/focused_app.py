@@ -18,7 +18,7 @@ from agora.focused.provider import FocusedProvider
 from agora.focused.retrieval import FocusedSemanticScholar
 from agora.focused.service import FocusedPanelService
 from agora.focused.supabase_persistence import SupabaseFocusedPersistence
-from agora.llm.providers.openrouter import OpenRouterProvider
+from agora.llm.providers.openai import OpenAIProvider
 
 settings = load_settings()
 
@@ -50,10 +50,10 @@ async def lifespan(app: FastAPI):
 
     provider = (
         FocusedProvider(
-            llm=OpenRouterProvider(settings.openrouter),
-            phase=settings.models.deliberation,
+            llm=OpenAIProvider(settings.openai),
+            models=settings.focused_models,
         )
-        if settings.openrouter.api_key
+        if settings.openai.api_key
         else None
     )
     app.state.settings = settings

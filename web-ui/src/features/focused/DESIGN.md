@@ -16,11 +16,16 @@ Surfaces:
   matrix below.
   Every Perspective exposes Scope, Explanation, Approach, and Significance,
   each grounded in an abstract sentence.
-  After retrieval, the exact submitted queries remain visible as a read-only
-  record beside the resulting clusters.
+  Complete SPECTER embeddings are grouped with lightweight UMAP/HDBSCAN; the
+  existing deterministic K-means path remains the fallback. Each cluster uses
+  five central-plus-DPP representatives for naming and grounded facet
+  extraction. Density noise and papers without embeddings remain explicit
+  under Unassigned literature, where every abstract stays inspectable.
+  Submitted and automatically expanded queries remain visible as a read-only
+  record beside the resulting clusters. During retrieval, the UI reports each
+  completed query as `Searched {query}...retrieved {n} papers`.
   Wrapped research-question lines are joined through their closing question
-  mark. Live searches use compact academic phrases; a zero-result search stays
-  retryable and never seals the Investigation.
+  mark. A zero-result search stays retryable and never seals the Investigation.
   Adding a Perspective inserts a pending matrix card immediately. Its own card
   and button show progress while other clusters remain addable. The server
   response replaces the card and creates its matching canvas agent; a failed
@@ -30,9 +35,11 @@ Surfaces:
   question step, then asks the researcher to choose one or two areas.
 - Panel — React Flow canvas (nodes/wires/dot grid) + guided drawer:
   while open, the canvas shows the Research Problem, Perspective agents, and
-  panel. Add Perspective uses an unrepresented cluster and appends its agent to
-  the same deliberation without clearing prior work. Round conversations stay in
-  the drawer; each moderator summary follows its agent turns.
+  panel. Adding a Perspective archives the current panel cycle and starts a new
+  deliberation with no rounds, chat, questions, or working hypothesis. The new
+  Perspective always participates; the researcher chooses which existing
+  Perspectives to invite. Archived rounds and hypotheses remain inspectable.
+  Each moderator summary follows its agent turns.
   Shared ground shows explicit Before and Proposed values for every changed
   hypothesis part, then requires a separate Apply changes confirmation. Saving
   creates an immutable checkpoint. End deliberation closes the round/chat/edit
@@ -43,13 +50,15 @@ Surfaces:
   other.
   A Research Problem opens a temporary literature branch. Back to panel returns
   to the parent without changing the branch. After the current parent
-  deliberation ends, Add to panel imports the branch's evidence and Perspectives
-  and reopens the same panel. Prior rounds and checkpoints remain; the earlier
-  completion and score move into completion history.
-  The Canvas retains each completed panel checkpoint and its final outputs.
-  Perspectives imported from a Research Problem branch render beneath that
-  Research Problem and feed the continued panel; they never attach to the root
-  problem. Saved Hypothesis nodes use the restrained green success surface.
+  deliberation ends, Add to panel imports the branch’s evidence and Perspectives
+  into a fresh deliberation. Imported Perspectives always participate; existing
+  Perspectives are optional invitations. The prior panel cycle, score, and final
+  outputs remain in history.
+  Representative papers appear first in every cluster. The researcher can
+  expand the remaining cluster library and inspect every paper in the
+  Perspective. Perspectives imported from a Research Problem branch render
+  beneath that Research Problem; they never attach to the root problem. Saved
+  Hypothesis nodes use the restrained green success surface.
 
 Overlays: modals (add Perspective, Perspective detail, apply changes,
 hypothesis, scoring, reset) share ModalShell; the 1180px/96vw panel drawer is

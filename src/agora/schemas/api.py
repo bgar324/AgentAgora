@@ -55,6 +55,7 @@ class InvestigationPatch(BaseModel):
     version: int
     title: str | None = None
     research_question: str | None = None
+    research_directions: list[ResearchDirection] | None = None
 
 
 class InvestigationView(BaseModel):

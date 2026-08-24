@@ -35,6 +35,7 @@ from agora.focused.models import (
     QuerySuggestions,
     QuestionAssessment,
     QuestionEvidence,
+    QuestionExpansion,
     QuestionPlan,
     QuestionRecommendations,
     RecommendedQuestion,
@@ -44,7 +45,9 @@ from agora.focused.models import (
     SuggestedQuery,
     SupportPassage,
     SupportSearch,
+    VocabularyPair,
 )
+from agora.focused.routing import FocusedTask
 
 if TYPE_CHECKING:
     from agora.focused.provider import FocusedProvider
@@ -152,12 +155,15 @@ async def _structured(
     schema: type[T],
     temperature: float | None = None,
     max_output_tokens: int | None = None,
+    *,
+    task: FocusedTask,
 ) -> T | None:
     """Demo/no-provider → None (caller falls back). Live calls raise typed errors."""
     if provider is None:
         return None
     try:
         result = await provider.generate_structured(
+            task=task,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -244,6 +250,7 @@ async def suggest_queries(
         f"## RESEARCH PROBLEM\n{problem}\n\n## RESEARCH QUESTIONS\n"
         + "\n".join(f"- {q}" for q in questions),
         QuerySuggestions,
+        task=FocusedTask.suggest_queries,
         temperature=0.4,
     )
     if parsed and parsed.queries:
@@ -279,8 +286,7 @@ QUESTION_ASSESS_SYSTEM = """\
 You identify papers that actually answer a research question. A paper counts
 only when its supplied abstract or passage supports, opposes, or conditions a
 candidate answer. Return one verbatim evidence sentence for every selected
-paper. Also report vocabulary the literature uses differently and up to two
-follow-up searches using that observed vocabulary."""
+paper. Also report vocabulary the literature uses differently."""
 
 QUESTION_ASSESS_USER = """\
 Question:
@@ -305,6 +311,7 @@ async def plan_question_search(
         QUESTION_PLAN_SYSTEM,
         QUESTION_PLAN_USER.format(problem=problem, question=question),
         QuestionPlan,
+        task=FocusedTask.plan_question_search,
         temperature=0.2,
     )
     if parsed is not None:
@@ -353,18 +360,12 @@ async def assess_question_papers(
     papers: list[ExpPaper],
     *,
     provider: FocusedProvider | None = None,
-    want_round2: bool = True,
 ) -> QuestionAssessment:
     if not papers:
         return QuestionAssessment()
     parsed = await _structured(
         provider,
-        QUESTION_ASSESS_SYSTEM
-        + (
-            "\nReturn no follow-up searches; leave round2 empty."
-            if not want_round2
-            else ""
-        ),
+        QUESTION_ASSESS_SYSTEM,
         QUESTION_ASSESS_USER.format(
             question=question,
             candidates="\n".join(
@@ -377,8 +378,9 @@ async def assess_question_papers(
             ),
         ),
         QuestionAssessment,
+        task=FocusedTask.assess_question_papers,
         temperature=0.1,
-        max_output_tokens=2_000,
+        max_output_tokens=None,
     )
     if parsed is None:
         target_terms = set(_content_words(" ".join([question, *candidates])))
@@ -429,12 +431,92 @@ async def assess_question_papers(
             for pair in parsed.vocabulary
             if pair.ours.strip() and pair.theirs.strip()
         ],
-        round2=(
-            [query for query in parsed.round2 if query.query.strip()][:2]
-            if want_round2
-            else []
-        ),
     )
+
+
+QUESTION_EXPAND_SYSTEM = """\
+You write follow-up Semantic Scholar queries after a first retrieval pass.
+Use the vocabulary observed in the selected literature to reach additional
+papers that answer the same research question. Return at most two compact
+queries of three to eight words. Do not use Boolean operators, quotation marks,
+questions, or prose sentences."""
+
+
+async def expand_question_search(
+    question: str,
+    candidates: list[str],
+    vocabulary: list[VocabularyPair],
+    papers: list[ExpPaper],
+    *,
+    provider: FocusedProvider | None = None,
+) -> list[SuggestedQuery]:
+    if not papers:
+        return []
+    parsed = await _structured(
+        provider,
+        QUESTION_EXPAND_SYSTEM,
+        "\n".join(
+            [
+                f"Research question: {question}",
+                "Candidate answers:",
+                *[f"- {candidate}" for candidate in candidates],
+                "Observed vocabulary:",
+                *[f"- {pair.ours} -> {pair.theirs}" for pair in vocabulary],
+                "Selected literature:",
+                *[
+                    f"- [{paper.id}] {paper.title}: {(paper.abstract or '')[:500]}"
+                    for paper in papers[:12]
+                ],
+            ]
+        ),
+        QuestionExpansion,
+        task=FocusedTask.expand_question_search,
+        temperature=0.2,
+    )
+    if parsed is not None:
+        queries = [
+            query.model_copy(
+                update={
+                    "query": compact_search_query(query.query),
+                    "kind": "question",
+                    "round": 2,
+                }
+            )
+            for query in parsed.queries
+            if compact_search_query(query.query)
+        ]
+        return queries[:2]
+    terms = list(
+        dict.fromkeys(
+            [
+                *(
+                    term
+                    for pair in vocabulary
+                    for term in _search_query_words(pair.theirs)
+                ),
+                *(
+                    term
+                    for paper in papers[:5]
+                    for term in _search_query_words(paper.title)
+                ),
+            ]
+        )
+    )
+    query = " ".join(terms[:6])
+    return (
+        [
+            SuggestedQuery(
+                query=query,
+                rationale="Uses vocabulary observed in answering papers.",
+                kind="question",
+                round=2,
+            )
+        ]
+        if query
+        else []
+    )
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -530,6 +612,7 @@ async def name_clusters(
         "blurb is one sentence describing the distinction.",
         "\n\n".join(sections),
         ClusterNamings,
+        task=FocusedTask.name_clusters,
         temperature=0.1,
         max_output_tokens=1_600,
     )
@@ -603,7 +686,7 @@ def _compress(sentence: str, limit: int = 180) -> str:
     return (cut[:comma] if comma > limit * 0.5 else cut).strip()
 
 
-def _pattern_facets(papers: list[ExpPaper]) -> list[FacetEvidence]:
+def fallback_cluster_facets(papers: list[ExpPaper]) -> list[FacetEvidence]:
     """Deterministic extraction over abstracts only."""
     available = [
         (paper, index, sentence)
@@ -685,17 +768,22 @@ async def extract_cluster_facets(
         "zero-based sentence_index of its supporting abstract sentence.",
         f"## ABSTRACTS\n{corpus}",
         FacetExtraction,
+        task=FocusedTask.extract_cluster_facets,
         temperature=0.1,
     )
     if parsed and parsed.facets:
         by_id = {paper.id: paper for paper in papers}
+        candidates = [
+            FacetEvidence.model_validate(evidence.model_dump())
+            for evidence in parsed.facets
+        ]
         return [
             map_facet_to_sentence(by_id[evidence.paper_id], evidence)
             if evidence.paper_id in by_id
             else evidence
-            for evidence in parsed.facets
+            for evidence in candidates
         ]
-    return _pattern_facets(papers)
+    return fallback_cluster_facets(papers)
 
 
 def map_facet_to_sentence(paper: ExpPaper, evidence: FacetEvidence) -> FacetEvidence:
@@ -774,6 +862,7 @@ async def derive_framing(
         "matters. These are descriptors, not sequential deliberation rounds.",
         f"## PERSPECTIVE: {perspective.name}\n## FACETS\n{_facets_block(perspective)}",
         FramingPosition,
+        task=FocusedTask.derive_framing,
     )
     if parsed and parsed.framing and parsed.position:
         return parsed
@@ -807,6 +896,7 @@ async def open_statement(
         f"## YOUR FACETS\n{_facets_block(perspective)}\n\n"
         f"## ACTIVE FACET\n{facet}: {value}{context}",
         Statement,
+        task=FocusedTask.open_statement,
     )
     if parsed and parsed.text:
         return parsed
@@ -840,6 +930,7 @@ async def answer_statement(
         f"## ACTIVE FACET\n{facet}: {value}\n\n"
         f"## LEAD\n{lead_label}: {lead_text}",
         Statement,
+        task=FocusedTask.answer_statement,
     )
     if parsed and parsed.text:
         return parsed
@@ -876,6 +967,7 @@ async def retrieve_support(
         "Write one precise literature-search query for the claim.",
         f"## CLAIM\n{statement_text}",
         SupportSearch,
+        task=FocusedTask.find_support_query,
     )
     query = parsed.query if parsed else " ".join(_content_words(statement_text)[:6])
 
@@ -942,6 +1034,7 @@ async def retrieve_support(
             f"## CLAIM\n{statement_text}\n\n## ABSTRACT\n"
             f"{paper.title}\n{paper.abstract or ''}",
             SupportPassage,
+            task=FocusedTask.select_support_passage,
         )
         if selection and _evidence_is_verbatim(paper, selection.passage):
             selected = selection.passage
@@ -982,6 +1075,7 @@ async def judge_facet(
             + "\n\n## DISCUSSION\n"
             + "\n".join(turns_for_facet),
             FacetVerdicts,
+            task=FocusedTask.judge_facet,
             temperature=0.1,
         )
         if parsed and parsed.verdicts:
@@ -1151,6 +1245,7 @@ async def summarize_round(
         + "\n\n## DIALOGUE\n"
         + "\n".join(turns),
         RoundResolution,
+        task=FocusedTask.summarize_round,
         temperature=0.1,
     )
     if parsed and parsed.summary:
@@ -1253,6 +1348,7 @@ async def reflect_on_round(
         f"## ACTIVE FACETS\n{', '.join(facets)}\n\n"
         f"## RESOLUTION\n{resolution.model_dump_json()}",
         ReflectionDraft,
+        task=FocusedTask.reflect_on_round,
         temperature=0.1,
     )
     current = {
@@ -1329,6 +1425,7 @@ async def develop_hypothesis(
         "the abstract-grounded evidence supports.",
         f"## PERSPECTIVE: {perspective.name}\n## FACETS\n{_facets_block(perspective)}",
         HypothesisSteps,
+        task=FocusedTask.develop_hypothesis,
     )
     if parsed and parsed.steps:
         return parsed.steps
@@ -1437,6 +1534,7 @@ async def develop_hypothesis_from_consensus(
             for point in resolution.consensus_points
         ),
         HypothesisSteps,
+        task=FocusedTask.develop_hypothesis_from_consensus,
         temperature=0.1,
     )
     if parsed and parsed.steps:
@@ -1469,6 +1567,7 @@ async def recommend_questions(
         f"## CURRENT PERSPECTIVE\n{_facets_block(perspective)}\n\n"
         f"## ROUND RESOLUTION\n{resolution.model_dump_json()}",
         QuestionRecommendations,
+        task=FocusedTask.recommend_questions,
         temperature=0.2,
     )
     if parsed and parsed.questions:
@@ -1534,6 +1633,7 @@ async def reply_to_user(
         + "\n".join(history[-8:])
         + f"\n\n## RESEARCHER QUESTION\n{question}",
         ChatReply,
+        task=FocusedTask.reply_to_user,
     )
     if parsed and parsed.text:
         return Statement(text=parsed.text, citations=parsed.citations)

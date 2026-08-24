@@ -7,7 +7,7 @@ __pycache__/
 *.egg-info/
 
 # virtual env
-.venv/
+.venv
 venv/
 
 # prototyping
@@ -33,6 +33,7 @@ venv/
 .ruff_cache/
 .pytest_cache/
 /supabase/.temp/
+/evals/results/*.raw.json
 
 # frontend dependencies and build output
 /web-ui/node_modules/

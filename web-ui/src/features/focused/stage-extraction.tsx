@@ -39,6 +39,7 @@ export function StageExtraction() {
   const picked = useFocusedStore((s) => s.pickedQueries)
   const queryToggled = useFocusedStore((s) => s.queryToggled)
   const busy = useFocusedStore((s) => s.busy)
+  const searchProgress = useFocusedStore((s) => s.searchProgress)
   const {
     suggestQueries,
     runSearch,
@@ -321,6 +322,27 @@ export function StageExtraction() {
             </section>
           )}
 
+          {searchProgress.length > 0 && (
+            <section
+              aria-label="Retrieval progress"
+              role="status"
+              aria-live="polite"
+              className="ep-enter panel px-4 py-3.5"
+            >
+              <SectionLabel>Retrieval progress</SectionLabel>
+              <div className="mt-2 flex flex-col gap-1.5 border-l-2 border-[var(--green)] pl-2.5">
+                {searchProgress.map((message, index) => (
+                  <p
+                    key={`${index}:${message}`}
+                    className="text-[11px] leading-snug text-[var(--ink-2)]"
+                  >
+                    {message}
+                  </p>
+                ))}
+              </div>
+            </section>
+          )}
+
           {!session.searched &&
             !editingBrief &&
             session.suggested_queries.length > 0 && (
@@ -404,6 +426,7 @@ export function StageExtraction() {
                   </>
                 )}
               </Button>
+
             </div>
           )}
           {error && (
@@ -439,9 +462,12 @@ export function StageExtraction() {
               </Button>
             </div>
           ) : (
-            session.clusters.map((cluster, index) => (
-              <ClusterRow key={cluster.id} cluster={cluster} index={index} />
-            ))
+            <>
+              {session.clusters.map((cluster, index) => (
+                <ClusterRow key={cluster.id} cluster={cluster} index={index} />
+              ))}
+              <UnassignedPapers />
+            </>
           )}
         </div>
       </div>
@@ -598,6 +624,58 @@ function RemovePerspectiveDialog({
   )
 }
 
+function UnassignedPapers() {
+  const session = useFocusedStore((s) => s.session)
+  const openPaperSet = useFocusedStore((s) => s.openPaperSet)
+  const [open, setOpen] = useState(false)
+  if (!session || session.unassigned_paper_ids.length === 0) return null
+  const papers = session.unassigned_paper_ids
+    .map((id) => session.papers.find((paper) => paper.id === id))
+    .filter(Boolean)
+
+  return (
+    <div className="ep-card-enter panel mb-2.5 px-4 py-3.5">
+      <button
+        type="button"
+        className="flex w-full items-baseline gap-2.5 text-left"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span className="text-[13px] font-semibold tracking-[-0.01em]">
+          Unassigned literature
+        </span>
+        <span className="ml-auto text-[12px] font-medium text-[var(--mute)]">
+          {papers.length} {papers.length === 1 ? "paper" : "papers"}{" "}
+          <span className="opacity-70">{open ? "▾" : "▸"}</span>
+        </span>
+      </button>
+      <p className="mt-1 text-[12px] leading-relaxed text-[var(--mute)]">
+        Retrieved papers that did not belong to a stable density cluster.
+      </p>
+      {open && (
+        <div className="ep-expand-enter mt-3 max-h-60 overflow-y-auto border-t border-[var(--line)] pt-2">
+          {papers.map(
+            (paper) =>
+              paper && (
+                <button
+                  key={paper.id}
+                  type="button"
+                  onClick={() => openPaperSet(paper.id)}
+                  className="group block w-full border-t border-[var(--line)] py-1.5 text-left first:border-t-0"
+                >
+                  <span className="text-[13px] leading-snug text-[var(--ink)] group-hover:text-[var(--green)]">
+                    {paper.title}
+                  </span>
+                </button>
+              ),
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+
 function ClusterRow({ cluster, index }: { cluster: ClusterCard; index: number }) {
   const openClusterId = useFocusedStore((s) => s.openClusterId)
   const openClusterSet = useFocusedStore((s) => s.openClusterSet)
@@ -611,6 +689,7 @@ function ClusterRow({ cluster, index }: { cluster: ClusterCard; index: number })
   >({})
   const [editing, setEditing] = useState<Facet | null>(null)
   const [generationError, setGenerationError] = useState<string | null>(null)
+  const [showAllPapers, setShowAllPapers] = useState(false)
 
   const open = openClusterId === cluster.id
   const inMatrix = !!session?.perspectives.some(
@@ -626,6 +705,16 @@ function ClusterRow({ cluster, index }: { cluster: ClusterCard; index: number })
   const papers = cluster.paper_ids
     .map((id) => session?.papers.find((p) => p.id === id))
     .filter(Boolean)
+  const representativeIdList = cluster.representative_paper_ids.length
+    ? cluster.representative_paper_ids
+    : cluster.paper_ids.slice(0, 3)
+  const representativeIds = new Set(representativeIdList)
+  const representativePapers = representativeIdList
+    .map((id) => session?.papers.find((paper) => paper.id === id))
+    .filter(Boolean)
+  const otherPapers = papers.filter(
+    (paper) => paper && !representativeIds.has(paper.id),
+  )
 
   const generate = async () => {
     setGenerationError(null)
@@ -756,23 +845,25 @@ function ClusterRow({ cluster, index }: { cluster: ClusterCard; index: number })
           </dl>
 
           <div className="mt-4 border-t border-[var(--line)] pt-3">
-            <div className="mb-1.5 text-[12px] font-medium text-[var(--mute)]">Representative papers</div>
+            <div className="mb-1.5 text-[12px] font-medium text-[var(--mute)]">
+              Representative papers ({representativePapers.length})
+            </div>
             <div className="flex flex-col">
-              {papers.slice(0, 3).map(
-                (p) =>
-                  p && (
+              {representativePapers.map(
+                (paper) =>
+                  paper && (
                     <button
-                      key={p.id}
-                      onClick={() => openPaperSet(p.id)}
+                      key={paper.id}
+                      onClick={() => openPaperSet(paper.id)}
                       className="group flex items-baseline gap-2 border-t border-[var(--line)] py-1.5 text-left first:border-t-0"
                     >
                       <span className="text-[13px] leading-snug text-[var(--ink)] group-hover:text-[var(--green)]">
-                        {p.title}
+                        {paper.title}
                       </span>
                       <span className="ml-auto shrink-0 text-[12px] font-medium text-[var(--mute)]">
                         {session?.clusters
                           .flatMap((item) => item.facets)
-                          .filter((evidence) => evidence.paper_id === p.id)
+                          .filter((evidence) => evidence.paper_id === paper.id)
                           .length ?? 0}{" "}
                         areas
                       </span>
@@ -780,6 +871,40 @@ function ClusterRow({ cluster, index }: { cluster: ClusterCard; index: number })
                   ),
               )}
             </div>
+            {otherPapers.length > 0 && (
+              <div className="mt-3 border-t border-[var(--line)] pt-2.5">
+                <button
+                  type="button"
+                  aria-expanded={showAllPapers}
+                  onClick={() => setShowAllPapers((current) => !current)}
+                  className="text-[12px] font-medium text-[var(--ink-2)] underline decoration-dotted underline-offset-4 hover:text-[var(--ink)]"
+                >
+                  {showAllPapers
+                    ? "Hide other papers"
+                    : `Show ${otherPapers.length} other ${
+                        otherPapers.length === 1 ? "paper" : "papers"
+                      }`}
+                </button>
+                {showAllPapers && (
+                  <div className="mt-2 flex max-h-80 flex-col overflow-y-auto pr-1">
+                    {otherPapers.map(
+                      (paper) =>
+                        paper && (
+                          <button
+                            key={paper.id}
+                            onClick={() => openPaperSet(paper.id)}
+                            className="group border-t border-[var(--line)] py-1.5 text-left first:border-t-0"
+                          >
+                            <span className="text-[13px] leading-snug text-[var(--ink)] group-hover:text-[var(--green)]">
+                              {paper.title}
+                            </span>
+                          </button>
+                        ),
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
             <Button
               variant={inMatrix ? "outline" : "primary"}
               size="sm"
