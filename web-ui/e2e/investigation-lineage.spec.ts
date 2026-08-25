@@ -993,6 +993,21 @@ test("shows a direct agent reply in the panel conversation", async ({ page }) =>
   const perspective = state.perspectives.find(
     (item: { id: string }) => item.id === agent.perspective_id,
   )
+  await page.route(`**/api/focused/sessions/${rootId}/chat`, async (route) => {
+    expect(route.request().postDataJSON().target_iid).toBe(agent.iid)
+    const response = await route.fetch()
+    const payload = await response.json()
+    const deliberation = payload.active.deliberations.find(
+      (item: { id: string }) => item.id === state.deliberations[0].id,
+    )
+    deliberation.chat.at(-1).text =
+      "**Bounded claim.**\n\n1. First condition\n2. Second condition"
+    const { promise: delay, resolve } = Promise.withResolvers<void>()
+    setTimeout(resolve, 750)
+    await delay
+    await route.fulfill({ response, json: payload })
+  })
+
 
   await page.goto(`/focused?workspace=${workspaceId}`)
   await page.getByRole("button", { name: "Join" }).click()
@@ -1001,18 +1016,23 @@ test("shows a direct agent reply in the panel conversation", async ({ page }) =>
     .selectOption(String(agent.iid))
   await page
     .getByPlaceholder("Ask the panel about this round…")
-    .fill("What evidence sets your boundary?")
+    .fill("What does *bounded* evidence mean?")
   await page.getByRole("button", { name: "Send" }).click()
 
   const transcript = page.getByTestId("panel-chat-transcript")
-  await expect(transcript).toBeVisible()
-  await expect(transcript).toContainText("What evidence sets your boundary?")
-  const reply = transcript.getByText(
-    `From the ${perspective.name} perspective`,
-    { exact: false },
-  )
+  await expect(transcript).toBeVisible({ timeout: 300 })
+  await expect(transcript).toContainText("What does *bounded* evidence mean?")
+  await expect(transcript).toContainText("Thinking…")
+  await expect(transcript.locator(".animate-spin")).toHaveCount(1)
+  await expect(page.getByRole("button", { name: "Send" })).toBeDisabled()
+
+  const reply = transcript.getByText("Bounded claim.", { exact: true })
   await expect(reply).toBeVisible()
   await expect(reply).toBeInViewport()
+  await expect(transcript.locator("strong")).toHaveText("Bounded claim.")
+  await expect(transcript.locator("ol > li")).toHaveCount(2)
+  await expect(transcript).toContainText(perspective.name)
+  await expect(transcript.getByText("Thinking…")).toHaveCount(0)
 })
 
 
@@ -1024,6 +1044,21 @@ test("edits an applied hypothesis without reusing pending-update semantics", asy
   await page.goto(`/focused?workspace=${workspaceId}`)
   await page.getByRole("button", { name: "Join" }).click()
   await applySharedGround(page)
+  await expect(page.getByTestId("facet-history-scope")).toHaveText(
+    "Discussed in round 1",
+  )
+  await expect(page.getByTestId("facet-history-explanation")).toHaveText(
+    "Not discussed yet",
+  )
+  await expect(page.getByText("1/4 discussed", { exact: true })).toBeVisible()
+  const reusableScope = page.getByRole("button", {
+    name: /Scope.*Discussed in round 1/,
+  })
+  await expect(reusableScope).toBeEnabled()
+  await reusableScope.click()
+  await expect(reusableScope).toHaveAttribute("aria-pressed", "true")
+  await reusableScope.click()
+  await expect(reusableScope).toHaveAttribute("aria-pressed", "false")
   await page.getByRole("button", { name: "Save hypothesis" }).click()
   await page.getByRole("button", { name: "Edit hypothesis" }).click()
   await expect(

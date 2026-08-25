@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from agora.focused.demo_data import DEMO_RESEARCH_QUESTIONS
 from agora.focused.models import (
     FACETS,
     ClusterNaming,
@@ -674,3 +675,76 @@ def test_fifty_eight_papers_request_three_clusters() -> None:
     assert FocusedPanelService._target_cluster_count(15) == 3
     assert FocusedPanelService._target_cluster_count(58) == 3
     assert FocusedPanelService._target_cluster_count(90) == 3
+
+
+def test_live_queries_overlap_without_reordering_results() -> None:
+    async def go() -> None:
+        class TrackedRetrieval:
+            active = 0
+            peak = 0
+
+            async def search(self, query: str, limit: int = 8):
+                del limit
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+                await asyncio.sleep(
+                    {"first query": 0.02, "second query": 0.0}.get(query, 0.01)
+                )
+                self.active -= 1
+                return [
+                    FocusedSearchResult(
+                        id=query,
+                        title=query.title(),
+                        abstract=f"Abstract for {query}.",
+                    )
+                ]
+
+        retrieval = TrackedRetrieval()
+        service = FocusedPanelService(s2=retrieval)
+        papers, succeeded = await service._live_retrieve(
+            ["first query", "second query", "third query"]
+        )
+
+        assert succeeded
+        assert [paper.id for paper in papers] == [
+            "first query",
+            "second query",
+            "third query",
+        ]
+        assert retrieval.peak == 3
+
+    asyncio.run(go())
+
+
+def test_question_retrieval_pipelines_overlap(monkeypatch) -> None:
+    async def go() -> None:
+        service = FocusedPanelService()
+        state = service.create_workspace(
+            problem="Should antibiotics be prescribed broadly?",
+            research_questions=DEMO_RESEARCH_QUESTIONS,
+            demo=True,
+        ).active
+        state = await service.suggest_queries(state.id)
+        active = 0
+        peak = 0
+        original = service._retrieve_question
+
+        async def tracked(*args, **kwargs):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            await asyncio.sleep(0)
+            try:
+                return await original(*args, **kwargs)
+            finally:
+                active -= 1
+
+        monkeypatch.setattr(service, "_retrieve_question", tracked)
+        await service.run_search(
+            state.id,
+            [suggestion.query for suggestion in state.suggested_queries],
+        )
+
+        assert peak == len(DEMO_RESEARCH_QUESTIONS)
+
+    asyncio.run(go())

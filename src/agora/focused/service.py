@@ -1375,20 +1375,13 @@ class FocusedPanelService:
         *,
         session_id: str | None = None,
     ) -> tuple[list[ExpPaper], bool]:
-        papers: dict[str, ExpPaper] = {}
-        search_succeeded = False
-        for query in queries:
-            query_run_id = (
-                self._publish_search_progress(
-                    session_id,
-                    "query_started",
-                    f"Searching papers for {query}.",
-                    query=query,
-                )
-                if session_id is not None
-                else None
-            )
+        async def retrieve_one(
+            query: str,
+            query_run_id: int | None,
+        ) -> tuple[list[ExpPaper], bool]:
+            query_papers: dict[str, ExpPaper] = {}
             retrieved_for_query = 0
+            succeeded = False
             variants = [query]
             relaxed = agents.relaxed_search_query(query)
             if relaxed and relaxed.casefold() != query.casefold():
@@ -1412,13 +1405,13 @@ class FocusedPanelService:
                             status=503,
                         ) from exc
                     continue
-                search_succeeded = True
+                succeeded = True
                 retrieved_for_query = len(results)
                 for result in results:
-                    if result.id in papers:
+                    if result.id in query_papers:
                         continue
                     abstract_sentences = agents.split_sentences(result.abstract)
-                    papers[result.id] = ExpPaper(
+                    query_papers[result.id] = ExpPaper(
                         id=result.id,
                         title=result.title,
                         abstract=result.abstract,
@@ -1442,6 +1435,41 @@ class FocusedPanelService:
                     retrieved=retrieved_for_query,
                     query_run_id=query_run_id,
                 )
+            return list(query_papers.values()), succeeded
+
+        query_runs = [
+            (
+                query,
+                (
+                    self._publish_search_progress(
+                        session_id,
+                        "query_started",
+                        f"Searching papers for {query}.",
+                        query=query,
+                    )
+                    if session_id is not None
+                    else None
+                ),
+            )
+            for query in queries
+        ]
+        tasks = []
+        try:
+            async with asyncio.TaskGroup() as task_group:
+                tasks = [
+                    task_group.create_task(retrieve_one(query, query_run_id))
+                    for query, query_run_id in query_runs
+                ]
+        except* Exception as errors:  # noqa: BLE001
+            raise errors.exceptions[0]
+
+        papers: dict[str, ExpPaper] = {}
+        search_succeeded = False
+        for task in tasks:
+            query_papers, succeeded = task.result()
+            search_succeeded = search_succeeded or succeeded
+            for paper in query_papers:
+                papers.setdefault(paper.id, paper)
         return list(papers.values())[:MAX_RETRIEVED_PAPERS], search_succeeded
 
     async def _retrieve_queries(
@@ -1823,18 +1851,30 @@ class FocusedPanelService:
             question = state.research_questions[len(reaches)]
             reaches.append(QuestionReach(question=question, candidates=[question]))
 
+        question_tasks = []
+        try:
+            async with asyncio.TaskGroup() as task_group:
+                for question_index, reach in enumerate(reaches):
+                    round1 = list(
+                        dict.fromkeys(
+                            suggestion.query
+                            for suggestion in state.suggested_queries
+                            if suggestion.query in selected_queries
+                            and suggestion.kind == "question"
+                            and suggestion.question_index == question_index
+                        )
+                    )
+                    question_tasks.append(
+                        task_group.create_task(
+                            self._retrieve_question(session, reach, round1)
+                        )
+                    )
+        except* Exception as errors:  # noqa: BLE001
+            raise errors.exceptions[0]
+
         automatic_queries: list[str] = []
-        for question_index, reach in enumerate(reaches):
-            round1 = list(
-                dict.fromkeys(
-                    suggestion.query
-                    for suggestion in state.suggested_queries
-                    if suggestion.query in selected_queries
-                    and suggestion.kind == "question"
-                    and suggestion.question_index == question_index
-                )
-            )
-            retrieval = await self._retrieve_question(session, reach, round1)
+        for task in question_tasks:
+            retrieval = task.result()
             search_succeeded = search_succeeded or retrieval.succeeded
             automatic_queries.extend(retrieval.expansion_queries)
             question_candidate_groups.append(list(retrieval.candidates.values()))

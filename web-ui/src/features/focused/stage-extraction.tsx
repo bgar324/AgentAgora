@@ -113,6 +113,9 @@ function RetrievalProgressPanel({
     )
   const retainedPapers = retrieval?.retained ?? paperCount
   const queryCount = retrieval?.query_count ?? queries.length
+  const activeQuerySequence = queries.find(
+    (query) => query.retrieved === null,
+  )?.sequence
   const createdCandidates = clusteringCompleted?.clusters ?? clusterCount
   const papersUnassigned =
     clusteringCompleted?.unassigned ?? unassignedCount
@@ -180,7 +183,8 @@ function RetrievalProgressPanel({
                   <span className="absolute left-0 top-0 grid size-5 place-items-center bg-[var(--panel)] text-[var(--ink-2)]">
                     {completed ? (
                       <Check size={14} strokeWidth={1.8} aria-hidden />
-                    ) : active ? (
+                    ) : active &&
+                      checkpoint.sequence === activeQuerySequence ? (
                       <span data-testid="active-query-spinner">
                         <Spinner className="size-3.5" />
                       </span>
