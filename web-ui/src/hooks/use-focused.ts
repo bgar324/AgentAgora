@@ -531,13 +531,18 @@ export function useFocusedPanel() {
       deliberationId: string,
       hypothesis: HypothesisDev,
       mode: HypothesisConfirmationMode,
+      selectedParts?: HypothesisPart[],
     ) =>
       call(
         "Applying hypothesis",
         `sessions/${sessionId}/deliberations/${deliberationId}/hypothesis`,
         {
           method: "PUT",
-          body: JSON.stringify({ hypothesis, mode }),
+          body: JSON.stringify({
+            hypothesis,
+            mode,
+            selected_parts: selectedParts,
+          }),
         },
       ),
     [call, sessionId],
@@ -695,7 +700,7 @@ export function useFocusedPanel() {
           deliberation_id: deliberationId,
           message,
           target_iid: targetIid,
-          proactivity: "med",
+          proactivity: "high",
         }),
       }),
     [call, sessionId],

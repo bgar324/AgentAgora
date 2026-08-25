@@ -142,7 +142,7 @@ def test_legacy_rotating_rounds_archive_before_new_lead_cycle() -> None:
     asyncio.run(go())
 
 
-def test_completion_requires_four_rounds_even_when_facets_are_covered() -> None:
+def test_completion_allows_one_finished_round() -> None:
     async def go() -> None:
         service = FocusedPanelService()
         state = service.create_workspace(
@@ -162,26 +162,27 @@ def test_completion_requires_four_rounds_even_when_facets_are_covered() -> None:
             state.agents[0].perspective_id,
         )
         deliberation = state.deliberations[0]
-        lead_iid = deliberation.agent_iids[0]
-        deliberation.rounds = [
-            DeliberationRound(
-                n=1,
-                lead_iid=lead_iid,
-                participant_iids=deliberation.agent_iids,
-                facets=["scope", "explanation"],
-                completed=True,
-            ),
-            DeliberationRound(
-                n=2,
-                lead_iid=lead_iid,
-                participant_iids=deliberation.agent_iids,
-                facets=["approach", "significance"],
-                completed=True,
-            ),
-        ]
+        state = await service.run_round(
+            state.id,
+            deliberation.id,
+            lead_iid=deliberation.agent_iids[0],
+            facets=["scope"],
+        )
+        deliberation = state.deliberations[0]
+        if not deliberation.hypothesis_confirmed:
+            assert deliberation.hypothesis is not None
+            state = await service.confirm_deliberation_hypothesis(
+                state.id,
+                deliberation.id,
+                deliberation.hypothesis,
+            )
+        state = await service.save_deliberation_hypothesis(
+            state.id,
+            deliberation.id,
+        )
+        state = await service.complete_deliberation(state.id, deliberation.id)
 
-        with pytest.raises(SessionError, match="at least four focused rounds"):
-            await service.complete_deliberation(state.id, deliberation.id)
+        assert state.deliberations[0].completed_at is not None
 
     asyncio.run(go())
 
@@ -963,6 +964,29 @@ def test_failed_round_restores_the_entire_in_memory_investigation(
             state.agents[0].perspective_id,
         )
         before = service.get(state.id).model_dump(mode="json")
+        original_assent = agents.assent_to_shared_ground
+
+        async def fail_during_assent(*_args, **_kwargs):
+            raise RuntimeError("assent failed")
+
+        monkeypatch.setattr(
+            agents,
+            "assent_to_shared_ground",
+            fail_during_assent,
+        )
+        with pytest.raises(RuntimeError, match="assent failed"):
+            await service.run_round(
+                state.id,
+                deliberation.id,
+                lead_iid=agent_iids[0],
+                facets=["scope"],
+            )
+        assert service.get(state.id).model_dump(mode="json") == before
+        monkeypatch.setattr(
+            agents,
+            "assent_to_shared_ground",
+            original_assent,
+        )
 
         async def fail_after_reflection(*_args, **_kwargs):
             raise RuntimeError("question generation failed")

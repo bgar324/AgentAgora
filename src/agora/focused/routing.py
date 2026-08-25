@@ -23,6 +23,7 @@ class FocusedTask(StrEnum):
     find_support_query = "find_support_query"
     select_support_passage = "select_support_passage"
     judge_facet = "judge_facet"
+    assent_shared_ground = "assent_shared_ground"
     summarize_round = "summarize_round"
     reflect_on_round = "reflect_on_round"
     develop_hypothesis = "develop_hypothesis"
@@ -45,6 +46,7 @@ TASK_ROLES: Final = MappingProxyType(
         FocusedTask.find_support_query: FocusedModelRole.query,
         FocusedTask.select_support_passage: FocusedModelRole.corpus,
         FocusedTask.judge_facet: FocusedModelRole.evaluation,
+        FocusedTask.assent_shared_ground: FocusedModelRole.reasoning,
         FocusedTask.summarize_round: FocusedModelRole.evaluation,
         FocusedTask.reflect_on_round: FocusedModelRole.reasoning,
         FocusedTask.develop_hypothesis: FocusedModelRole.reasoning,

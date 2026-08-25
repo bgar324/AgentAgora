@@ -174,6 +174,7 @@ class Turn(BaseModel):
     facet: Facet | None = None
     text: str
     citations: list[str] = Field(default_factory=list)
+    exchange_n: int | None = Field(default=None, ge=1)
 
 
 class FacetVerdict(BaseModel):
@@ -187,6 +188,7 @@ class FacetVerdict(BaseModel):
     facet: Facet
     status: Literal["consensus", "disagreement", "unsettled"]
     summary: str
+    proposed_shared_ground: str = ""
     consensus: str = ""
     disagreement: str = ""
     unsettled: str = ""
@@ -194,6 +196,31 @@ class FacetVerdict(BaseModel):
     contested_by: list[str] = Field(default_factory=list)
     positions: dict[str, str] = Field(default_factory=dict)
     evidence: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class SharedGroundAssent(BaseModel):
+    agent_iid: int
+    agent_label: str
+    decision: Literal["accept", "qualify", "reject"]
+    reason: str = ""
+
+
+class ModeratorCheck(BaseModel):
+    exchange_n: int = Field(ge=1)
+    proposed_shared_ground: str
+    verdict: FacetVerdict
+    assents: list[SharedGroundAssent] = Field(default_factory=list)
+    unanimous: bool = False
+
+    @model_validator(mode="after")
+    def validate_unanimous(self) -> Self:
+        expected = bool(self.proposed_shared_ground.strip()) and bool(self.assents)
+        expected = expected and all(
+            assent.decision == "accept" for assent in self.assents
+        )
+        if self.unanimous != expected:
+            raise ValueError("unanimous must match the recorded assents")
+        return self
 
 
 class DeliberationPoint(BaseModel):
@@ -269,6 +296,8 @@ class DeliberationRound(BaseModel):
     hypothesis_before: HypothesisDev | None = None
     hypothesis_proposal: HypothesisDev | None = None
     hypothesis_decision: HypothesisDecision | None = None
+    moderator_checks: list[ModeratorCheck] = Field(default_factory=list)
+    stop_reason: Literal["unanimous", "exchange_limit"] | None = None
 
 
 QuestionStatus = Literal["open", "investigating", "addressed", "archived"]
@@ -627,6 +656,7 @@ class FacetVerdictDraft(BaseModel):
     facet: Facet
     status: Literal["consensus", "disagreement", "unsettled"]
     summary: str
+    proposed_shared_ground: str = ""
     consensus: str = ""
     disagreement: str = ""
     unsettled: str = ""
@@ -636,6 +666,11 @@ class FacetVerdictDraft(BaseModel):
 
 class FacetVerdicts(BaseModel):
     verdicts: list[FacetVerdictDraft]
+
+
+class SharedGroundAssentDraft(BaseModel):
+    decision: Literal["accept", "qualify", "reject"]
+    reason: str
 
 
 class ReflectionDraft(BaseModel):

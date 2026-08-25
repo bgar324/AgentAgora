@@ -159,6 +159,11 @@ class MergeHypothesesRequest(BaseModel):
 class HypothesisRequest(BaseModel):
     hypothesis: HypothesisDev
     mode: HypothesisConfirmationMode
+    selected_parts: list[HypothesisPart] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=4,
+    )
 
 
 class CompleteDeliberationRequest(BaseModel):
@@ -506,6 +511,7 @@ async def confirm_deliberation_hypothesis(
             deliberation_id,
             request.hypothesis,
             mode=request.mode,
+            selected_parts=request.selected_parts,
         ),
     )
 
