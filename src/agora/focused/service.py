@@ -2814,17 +2814,33 @@ class FocusedPanelService:
             await speak(lead_turn)
 
             answers: list[Turn] = []
-            for iid in participant_iids:
-                if iid == lead_iid:
-                    continue
-                agent, profile = self._agent_view(state, iid)
-                response = await agents.answer_statement(
-                    profile,
-                    facet,
-                    lead_agent.label,
-                    statement.text,
-                    provider=self._provider_for(session),
-                )
+            answer_tasks = []
+            try:
+                async with asyncio.TaskGroup() as task_group:
+                    for iid in participant_iids:
+                        if iid == lead_iid:
+                            continue
+                        agent, profile = self._agent_view(state, iid)
+                        answer_tasks.append(
+                            (
+                                iid,
+                                agent,
+                                profile,
+                                task_group.create_task(
+                                    agents.answer_statement(
+                                        profile,
+                                        facet,
+                                        lead_agent.label,
+                                        statement.text,
+                                        provider=self._provider_for(session),
+                                    )
+                                ),
+                            )
+                        )
+            except* Exception as errors:  # noqa: BLE001
+                raise errors.exceptions[0]
+            for iid, agent, profile, task in answer_tasks:
+                response = task.result()
                 turn = Turn(
                     id=session.next_turn_id(),
                     agent_iid=iid,
@@ -2939,17 +2955,30 @@ class FocusedPanelService:
                 ]
         round_state.resolution = resolution
 
-        reflected: list[tuple[AgentState, Any, dict[Facet, FacetEvidence]]] = []
-        for iid in participant_iids:
-            agent, profile = self._agent_view(state, iid)
-            reflection, updated = await agents.reflect_on_round(
-                iid,
-                profile,
-                selected,
-                resolution,
-                provider=self._provider_for(session),
-            )
-            reflected.append((agent, reflection, updated))
+        reflection_tasks = []
+        try:
+            async with asyncio.TaskGroup() as task_group:
+                for iid in participant_iids:
+                    agent, profile = self._agent_view(state, iid)
+                    reflection_tasks.append(
+                        (
+                            agent,
+                            task_group.create_task(
+                                agents.reflect_on_round(
+                                    iid,
+                                    profile,
+                                    selected,
+                                    resolution,
+                                    provider=self._provider_for(session),
+                                )
+                            ),
+                        )
+                    )
+        except* Exception as errors:  # noqa: BLE001
+            raise errors.exceptions[0]
+        reflected = [
+            (agent, *task.result()) for agent, task in reflection_tasks
+        ]
         for agent, reflection, updated in reflected:
             agent.facets = updated
             if reflection.decision == "revised":
@@ -2957,12 +2986,6 @@ class FocusedPanelService:
             round_state.reflections.append(reflection)
 
         after = self._facet_snapshot(state, participant_iids)
-        round_state.metrics = await self._round_metrics(
-            session,
-            before,
-            after,
-        )
-
         _, revised = self._agent_view(state, lead_iid)
         revised = revised.model_copy(
             deep=True,
@@ -2973,20 +2996,45 @@ class FocusedPanelService:
                 "origin": deliberation.id,
             },
         )
-        revised.framing = await agents.derive_framing(
-            revised,
-            provider=self._provider_for(session),
-        )
         revised.summary = resolution.summary
+
+        hypothesis_task = None
+        try:
+            async with asyncio.TaskGroup() as task_group:
+                metrics_task = task_group.create_task(
+                    self._round_metrics(session, before, after)
+                )
+                framing_task = task_group.create_task(
+                    agents.derive_framing(
+                        revised,
+                        provider=self._provider_for(session),
+                    )
+                )
+                questions_task = task_group.create_task(
+                    agents.recommend_questions(
+                        resolution,
+                        revised,
+                        provider=self._provider_for(session),
+                    )
+                )
+                if resolution.consensus_points:
+                    hypothesis_task = task_group.create_task(
+                        agents.develop_hypothesis_from_consensus(
+                            resolution,
+                            current=deliberation.applied_hypothesis,
+                            provider=self._provider_for(session),
+                        )
+                    )
+        except* Exception as errors:  # noqa: BLE001
+            raise errors.exceptions[0]
+
+        round_state.metrics = metrics_task.result()
+        revised.framing = framing_task.result()
         deliberation.revised_perspective = revised
 
-        if resolution.consensus_points:
+        if hypothesis_task is not None:
             deliberation.no_agreement = False
-            proposed_hypothesis = await agents.develop_hypothesis_from_consensus(
-                resolution,
-                current=deliberation.applied_hypothesis,
-                provider=self._provider_for(session),
-            )
+            proposed_hypothesis = hypothesis_task.result()
             current_hypothesis = deliberation.applied_hypothesis
             if current_hypothesis is not None and self._same_hypothesis(
                 proposed_hypothesis,
@@ -3000,11 +3048,7 @@ class FocusedPanelService:
         else:
             deliberation.no_agreement = True
 
-        questions = await agents.recommend_questions(
-            resolution,
-            revised,
-            provider=self._provider_for(session),
-        )
+        questions = questions_task.result()
         prior_questions = [
             *(
                 question

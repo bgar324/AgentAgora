@@ -9,7 +9,8 @@ from agora.core.errors import ConfigurationError
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 SEMANTIC_SCHOLAR_BASE_URL = "https://api.semanticscholar.org"
-
+GPT_5_6_LUNA = "gpt-5.6-luna"
+DSPY_GPT_5_6_LUNA = f"openai/{GPT_5_6_LUNA}"
 
 def _env(name: str) -> str | None:
     value = os.getenv(name, "").strip()
@@ -110,22 +111,22 @@ class PhaseModel:
 class FocusedModelSettings:
     corpus: PhaseModel = field(
         default_factory=lambda: PhaseModel(
-            "gpt-5.6-luna", None, 6_000, reasoning_effort="low"
+            GPT_5_6_LUNA, None, 6_000, reasoning_effort="low"
         )
     )
     query: PhaseModel = field(
         default_factory=lambda: PhaseModel(
-            "gpt-5.6-terra", None, 2_000, reasoning_effort="low"
+            GPT_5_6_LUNA, None, 2_000, reasoning_effort="low"
         )
     )
     reasoning: PhaseModel = field(
         default_factory=lambda: PhaseModel(
-            "gpt-5.6-terra", None, 2_000, reasoning_effort="medium"
+            GPT_5_6_LUNA, None, 2_000, reasoning_effort="medium"
         )
     )
     evaluation: PhaseModel = field(
         default_factory=lambda: PhaseModel(
-            "gpt-5.6-sol", None, 4_000, reasoning_effort="high"
+            GPT_5_6_LUNA, None, 4_000, reasoning_effort="high"
         )
     )
 
@@ -133,13 +134,13 @@ class FocusedModelSettings:
 @dataclass
 class ModelSettings:
     brief: PhaseModel = field(
-        default_factory=lambda: PhaseModel("openai/gpt-4o-mini", 1.0, 4_000)
+        default_factory=lambda: PhaseModel(DSPY_GPT_5_6_LUNA, 1.0, 4_000)
     )
     panel: PhaseModel = field(
-        default_factory=lambda: PhaseModel("openai/gpt-4o-mini", 0.0, 4_000)
+        default_factory=lambda: PhaseModel(DSPY_GPT_5_6_LUNA, 0.0, 4_000)
     )
     deliberation: PhaseModel = field(
-        default_factory=lambda: PhaseModel("openai/gpt-4o-mini", 0.0, 800)
+        default_factory=lambda: PhaseModel(DSPY_GPT_5_6_LUNA, 0.0, 800)
     )
 
 
@@ -230,24 +231,24 @@ def load_settings() -> Settings:
         ),
         models=ModelSettings(
             brief=PhaseModel(
-                model=_env("AGORA_BRIEF_MODEL") or "openai/gpt-4o-mini",
+                model=_env("AGORA_BRIEF_MODEL") or DSPY_GPT_5_6_LUNA,
                 temperature=_env_float("AGORA_BRIEF_TEMPERATURE", 1.0),
                 max_tokens=_env_int("AGORA_BRIEF_MAX_TOKENS", 4_000),
             ),
             panel=PhaseModel(
-                model=_env("AGORA_PANEL_MODEL") or "openai/gpt-4o-mini",
+                model=_env("AGORA_PANEL_MODEL") or DSPY_GPT_5_6_LUNA,
                 temperature=_env_float("AGORA_PANEL_TEMPERATURE", 0.0),
                 max_tokens=_env_int("AGORA_PANEL_MAX_TOKENS", 4_000),
             ),
             deliberation=PhaseModel(
-                model=(_env("AGORA_DELIBERATION_MODEL") or "openai/gpt-4o-mini"),
+                model=(_env("AGORA_DELIBERATION_MODEL") or DSPY_GPT_5_6_LUNA),
                 temperature=_env_float("AGORA_DELIBERATION_TEMPERATURE", 0.0),
                 max_tokens=_env_int("AGORA_DELIBERATION_MAX_TOKENS", 800),
             ),
         ),
         focused_models=FocusedModelSettings(
             corpus=PhaseModel(
-                model=_env("AGORA_FOCUSED_CORPUS_MODEL") or "gpt-5.6-luna",
+                model=_env("AGORA_FOCUSED_CORPUS_MODEL") or GPT_5_6_LUNA,
                 temperature=None,
                 max_tokens=_env_int("AGORA_FOCUSED_CORPUS_MAX_TOKENS", 6_000),
                 reasoning_effort=_env_reasoning_effort(
@@ -255,7 +256,7 @@ def load_settings() -> Settings:
                 ),
             ),
             query=PhaseModel(
-                model=_env("AGORA_FOCUSED_QUERY_MODEL") or "gpt-5.6-terra",
+                model=_env("AGORA_FOCUSED_QUERY_MODEL") or GPT_5_6_LUNA,
                 temperature=None,
                 max_tokens=_env_int("AGORA_FOCUSED_QUERY_MAX_TOKENS", 2_000),
                 reasoning_effort=_env_reasoning_effort(
@@ -263,7 +264,7 @@ def load_settings() -> Settings:
                 ),
             ),
             reasoning=PhaseModel(
-                model=_env("AGORA_FOCUSED_REASONING_MODEL") or "gpt-5.6-terra",
+                model=_env("AGORA_FOCUSED_REASONING_MODEL") or GPT_5_6_LUNA,
                 temperature=None,
                 max_tokens=_env_int("AGORA_FOCUSED_REASONING_MAX_TOKENS", 2_000),
                 reasoning_effort=_env_reasoning_effort(
@@ -271,7 +272,7 @@ def load_settings() -> Settings:
                 ),
             ),
             evaluation=PhaseModel(
-                model=_env("AGORA_FOCUSED_EVALUATION_MODEL") or "gpt-5.6-sol",
+                model=_env("AGORA_FOCUSED_EVALUATION_MODEL") or GPT_5_6_LUNA,
                 temperature=None,
                 max_tokens=_env_int("AGORA_FOCUSED_EVALUATION_MAX_TOKENS", 4_000),
                 reasoning_effort=_env_reasoning_effort(

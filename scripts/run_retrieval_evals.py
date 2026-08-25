@@ -9,7 +9,7 @@ from typing import Any
 
 from agora.client.s2 import SemanticScholarClient
 from agora.config.settings import load_settings
-from agora.evaluation.judge import RUBRIC_VERSION, BlindedSolJudge
+from agora.evaluation.judge import RUBRIC_VERSION, BlindedRetrievalJudge
 from agora.evaluation.metering import MeteredLLMProvider
 from agora.evaluation.retrieval import (
     evaluate_pipelines,
@@ -133,7 +133,7 @@ async def run(args) -> None:
         ),
         perspectives=args.perspectives,
     )
-    judge = BlindedSolJudge(
+    judge = BlindedRetrievalJudge(
         judge_openai,
         model=settings.focused_models.evaluation.model,
         disable_prompt_cache=True,
