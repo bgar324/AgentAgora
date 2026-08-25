@@ -307,10 +307,14 @@ def test_question_search_records_reach_and_miss() -> None:
         completed = [
             item for item in items if item["kind"] == "query_completed"
         ]
+        failed = [item for item in items if item["kind"] == "query_failed"]
+        terminal = [*completed, *failed]
         assert completed
+        assert failed
+        assert failed[0]["reason"] == "unavailable"
         assert all(
             started_by_sequence[item["query_run_id"]]["query"] == item["query"]
-            for item in completed
+            for item in terminal
         )
         assert [item["kind"] for item in items[-3:]] == [
             "retrieval_completed",
@@ -322,7 +326,7 @@ def test_question_search_records_reach_and_miss() -> None:
             item["retrieved"] for item in completed
         )
         assert retrieval_progress["retained"] == len(state.papers)
-        assert retrieval_progress["query_count"] == len(completed)
+        assert retrieval_progress["query_count"] == len(terminal)
         assert items[-2]["papers"] == len(state.papers)
         assert items[-2]["requested_clusters"] == state.clustering.requested_clusters
         assert items[-1]["clusters"] == len(state.clusters)
@@ -712,6 +716,89 @@ def test_live_queries_overlap_without_reordering_results() -> None:
             "third query",
         ]
         assert retrieval.peak == 3
+
+    asyncio.run(go())
+
+def test_rate_limited_query_does_not_cancel_successful_siblings() -> None:
+    async def go() -> None:
+        class PartialRetrieval:
+            async def search(self, query: str, limit: int = 8):
+                del limit
+                await asyncio.sleep(0)
+                if query == "limited query":
+                    raise RuntimeError(
+                        "GET /graph/v1/paper/search returned 429: Too Many Requests"
+                    )
+                return [
+                    FocusedSearchResult(
+                        id=query,
+                        title=query.title(),
+                        abstract=f"Abstract for {query}.",
+                    )
+                ]
+
+        service = FocusedPanelService(s2=PartialRetrieval())
+        state = service.create_workspace(
+            problem="How does urban greening affect heat exposure?",
+            research_questions=[],
+            demo=True,
+        ).active
+        generation = service.start_search_progress(state.id)
+        service._search_progress_active_generation[state.id] = generation
+        papers, succeeded = await service._live_retrieve(
+            ["first query", "limited query", "third query"],
+            session_id=state.id,
+        )
+
+        assert succeeded
+        assert [paper.id for paper in papers] == ["first query", "third query"]
+        progress = service.search_progress(state.id, generation=generation)
+        failed = next(
+            item for item in progress["items"] if item["kind"] == "query_failed"
+        )
+        assert failed["query"] == "limited query"
+        assert failed["reason"] == "rate_limited"
+
+    asyncio.run(go())
+
+
+
+def test_all_rate_limited_queries_keep_retry_guidance() -> None:
+    async def go() -> None:
+        class RateLimitedRetrieval:
+            async def search(self, query: str, limit: int = 8):
+                del limit
+                if query == "limited urban canopy query":
+                    return []
+                raise RuntimeError(
+                    "GET /graph/v1/paper/search returned 429: Too Many Requests"
+                )
+
+        provider = HermeticProvider(HermeticRetrieval())
+        service = FocusedPanelService(
+            provider=provider,
+            s2=RateLimitedRetrieval(),
+        )
+        state = service.create_workspace(
+            problem="How does urban greening affect heat exposure?",
+            research_questions=[],
+            demo=False,
+        ).active
+        state.suggested_queries = [
+            SuggestedQuery(
+                query="limited urban canopy query",
+                rationale="Rate-limited literature.",
+            )
+        ]
+
+        with pytest.raises(SessionError, match="temporarily rate-limited") as error:
+            await service.run_search(
+                state.id,
+                ["limited urban canopy query"],
+            )
+
+        assert error.value.status == 503
+        assert "QuerySuggestions" not in provider.schemas
 
     asyncio.run(go())
 

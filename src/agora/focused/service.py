@@ -81,6 +81,7 @@ MAX_SEARCH_PROGRESS_EVENTS = 192
 SearchProgressKind = Literal[
     "query_started",
     "query_completed",
+    "query_failed",
     "retrieval_completed",
     "clustering_started",
     "clustering_completed",
@@ -1382,6 +1383,7 @@ class FocusedPanelService:
             query_papers: dict[str, ExpPaper] = {}
             retrieved_for_query = 0
             succeeded = False
+            failure_reason: str | None = None
             variants = [query]
             relaxed = agents.relaxed_search_query(query)
             if relaxed and relaxed.casefold() != query.casefold():
@@ -1392,20 +1394,19 @@ class FocusedPanelService:
                         variant,
                         limit=PAPERS_PER_QUERY,
                     )
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     logger.warning(
                         "focused paper search failed for %r: %s",
                         variant,
                         exc,
                     )
                     if " returned 429:" in str(exc):
-                        raise SessionError(
-                            "Paper search is temporarily rate-limited. "
-                            "Wait a minute and try again.",
-                            status=503,
-                        ) from exc
+                        failure_reason = "rate_limited"
+                        break
+                    failure_reason = "unavailable"
                     continue
                 succeeded = True
+                failure_reason = None
                 retrieved_for_query = len(results)
                 for result in results:
                     if result.id in query_papers:
@@ -1427,14 +1428,24 @@ class FocusedPanelService:
                 if results:
                     break
             if session_id is not None:
-                self._publish_search_progress(
-                    session_id,
-                    "query_completed",
-                    f"Searched {query}...retrieved {retrieved_for_query} papers",
-                    query=query,
-                    retrieved=retrieved_for_query,
-                    query_run_id=query_run_id,
-                )
+                if failure_reason is None:
+                    self._publish_search_progress(
+                        session_id,
+                        "query_completed",
+                        f"Searched {query}...retrieved {retrieved_for_query} papers",
+                        query=query,
+                        retrieved=retrieved_for_query,
+                        query_run_id=query_run_id,
+                    )
+                else:
+                    self._publish_search_progress(
+                        session_id,
+                        "query_failed",
+                        f"Search stopped for {query}.",
+                        query=query,
+                        reason=failure_reason,
+                        query_run_id=query_run_id,
+                    )
             return list(query_papers.values()), succeeded
 
         query_runs = [
@@ -1886,7 +1897,16 @@ class FocusedPanelService:
             angle_by_id,
             question_candidate_groups,
         )
-        if len(papers) < MIN_CLUSTERING_CORPUS and not self._demo(session):
+        rate_limited = any(
+            item.get("kind") == "query_failed"
+            and item.get("reason") == "rate_limited"
+            for item in self._search_progress.get(session_id, [])
+        )
+        if (
+            len(papers) < MIN_CLUSTERING_CORPUS
+            and not self._demo(session)
+            and not rate_limited
+        ):
             prior_queries = list(dict.fromkeys([*queries, *automatic_queries]))
             corpus_expansion = await agents.expand_corpus_search(
                 state.problem,
@@ -1917,7 +1937,22 @@ class FocusedPanelService:
                 angle_by_id,
                 question_candidate_groups,
             )
+        failed_searches = [
+            item
+            for item in self._search_progress.get(session_id, [])
+            if item.get("kind") == "query_failed"
+        ]
+        rate_limited = any(
+            item.get("reason") == "rate_limited"
+            for item in failed_searches
+        )
         if not papers:
+            if rate_limited:
+                raise SessionError(
+                    "Paper search is temporarily rate-limited. "
+                    "Wait a minute and try again.",
+                    status=503,
+                )
             if not search_succeeded:
                 raise SessionError(
                     "Paper search is temporarily unavailable. Try again.",
@@ -1933,6 +1968,11 @@ class FocusedPanelService:
             for item in self._search_progress.get(session_id, [])
             if item.get("kind") == "query_completed"
         ]
+        finished_searches = [
+            item
+            for item in self._search_progress.get(session_id, [])
+            if item.get("kind") in {"query_completed", "query_failed"}
+        ]
         retrieved_total = sum(
             int(item.get("retrieved", 0)) for item in completed_searches
         )
@@ -1945,7 +1985,7 @@ class FocusedPanelService:
             ),
             retrieved=retrieved_total,
             retained=len(papers),
-            query_count=len(completed_searches),
+            query_count=len(finished_searches),
         )
         if self._demo(session):
             await asyncio.sleep(DEMO_RETRIEVAL_DELAY_SECONDS)

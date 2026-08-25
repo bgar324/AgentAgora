@@ -298,6 +298,54 @@ test("shows a centered search-to-clustering timeline", async ({ page }) => {
 })
 
 
+test("keeps sibling searches running after one query stops", async ({ page }) => {
+  await startWorkspace(page)
+  await page.getByRole("button", { name: "Load demo queries" }).click()
+  for (const query of DEMO_QUERIES) {
+    await page.getByRole("button", { name: new RegExp(query) }).click()
+  }
+
+  let injected = false
+  await page.route("**/search-progress?**", async (route) => {
+    const response = await route.fetch()
+    const payload = await response.json()
+    const stopped = payload.items.find(
+      (item: { kind: string; query?: string }) =>
+        item.kind === "query_completed" &&
+        item.query === DEMO_QUERIES[1],
+    )
+    if (!injected && stopped) {
+      stopped.kind = "query_failed"
+      stopped.message = `Search stopped for ${stopped.query}.`
+      stopped.reason = "rate_limited"
+      delete stopped.retrieved
+      injected = true
+    }
+    await route.fulfill({ response, json: payload })
+  })
+
+  await page.getByRole("button", { name: "Search papers (3 queries)" }).click()
+  const progress = page.getByTestId("retrieval-progress-panel")
+  await expect(progress).toContainText(
+    `Search stopped for "${DEMO_QUERIES[1]}".`,
+  )
+  await expect
+    .poll(async () => {
+      const texts = await progress
+        .getByTestId("query-progress-step")
+        .allTextContents()
+      const activeRows = texts.filter((text) =>
+        text.includes("Searching papers for"),
+      ).length
+      const spinnerCount = await progress.locator(".animate-spin").count()
+      return activeRows > 0 && spinnerCount === activeRows
+    })
+    .toBe(true)
+
+  await expect(page.getByText("Resistance ecology", { exact: true })).toBeVisible()
+})
+
+
 test("keeps unassigned density-noise papers inspectable", async ({ page }) => {
   const { rootId } = await startWorkspace(page)
   await page.getByRole("button", { name: "Load demo queries" }).click()

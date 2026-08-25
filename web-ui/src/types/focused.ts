@@ -250,6 +250,7 @@ export interface SuggestedQuery {
 export type SearchProgressKind =
   | "query_started"
   | "query_completed"
+  | "query_failed"
   | "retrieval_completed"
   | "clustering_started"
   | "clustering_completed"
@@ -262,6 +263,7 @@ export interface SearchProgressItem {
   query?: string
   retrieved?: number
   query_run_id?: number | null
+  reason?: "rate_limited" | "unavailable"
   retained?: number
   query_count?: number
   papers?: number
