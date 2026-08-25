@@ -225,7 +225,18 @@ test("shows a centered search-to-clustering timeline", async ({ page }) => {
   await expect(queryTimeline).toBeVisible()
   await expect(progress).toContainText("Searching papers for")
   await expect(progress).toContainText(DEMO_QUERIES[0])
-  await expect(progress.locator(".animate-spin")).toHaveCount(1)
+  await expect
+    .poll(async () => {
+      const texts = await queryTimeline
+        .getByTestId("query-progress-step")
+        .allTextContents()
+      const activeRows = texts.filter((text) =>
+        text.includes("Searching papers for"),
+      ).length
+      const spinnerCount = await progress.locator(".animate-spin").count()
+      return activeRows >= DEMO_QUERIES.length && spinnerCount === activeRows
+    })
+    .toBe(true)
   await expect(
     queryTimeline.getByTestId("query-progress-step").last(),
   ).not.toContainText("…")
