@@ -28,10 +28,13 @@ Surfaces:
   papers requests at least three Perspective-eligible clusters; a density
   result below three falls back to deterministic three-way clustering.
   Submitted and automatically expanded queries remain visible as a read-only
-  record beside the resulting clusters. While retrieval is active, the empty
-  cluster surface becomes a compact query ledger. It renders each
-  `Searched {query}...retrieved {n} papers` checkpoint as a numbered query row
-  with a separate paper-count badge, then yields the surface to the clusters.
+  record beside the resulting clusters. During retrieval, the right cluster
+  panel centers a connected timeline. Only the active query has a spinner.
+  After the last query, the rows collapse into a Searched papers disclosure.
+  Opening the disclosure shows every query count and the result total before
+  duplicate papers were removed. A line connects that frozen stage to Creating
+  Perspectives. When both stages finish, one summary line stays above the
+  cluster cards.
   Wrapped research-question lines are joined through their closing question
   mark. A zero-result search stays retryable and never seals the Investigation.
   Adding a Perspective inserts a pending matrix card immediately. Its own card

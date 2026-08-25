@@ -76,6 +76,15 @@ CLUSTER_REPRESENTATIVE_PAPERS = 5
 
 MIN_CLUSTERING_CORPUS = 90
 MIN_THREE_CLUSTER_PAPERS = 15
+DEMO_RETRIEVAL_DELAY_SECONDS = 1.05
+MAX_SEARCH_PROGRESS_EVENTS = 192
+SearchProgressKind = Literal[
+    "query_started",
+    "query_completed",
+    "retrieval_completed",
+    "clustering_started",
+    "clustering_completed",
+]
 
 @dataclass(frozen=True)
 class QuestionRetrieval:
@@ -338,25 +347,27 @@ class FocusedPanelService:
     def _publish_search_progress(
         self,
         session_id: str,
-        query: str,
-        retrieved: int,
-    ) -> None:
+        kind: SearchProgressKind,
+        message: str,
+        **details: Any,
+    ) -> int | None:
         generation = self._search_progress_active_generation.get(session_id)
         if generation != self._search_progress_generation.get(session_id):
-            return
+            return None
         sequence = self._search_progress_sequence.get(session_id, 0) + 1
         self._search_progress_sequence[session_id] = sequence
         payload = {
             "generation": generation,
             "sequence": sequence,
-            "query": query,
-            "retrieved": retrieved,
-            "message": f"Searched {query}...retrieved {retrieved} papers",
+            "kind": kind,
+            "message": message,
+            **details,
         }
         history = self._search_progress.setdefault(session_id, [])
         history.append(payload)
-        if len(history) > 64:
-            del history[:-64]
+        if len(history) > MAX_SEARCH_PROGRESS_EVENTS:
+            del history[:-MAX_SEARCH_PROGRESS_EVENTS]
+        return sequence
 
     def _forget_search_progress(self, session_id: str) -> None:
         self._search_progress.pop(session_id, None)
@@ -1367,6 +1378,16 @@ class FocusedPanelService:
         papers: dict[str, ExpPaper] = {}
         search_succeeded = False
         for query in queries:
+            query_run_id = (
+                self._publish_search_progress(
+                    session_id,
+                    "query_started",
+                    f"Searching papers for {query}.",
+                    query=query,
+                )
+                if session_id is not None
+                else None
+            )
             retrieved_for_query = 0
             variants = [query]
             relaxed = agents.relaxed_search_query(query)
@@ -1415,8 +1436,11 @@ class FocusedPanelService:
             if session_id is not None:
                 self._publish_search_progress(
                     session_id,
-                    query,
-                    retrieved_for_query,
+                    "query_completed",
+                    f"Searched {query}...retrieved {retrieved_for_query} papers",
+                    query=query,
+                    retrieved=retrieved_for_query,
+                    query_run_id=query_run_id,
                 )
         return list(papers.values())[:MAX_RETRIEVED_PAPERS], search_succeeded
 
@@ -1428,10 +1452,21 @@ class FocusedPanelService:
             return [], False
         if self._demo(session):
             for query in clean:
+                query_run_id = self._publish_search_progress(
+                    session.state.id,
+                    "query_started",
+                    f"Searching papers for {query}.",
+                    query=query,
+                )
+                await asyncio.sleep(DEMO_RETRIEVAL_DELAY_SECONDS)
+                retrieved = len(self._demo_retrieve([query]))
                 self._publish_search_progress(
                     session.state.id,
-                    query,
-                    len(self._demo_retrieve([query])),
+                    "query_completed",
+                    f"Searched {query}...retrieved {retrieved} papers",
+                    query=query,
+                    retrieved=retrieved,
+                    query_run_id=query_run_id,
                 )
             return self._demo_retrieve(clean), True
 
@@ -1853,11 +1888,46 @@ class FocusedPanelService:
                 "try again with shorter academic keywords.",
                 status=422,
             )
+        completed_searches = [
+            item
+            for item in self._search_progress.get(session_id, [])
+            if item.get("kind") == "query_completed"
+        ]
+        retrieved_total = sum(
+            int(item.get("retrieved", 0)) for item in completed_searches
+        )
+        self._publish_search_progress(
+            session_id,
+            "retrieval_completed",
+            (
+                f"Searched {retrieved_total} papers; retained {len(papers)} "
+                "after deduplication."
+            ),
+            retrieved=retrieved_total,
+            retained=len(papers),
+            query_count=len(completed_searches),
+        )
+        if self._demo(session):
+            await asyncio.sleep(DEMO_RETRIEVAL_DELAY_SECONDS)
+
+        requested_clusters = self._target_cluster_count(len(papers))
+        self._publish_search_progress(
+            session_id,
+            "clustering_started",
+            (
+                f"Clustering {len(papers)} retained papers into "
+                f"{requested_clusters} groups."
+            ),
+            papers=len(papers),
+            requested_clusters=requested_clusters,
+        )
+        if self._demo(session):
+            await asyncio.sleep(DEMO_RETRIEVAL_DELAY_SECONDS)
+
 
         partition_representatives: list[list[ExpPaper]] | None = None
         unassigned_papers: list[ExpPaper] = []
         if self._demo(session):
-            requested_clusters = self._target_cluster_count(len(papers))
             groups = self._demo_cluster(papers) if papers else []
             if len(groups) < requested_clusters:
                 groups = self._balanced_fallback_clusters(
@@ -1868,7 +1938,6 @@ class FocusedPanelService:
             else:
                 method = "demo_seeds"
         else:
-            requested_clusters = self._target_cluster_count(len(papers))
             required_clusters = min(
                 requested_clusters,
                 3 if len(papers) >= MIN_THREE_CLUSTER_PAPERS else 2,
@@ -1989,6 +2058,18 @@ class FocusedPanelService:
             raise RuntimeError(
                 "clustering must assign or explicitly unassign every paper"
             )
+        self._publish_search_progress(
+            session_id,
+            "clustering_completed",
+            (
+                f"Created {len(clusters)} clusters; "
+                f"{len(unassigned_papers)} papers unassigned."
+            ),
+            papers=len(papers),
+            clusters=len(clusters),
+            unassigned=len(unassigned_papers),
+            method=method,
+        )
         if not self._retain_search_embeddings:
             for paper in state.papers:
                 paper.specter_v2 = None

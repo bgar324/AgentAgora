@@ -14,6 +14,7 @@ import type {
   DeliberationRating,
   QuestionStatus,
   SessionState,
+  SearchProgressItem,
   WorkspaceView,
 } from "@/types/focused"
 
@@ -29,10 +30,7 @@ export class ApiError extends Error {
 
 type SearchProgressResponse = {
   generation: number
-  items: {
-    sequence: number
-    message: string
-  }[]
+  items: SearchProgressItem[]
   next: number
 }
 
@@ -244,65 +242,73 @@ export function useFocusedPanel() {
   const runSearch = useCallback(
     async (queries: string[]) => {
       if (!sessionId) throw new Error("No active Investigation.")
-      if (useFocusedStore.getState().busy !== null) {
-        throw new Error("Wait for the current action to finish.")
-      }
-      const started = await api<{ generation: number }>(
-        `sessions/${sessionId}/search-progress`,
-        { method: "POST" },
-      )
-      const generation = started.generation
-      searchProgressCleared()
-      let polling = true
-      let cursor = 0
-      const collect = async () => {
-        const progress = await api<SearchProgressResponse>(
-          `sessions/${sessionId}/search-progress?generation=${generation}&after=${cursor}`,
+      return exclusive("Searching literature", async () => {
+        const started = await api<{ generation: number }>(
+          `sessions/${sessionId}/search-progress`,
+          { method: "POST" },
         )
-        for (const item of progress.items) {
-          searchProgressAdded(item.message)
+        const generation = started.generation
+        searchProgressCleared()
+        let polling = true
+        let cursor = 0
+        const collect = async () => {
+          const progress = await api<SearchProgressResponse>(
+            `sessions/${sessionId}/search-progress?generation=${generation}&after=${cursor}`,
+          )
+          for (const item of progress.items) {
+            searchProgressAdded(item)
+          }
+          cursor = progress.next
         }
-        cursor = progress.next
-      }
-      const poll = async () => {
-        while (polling) {
+        const poll = async () => {
+          while (polling) {
+            try {
+              await collect()
+            } catch {
+              // Progress is advisory; the search request owns error reporting.
+            }
+            if (polling) {
+              await new Promise<void>((resolve) => {
+                window.setTimeout(resolve, 150)
+              })
+            }
+          }
+        }
+        const progress = poll()
+        let view: WorkspaceView
+        try {
+          view = await requestView(
+            `sessions/${sessionId}/search`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                queries,
+                progress_generation: generation,
+              }),
+            },
+            () => undefined,
+          )
+        } finally {
+          polling = false
+          await progress
           try {
             await collect()
           } catch {
-            // Progress is advisory; the search request owns error reporting.
-          }
-          if (polling) {
-            await new Promise<void>((resolve) => {
-              window.setTimeout(resolve, 150)
-            })
+            // The completed search result remains authoritative.
           }
         }
-      }
-      const search = call(
-        "Searching literature",
-        `sessions/${sessionId}/search`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            queries,
-            progress_generation: generation,
-          }),
-        },
-      )
-      const progress = poll()
-      try {
-        return await search
-      } finally {
-        polling = false
-        await progress
-        try {
-          await collect()
-        } catch {
-          // The completed search result remains authoritative.
-        }
-      }
+        workspaceViewSet(view)
+        return view.active
+      })
     },
-    [call, searchProgressAdded, searchProgressCleared, sessionId],
+    [
+      exclusive,
+      requestView,
+      searchProgressAdded,
+      searchProgressCleared,
+      sessionId,
+      workspaceViewSet,
+    ],
   )
 
   const generatePerspective = useCallback(

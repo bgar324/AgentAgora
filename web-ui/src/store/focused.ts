@@ -6,9 +6,11 @@ import type {
   InvestigationSummary,
   Perspective,
   SessionState,
+  SearchProgressItem,
   WorkspaceState,
   WorkspaceView,
 } from "@/types/focused"
+const MAX_SEARCH_PROGRESS_EVENTS = 192
 
 type Stage = "extraction" | "deliberation"
 type WorkspaceScreen = "detail" | "map"
@@ -24,7 +26,7 @@ type FocusedState = {
   openClusterId: string | null
   openPaperId: string | null
   busy: string | null
-  searchProgress: string[]
+  searchProgress: SearchProgressItem[]
 }
 
 type FocusedActions = {
@@ -36,7 +38,7 @@ type FocusedActions = {
   stageSet: (stage: Stage) => void
   queryToggled: (query: string) => void
   queriesCleared: () => void
-  searchProgressAdded: (message: string) => void
+  searchProgressAdded: (item: SearchProgressItem) => void
   searchProgressCleared: () => void
   openClusterSet: (id: string | null) => void
   openPaperSet: (id: string | null) => void
@@ -162,9 +164,11 @@ export const useFocusedStore = create<FocusedState & FocusedActions>()(
           : [...state.pickedQueries, query],
       })),
     queriesCleared: () => set({ pickedQueries: [] }),
-    searchProgressAdded: (message) =>
+    searchProgressAdded: (item) =>
       set((state) => ({
-        searchProgress: [...state.searchProgress, message].slice(-20),
+        searchProgress: [...state.searchProgress, item].slice(
+          -MAX_SEARCH_PROGRESS_EVENTS,
+        ),
       })),
     searchProgressCleared: () => set({ searchProgress: [] }),
     openClusterSet: (openClusterId) => set({ openClusterId }),

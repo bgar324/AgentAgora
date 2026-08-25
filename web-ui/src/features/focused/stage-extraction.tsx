@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { Pencil } from "lucide-react"
+import { Check, ChevronDown, Pencil } from "lucide-react"
 
 import {
   parseResearchQuestions,
@@ -12,6 +12,7 @@ import type {
   ClusterCard,
   Facet,
   FacetEvidence,
+  SearchProgressItem,
 } from "@/types/focused"
 
 import { Button, EmptyLine, ModalShell, SectionLabel, Spinner } from "./ui"
@@ -35,87 +36,300 @@ const FACET_META: Record<Facet, { label: string; description: string }> = {
   },
 }
 
-interface RetrievalCheckpoint {
+interface QueryCheckpoint {
+  sequence: number
   query: string
-  paperCount: number | null
+  retrieved: number | null
 }
 
-function parseRetrievalCheckpoint(message: string): RetrievalCheckpoint {
-  const match = message.match(
-    /^Searched (.+)\.\.\.retrieved (\d+) (?:paper|papers)$/,
+function queryCheckpoints(progress: SearchProgressItem[]): QueryCheckpoint[] {
+  const completedByRun = new Map(
+    progress
+      .filter(
+        (item) =>
+          item.kind === "query_completed" &&
+          typeof item.query_run_id === "number",
+      )
+      .map((item) => [item.query_run_id as number, item]),
   )
-  if (!match) return { query: message, paperCount: null }
-  return { query: match[1], paperCount: Number(match[2]) }
+  return progress
+    .filter((item) => item.kind === "query_started" && item.query)
+    .map((item) => {
+      const completed = completedByRun.get(item.sequence)
+      return {
+        sequence: item.sequence,
+        query: item.query as string,
+        retrieved:
+          completed && typeof completed.retrieved === "number"
+            ? completed.retrieved
+            : null,
+      }
+    })
 }
 
 function RetrievalProgressPanel({
-  messages,
+  progress,
   active,
+  searched,
+  paperCount,
+  searchedQueries,
+  clusterCount,
+  unassignedCount,
 }: {
-  messages: string[]
+  progress: SearchProgressItem[]
   active: boolean
+  searched: boolean
+  paperCount: number
+  searchedQueries: string[]
+  clusterCount: number
+  unassignedCount: number
 }) {
-  const checkpoints = messages.map(parseRetrievalCheckpoint)
+  const recordedQueries = queryCheckpoints(progress)
+  const queries =
+    recordedQueries.length > 0
+      ? recordedQueries
+      : searchedQueries.map((query, index) => ({
+          sequence: index,
+          query,
+          retrieved: null,
+        }))
+  const retrieval = progress.find(
+    (item) => item.kind === "retrieval_completed",
+  )
+  const clusteringStarted = progress.find(
+    (item) => item.kind === "clustering_started",
+  )
+  const clusteringCompleted = progress.find(
+    (item) => item.kind === "clustering_completed",
+  )
+  const retrievalFinished = retrieval !== undefined || searched
+  const creationStarted = clusteringStarted !== undefined || searched
+  const creationFinished = clusteringCompleted !== undefined || searched
+  const searchedResults =
+    retrieval?.retrieved ??
+    recordedQueries.reduce(
+      (total, item) => total + (item.retrieved ?? 0),
+      0,
+    )
+  const retainedPapers = retrieval?.retained ?? paperCount
+  const queryCount = retrieval?.query_count ?? queries.length
+  const createdCandidates = clusteringCompleted?.clusters ?? clusterCount
+  const papersUnassigned =
+    clusteringCompleted?.unassigned ?? unassignedCount
+
+  if (searched) {
+    return (
+      <section
+        aria-label="Search summary"
+        data-testid="retrieval-progress-panel"
+        className="ep-enter panel px-5 py-3.5"
+      >
+        <p
+          className="text-[12px] leading-relaxed text-[var(--ink-2)]"
+          data-testid="completed-search-summary"
+        >
+          Searched{" "}
+          <span className="font-medium tabular-nums text-[var(--ink)]">
+            {retainedPapers}
+          </span>{" "}
+          {retainedPapers === 1 ? "paper" : "papers"}, created{" "}
+          <span className="font-medium tabular-nums text-[var(--ink)]">
+            {createdCandidates}
+          </span>{" "}
+          {createdCandidates === 1 ? "Perspective" : "Perspectives"}.
+        </p>
+      </section>
+    )
+  }
+
   return (
     <section
       aria-label="Retrieval progress"
       data-testid="retrieval-progress-panel"
       role="status"
       aria-live="polite"
-      className="ep-enter panel flex h-full min-h-[220px] flex-col px-5 py-5 sm:px-7 sm:py-6"
+      className="ep-enter panel flex h-full min-h-[320px] items-center justify-center overflow-y-auto px-8 py-10"
     >
-      <div className="flex items-start gap-3">
-        <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--green-bg)]">
-          <span
-            className={`h-2 w-2 rounded-full bg-[var(--green)]${active ? " animate-pulse" : ""}`}
-          />
-        </span>
-        <div className="min-w-0">
-          <SectionLabel>Literature search</SectionLabel>
-          <h2 className="mt-0.5 text-[14px] font-semibold tracking-[-0.015em] text-[var(--ink)]">
-            {active ? "Retrieving papers" : "Retrieval progress"}
-          </h2>
-          <p className="mt-1 text-[11.5px] leading-relaxed text-[var(--mute)]">
-            Each completed query is added here while the corpus takes shape.
-          </p>
-        </div>
-        {checkpoints.length > 0 && (
-          <span className="ml-auto shrink-0 rounded-full border border-[var(--line)] bg-[var(--bg)] px-2 py-1 text-[10.5px] font-medium text-[var(--mute)]">
-            {checkpoints.length} complete
-          </span>
+      <div
+        className="my-auto w-full max-w-[620px]"
+        data-testid="retrieval-progress-content"
+      >
+        {!retrievalFinished && (
+          <SectionLabel>
+            {active ? "Searching literature" : "Search stopped"}
+          </SectionLabel>
+        )}
+
+        {!retrievalFinished && queries.length === 0 ? (
+          <div className="pt-5">
+            <EmptyLine>Waiting for the first query…</EmptyLine>
+          </div>
+        ) : !retrievalFinished ? (
+          <ol
+            className="relative mt-5 flex flex-col gap-5 before:absolute before:bottom-2.5 before:left-[9px] before:top-2.5 before:w-px before:bg-[var(--line-strong)]"
+            data-testid="query-progress-timeline"
+          >
+            {queries.map((checkpoint) => {
+              const completed = checkpoint.retrieved !== null
+              return (
+                <li
+                  key={checkpoint.sequence}
+                  className="relative min-h-5 pl-8"
+                  data-testid="query-progress-step"
+                >
+                  <span className="absolute left-0 top-0 grid size-5 place-items-center bg-[var(--panel)] text-[var(--ink-2)]">
+                    {completed ? (
+                      <Check size={14} strokeWidth={1.8} aria-hidden />
+                    ) : active ? (
+                      <span data-testid="active-query-spinner">
+                        <Spinner className="size-3.5" />
+                      </span>
+                    ) : (
+                      <span
+                        className="size-1.5 rounded-full bg-[var(--mute)]"
+                        aria-hidden
+                      />
+                    )}
+                  </span>
+                  <p className="text-[13px] leading-relaxed text-[var(--ink-2)]">
+                    {completed ? (
+                      <>
+                        Searched{" "}
+                        <span className="font-medium tabular-nums text-[var(--ink)]">
+                          {checkpoint.retrieved}{" "}
+                          {checkpoint.retrieved === 1 ? "paper" : "papers"}
+                        </span>{" "}
+                        for &quot;{checkpoint.query}&quot;.
+                      </>
+                    ) : active ? (
+                      <>Searching papers for &quot;{checkpoint.query}&quot;</>
+                    ) : (
+                      <>Search stopped for &quot;{checkpoint.query}&quot;.</>
+                    )}
+                  </p>
+                </li>
+              )
+            })}
+          </ol>
+        ) : (
+          <ol
+            className="relative flex flex-col gap-6"
+            data-testid="processing-progress-timeline"
+          >
+            <li className="relative min-h-5 pl-8">
+              {creationStarted && (
+                <span
+                  className="absolute -bottom-[34px] left-[9px] top-2.5 w-px bg-[var(--line-strong)]"
+                  aria-hidden
+                />
+              )}
+              <span className="absolute left-0 top-0 grid size-5 place-items-center bg-[var(--panel)] text-[var(--ink-2)]">
+                <Check size={14} strokeWidth={1.8} aria-hidden />
+              </span>
+              <details className="group" data-testid="searched-papers-details">
+                <summary className="flex cursor-pointer list-none items-center gap-2 text-[13px] leading-5 text-[var(--ink)] [&::-webkit-details-marker]:hidden">
+                  <span>
+                    Searched{" "}
+                    <span className="font-medium tabular-nums">
+                      {retainedPapers}
+                    </span>{" "}
+                    {retainedPapers === 1 ? "paper" : "papers"}
+                  </span>
+                  <ChevronDown
+                    size={14}
+                    strokeWidth={1.8}
+                    className="text-[var(--mute)] transition-transform group-open:rotate-180"
+                    aria-hidden
+                  />
+                </summary>
+                <div className="mt-3 border-t border-[var(--line)]">
+                  <ul className="divide-y divide-[var(--line)]">
+                    {queries.map((checkpoint) => (
+                      <li
+                        key={checkpoint.sequence}
+                        className="flex items-start gap-4 py-2.5"
+                      >
+                        <span className="min-w-0 flex-1 text-[12px] leading-snug text-[var(--ink-2)]">
+                          {checkpoint.query}
+                        </span>
+                        {checkpoint.retrieved !== null && (
+                          <span className="shrink-0 text-[11px] tabular-nums text-[var(--mute)]">
+                            {checkpoint.retrieved}{" "}
+                            {checkpoint.retrieved === 1 ? "paper" : "papers"}
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="pt-2.5 text-[11px] leading-relaxed text-[var(--mute)]">
+                    {searchedResults > retainedPapers
+                      ? `${searchedResults} results returned across ${queryCount} ${
+                          queryCount === 1 ? "query" : "queries"
+                        } before duplicate papers were removed.`
+                      : `${queryCount} ${
+                          queryCount === 1 ? "query" : "queries"
+                        } searched.`}
+                  </p>
+                </div>
+              </details>
+            </li>
+            {creationStarted && (
+              <li className="relative min-h-5 pl-8">
+                <span className="absolute left-0 top-0 grid size-5 place-items-center bg-[var(--panel)] text-[var(--ink-2)]">
+                  {creationFinished ? (
+                    <Check size={14} strokeWidth={1.8} aria-hidden />
+                  ) : active ? (
+                    <span data-testid="active-perspective-spinner">
+                      <Spinner className="size-3.5" />
+                    </span>
+                  ) : (
+                    <span
+                      className="size-1.5 rounded-full bg-[var(--mute)]"
+                      aria-hidden
+                    />
+                  )}
+                </span>
+                {creationFinished ? (
+                  <>
+                    <p className="text-[13px] leading-relaxed text-[var(--ink)]">
+                      Created{" "}
+                      <span className="font-medium tabular-nums">
+                        {createdCandidates}
+                      </span>{" "}
+                      Perspective{" "}
+                      {createdCandidates === 1 ? "candidate" : "candidates"}
+                    </p>
+                    <p className="mt-0.5 text-[11px] leading-relaxed text-[var(--mute)]">
+                      {retainedPapers} papers processed; {papersUnassigned}{" "}
+                      unassigned.
+                    </p>
+                  </>
+                ) : active ? (
+                  <>
+                    <p className="text-[13px] leading-relaxed text-[var(--ink-2)]">
+                      Creating Perspectives…
+                    </p>
+                    <p className="mt-0.5 text-[11px] leading-relaxed text-[var(--mute)]">
+                      Grouping {clusteringStarted?.papers ?? retainedPapers}{" "}
+                      papers into{" "}
+                      {clusteringStarted?.requested_clusters ?? 0} candidates.
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-[13px] leading-relaxed text-[var(--ink-2)]">
+                    Perspective creation stopped.
+                  </p>
+                )}
+              </li>
+            )}
+          </ol>
         )}
       </div>
-
-      {checkpoints.length === 0 ? (
-        <div className="flex flex-1 items-center justify-center py-8 text-[12px] text-[var(--mute)]">
-          Waiting for the first query…
-        </div>
-      ) : (
-        <ol className="mt-5 overflow-hidden rounded-lg border border-[var(--line)] bg-[var(--bg)]">
-          {checkpoints.map((checkpoint, index) => (
-            <li
-              key={`${index}:${messages[index]}`}
-              className="grid grid-cols-[24px_minmax(0,1fr)] items-center gap-x-2.5 gap-y-1 border-t border-[var(--line)] px-3 py-2.5 first:border-t-0 sm:grid-cols-[24px_minmax(0,1fr)_auto]"
-            >
-              <span className="font-mono text-[10px] tabular-nums text-[var(--mute)]">
-                {String(index + 1).padStart(2, "0")}
-              </span>
-              <span className="min-w-0 text-[12.5px] leading-snug text-[var(--ink-2)]">
-                {checkpoint.query}
-              </span>
-              {checkpoint.paperCount !== null && (
-                <span className="col-start-2 w-fit rounded-full border border-[var(--line)] bg-[var(--panel)] px-2 py-0.5 text-[10.5px] font-medium tabular-nums text-[var(--green)] sm:col-start-3">
-                  {checkpoint.paperCount}{" "}
-                  {checkpoint.paperCount === 1 ? "paper" : "papers"}
-                </span>
-              )}
-            </li>
-          ))}
-        </ol>
-      )}
     </section>
   )
 }
+
+
 export function StageExtraction() {
   const session = useFocusedStore((s) => s.session)
   const picked = useFocusedStore((s) => s.pickedQueries)
@@ -149,7 +363,6 @@ export function StageExtraction() {
   const selectedQueries = queryOptions
     .filter(({ query }) => picked.includes(query))
     .map(({ query }) => query)
-  const tierCounts = session.clustering?.retrieval_tier_counts
 
 
   const act = async (fn: () => Promise<unknown>) => {
@@ -377,25 +590,10 @@ export function StageExtraction() {
                     No literature was saved from the last search.
                   </p>
                 ) : (
-                  <div className="mt-3">
-                    <p className="text-[12px] leading-relaxed text-[var(--mute)]">
-                      {session.papers.length} papers are preserved for clustering
-                      and future research branches.
-                    </p>
-                    {tierCounts && (
-                      <div className="mt-2 flex flex-wrap gap-1.5 text-[10.5px] font-medium">
-                        <span className="rounded-full bg-[var(--green-bg)] px-2 py-0.5 text-[var(--green)]">
-                          {tierCounts.answer ?? 0} answer-bearing
-                        </span>
-                        <span className="rounded-full border border-[var(--line)] bg-[var(--panel)] px-2 py-0.5 text-[var(--ink-2)]">
-                          {tierCounts.problem ?? 0} problem-angle
-                        </span>
-                        <span className="rounded-full bg-[var(--bg)] px-2 py-0.5 text-[var(--mute)]">
-                          {tierCounts.candidate ?? 0} question candidates
-                        </span>
-                      </div>
-                    )}
-                  </div>
+                  <p className="mt-3 text-[12px] leading-relaxed text-[var(--mute)]">
+                    This literature set is preserved. Start from a Research
+                    Problem node when a new question needs new papers.
+                  </p>
                 )}
               </>
             )}
@@ -513,45 +711,70 @@ export function StageExtraction() {
         </div>
 
         {/* the clusters */}
-        <div className="h-full" data-testid="cluster-results-surface">
+        <div
+          className="flex h-full flex-col gap-3"
+          data-testid="cluster-results-surface"
+        >
           {!session.searched ? (
             busy === "Searching literature" || searchProgress.length > 0 ? (
               <RetrievalProgressPanel
-                messages={searchProgress}
+                progress={searchProgress}
                 active={busy === "Searching literature"}
+                searched={false}
+                paperCount={session.papers.length}
+                searchedQueries={session.searched_queries}
+                clusterCount={session.clusters.length}
+                unassignedCount={session.unassigned_paper_ids.length}
               />
             ) : (
               <div className="ep-enter panel flex h-full min-h-[220px] flex-col items-center justify-center gap-1.5 px-8 text-center">
                 <EmptyLine>Run a search to see the clusters.</EmptyLine>
               </div>
             )
-          ) : session.clusters.length === 0 ? (
-            <div className="ep-enter panel flex h-full min-h-[220px] flex-col items-center justify-center gap-2 px-8 text-center">
-              <EmptyLine>No papers matched those searches.</EmptyLine>
-              <p className="max-w-[42ch] text-[11px] leading-relaxed text-[var(--mute)]">
-                Retry generates shorter academic queries automatically.
-              </p>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={busy !== null}
-                onClick={() => void act(retrySearch)}
-              >
-                {busy !== null ? (
-                  <>
-                    <Spinner /> Retrying…
-                  </>
-                ) : (
-                  "Retry search"
-                )}
-              </Button>
-            </div>
           ) : (
             <>
-              {session.clusters.map((cluster, index) => (
-                <ClusterRow key={cluster.id} cluster={cluster} index={index} />
-              ))}
-              <UnassignedPapers />
+              <RetrievalProgressPanel
+                progress={searchProgress}
+                active={false}
+                searched
+                paperCount={session.papers.length}
+                searchedQueries={session.searched_queries}
+                clusterCount={session.clusters.length}
+                unassignedCount={session.unassigned_paper_ids.length}
+              />
+              {session.clusters.length === 0 ? (
+                <div className="ep-enter panel flex min-h-[220px] flex-col items-center justify-center gap-2 px-8 text-center">
+                  <EmptyLine>No papers matched those searches.</EmptyLine>
+                  <p className="max-w-[42ch] text-[11px] leading-relaxed text-[var(--mute)]">
+                    Retry generates shorter academic queries automatically.
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busy !== null}
+                    onClick={() => void act(retrySearch)}
+                  >
+                    {busy !== null ? (
+                      <>
+                        <Spinner /> Retrying…
+                      </>
+                    ) : (
+                      "Retry search"
+                    )}
+                  </Button>
+                </div>
+              ) : (
+                <>
+                  {session.clusters.map((cluster, index) => (
+                    <ClusterRow
+                      key={cluster.id}
+                      cluster={cluster}
+                      index={index}
+                    />
+                  ))}
+                  <UnassignedPapers />
+                </>
+              )}
             </>
           )}
         </div>
