@@ -85,8 +85,18 @@ const DEMO_QUERIES = [
 const ALL_DEMO_QUERIES = [
   ...DEMO_QUERIES,
   "rapid diagnostics antibiotic de-escalation",
-  "antibiotic stewardship resistance cost policy",
+  "antibiotic stewardship cost policy phage combination biomarker targeted therapy",
 ]
+
+type RoundApiState = {
+  agents: Array<{ iid: number; perspective_id: string }>
+  deliberations: Array<{
+    id: string
+    lead_perspective_id: string | null
+    hypothesis: unknown
+    hypothesis_confirmed: boolean
+  }>
+}
 
 async function requestJson(
   request: APIRequestContext,
@@ -152,6 +162,12 @@ async function prepareConsensusCheckpoint(
   const deliberation = state.deliberations[0]
   state = await requestJson(
     request,
+    `/api/focused/sessions/${investigationId}/deliberations/${deliberation.id}/initialize`,
+    "post",
+    { lead_perspective_id: state.agents[0].perspective_id },
+  )
+  state = await requestJson(
+    request,
     `/api/focused/sessions/${investigationId}/deliberations/${deliberation.id}/rounds`,
     "post",
     { lead_iid: state.agents[0].iid, facets: [facet] },
@@ -169,6 +185,34 @@ async function prepareConsensusCheckpoint(
     request,
     `/api/focused/sessions/${investigationId}/deliberations/${deliberation.id}/hypothesis/checkpoint`,
     "post",
+  )
+}
+
+async function runAndApplyRound(
+  request: APIRequestContext,
+  state: RoundApiState,
+  investigationId: string,
+  facet: "scope" | "explanation" | "approach" | "significance",
+) {
+  const deliberation = state.deliberations[0]
+  const lead = state.agents.find(
+    (agent: { perspective_id: string }) =>
+      agent.perspective_id === deliberation.lead_perspective_id,
+  )
+  if (!lead) throw new Error("Expected the configured lead Perspective.")
+  state = await requestJson(
+    request,
+    `/api/focused/sessions/${investigationId}/deliberations/${deliberation.id}/rounds`,
+    "post",
+    { lead_iid: lead.iid, facets: [facet] },
+  )
+  const current = state.deliberations[0]
+  if (current.hypothesis_confirmed) return state
+  return requestJson(
+    request,
+    `/api/focused/sessions/${investigationId}/deliberations/${deliberation.id}/hypothesis`,
+    "put",
+    { hypothesis: current.hypothesis, mode: "apply_pending" },
   )
 }
 
@@ -620,13 +664,51 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Join" })).toBeEnabled()
   await page.getByRole("button", { name: "Join" }).click()
   await expect(
-    page.getByRole("heading", { name: "How this panel works" }),
+    page.getByRole("heading", { name: "Choose the lead Perspective" }),
   ).toBeVisible()
-  await expect(
-    page.getByRole("dialog", { name: "Focused panel" }),
-  ).toContainText("you can ask the whole panel or one Perspective")
+  await page
+    .getByRole("button", { name: "Confirm lead and generate baseline" })
+    .click()
+  await expect(page.getByText("Applied, not saved", { exact: true })).toBeVisible()
+  const questionInput = page.getByPlaceholder("Ask a question at any point…")
+  await questionInput.fill("What should the panel clarify before round one?")
+  await page.getByRole("button", { name: "Send" }).click()
+  await expect(page.getByTestId("panel-chat-transcript")).toContainText(
+    "What should the panel clarify before round one?",
+  )
+  await expect(questionInput).toBeEnabled({ timeout: 10_000 })
+
+  const roundResponseReady = Promise.withResolvers<void>()
+  const releaseRoundResponse = Promise.withResolvers<void>()
+  const roundResponseDelivered = Promise.withResolvers<void>()
+  const roundRoute =
+    `**/api/focused/sessions/${rootId}/deliberations/*/rounds`
+  await page.route(roundRoute, async (route) => {
+    const response = await route.fetch()
+    roundResponseReady.resolve()
+    await releaseRoundResponse.promise
+    await route.fulfill({ response })
+    roundResponseDelivered.resolve()
+  })
   await page.getByRole("button", { name: /Scope Who, where/ }).click()
   await page.getByRole("button", { name: "Start round" }).click()
+  await questionInput.fill("Which uncertainty remains after this exchange?")
+  await page.getByRole("button", { name: "Send" }).click()
+  await expect(page.getByTestId("panel-chat-transcript")).toContainText(
+    "Queued for after this round",
+  )
+  await roundResponseReady.promise
+  await expect(page.getByTestId("round-progress")).toContainText(
+    "Saving the completed round.",
+  )
+  await expect(page.getByTestId("round-progress")).toContainText("7/7")
+  releaseRoundResponse.resolve()
+  await roundResponseDelivered.promise
+  await page.unroute(roundRoute)
+  await expect(
+    page.getByText("Queued for after this round", { exact: true }),
+  ).toHaveCount(0, { timeout: 10_000 })
+  await expect(questionInput).toBeEnabled({ timeout: 10_000 })
 
   await expect(page.getByText("Open questions", { exact: true })).toBeVisible({
     timeout: 30_000,
@@ -718,6 +800,10 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   await page.keyboard.press("Escape")
 
   await page.getByRole("button", { name: "Join" }).click()
+  await page
+    .getByRole("button", { name: "Confirm lead and generate baseline" })
+    .click()
+  await expect(page.getByText("Applied, not saved", { exact: true })).toBeVisible()
   await page.getByRole("button", { name: /Explanation How/ }).click()
   await page.getByRole("button", { name: "Start round" }).click()
   await expect(
@@ -725,11 +811,25 @@ test("continues an open question on the existing canvas", async ({ page }) => {
       .getByRole("dialog", { name: "Focused panel" })
       .getByText("1 completed rounds", { exact: true }),
   ).toBeVisible({ timeout: 30_000 })
-  await expect(
-    page.locator('[data-hypothesis-part="problem"]'),
-  ).toContainText("Not established yet.")
+  await expect(page.getByText("Working hypothesis", { exact: true })).toBeVisible()
   await expect(page.getByText("Update ready", { exact: true })).toBeVisible()
   await applySharedGround(page)
+  for (const [facet, round] of [
+    [/Approach How the claim/, 2],
+    [/Significance Why the result/, 3],
+    [/Scope Who, where/, 4],
+  ] as const) {
+    await page.getByRole("button", { name: facet }).click()
+    await page.getByRole("button", { name: "Start round" }).click()
+    await expect(
+      page
+        .getByRole("dialog", { name: "Focused panel" })
+        .getByText(`${round} completed rounds`, { exact: true }),
+    ).toBeVisible({ timeout: 30_000 })
+    if (await page.getByText("Update ready", { exact: true }).isVisible()) {
+      await applySharedGround(page)
+    }
+  }
   await page.getByRole("button", { name: "Save hypothesis" }).click()
   await expect(page.getByText("Saved H2", { exact: true })).toBeVisible()
   await expect(page.getByTestId("saved-hypothesis-node-H2")).toHaveCount(0)
@@ -738,7 +838,36 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   ).toHaveCount(1)
   expect(duplicateKeyWarnings).toEqual([])
 
-  await page.getByRole("button", { name: "End deliberation" }).click()
+  await page.getByRole("button", { name: "Review and end" }).click()
+  const finalReview = page.getByRole("dialog", {
+    name: "Review and end deliberation",
+  })
+  await expect(finalReview).toBeVisible()
+  const beforeEnding = await requestJson(
+    page.request,
+    `/api/focused/sessions/${rootId}`,
+    "get",
+  )
+  const staleQuestion =
+    beforeEnding.deliberations[0].recommended_questions.at(-1)
+  if (!staleQuestion) throw new Error("Expected an open question to review.")
+  await finalReview
+    .getByRole("checkbox", { name: staleQuestion.question })
+    .check()
+  await finalReview.getByRole("button", { name: "Cancel" }).click()
+  const staleQuestionCard = page
+    .getByTestId("working-hypothesis-sidebar")
+    .getByText(staleQuestion.question, { exact: true })
+    .locator("xpath=ancestor::article[1]")
+  await staleQuestionCard.getByRole("button", { name: "Archive" }).click()
+  await expect(staleQuestionCard).toContainText("archived")
+  await page.getByRole("button", { name: "Review and end" }).click()
+  await expect(finalReview).toBeVisible()
+  await expect(
+    finalReview.getByRole("checkbox", { name: staleQuestion.question }),
+  ).toHaveCount(0)
+  await finalReview.getByRole("checkbox").first().check()
+  await finalReview.getByRole("button", { name: "Confirm and end" }).click()
   const scoring = page.getByRole("dialog", { name: "Rate this deliberation" })
   await expect(scoring).toBeVisible()
   await scoring
@@ -766,13 +895,15 @@ test("continues an open question on the existing canvas", async ({ page }) => {
     completed.rounds.map(
       (round: { participant_iids: number[] }) => round.participant_iids.length,
     ),
-  ).toEqual([3])
+  ).toEqual([3, 3, 3, 3])
   expect(
     completed.completion_history[0].rounds.map(
       (round: { participant_iids: number[] }) => round.participant_iids.length,
     ),
   ).toEqual([2])
   const sourceQuestionId = String(completed.recommended_questions[0].id)
+  expect(completed.selected_question_ids).toEqual([sourceQuestionId])
+  expect(completed.recommended_questions[0].selected_for_followup).toBe(true)
 
   await page.keyboard.press("Escape")
   await expect(page.getByTestId("saved-hypothesis-node-H2")).toBeVisible()
@@ -909,12 +1040,12 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   const conversation = page.getByTestId("panel-conversation-scroll")
   await expect(conversation).toBeVisible()
   await expect(
-    drawer.getByText("Complete a round before ending this deliberation.", {
+    drawer.getByText("Discuss all four areas before ending (0/4 complete).", {
       exact: true,
     }),
   ).toBeVisible()
   await expect(
-    drawer.getByRole("button", { name: "End deliberation" }),
+    drawer.getByRole("button", { name: "Review and end" }),
   ).toBeDisabled()
   const hypothesisSidebar = page.getByTestId("working-hypothesis-sidebar")
   const sidebarLayout = await hypothesisSidebar.evaluate((element) => {
@@ -1074,7 +1205,7 @@ test("shows a direct agent reply in the panel conversation", async ({ page }) =>
     .getByRole("combobox", { name: "Message recipient" })
     .selectOption(String(agent.iid))
   await page
-    .getByPlaceholder("Ask the panel about this round…")
+    .getByPlaceholder("Ask a question at any point…")
     .fill("What does *bounded* evidence mean?")
   await page.getByRole("button", { name: "Send" }).click()
 
@@ -1353,6 +1484,9 @@ test("keeps repeated research problems from separate rounds", async ({ page }) =
       mode: "apply_pending",
     },
   )
+  for (const facet of ["explanation", "approach", "significance"] as const) {
+    state = await runAndApplyRound(page.request, state, rootId, facet)
+  }
   state = await requestJson(
     page.request,
     `/api/focused/sessions/${rootId}/deliberations/${deliberation.id}/hypothesis/checkpoint`,
@@ -1366,13 +1500,15 @@ test("keeps repeated research problems from separate rounds", async ({ page }) =
 
   await page.goto(`/focused?workspace=${workspaceId}`)
   await expect(
-    page.locator('[data-testid^="research-problem-node-"]'),
+    page
+      .locator('[data-testid^="research-problem-node-"]')
+      .filter({ hasText: firstQuestion.question }),
   ).toHaveCount(2)
 })
 
 
 test("allows a focused panel with more than three Perspectives", async ({ page }) => {
-  const { rootId } = await startWorkspace(page)
+  const { rootId, workspaceId } = await startWorkspace(page)
   let state = await requestJson(
     page.request,
     `/api/focused/sessions/${rootId}/search`,
@@ -1380,6 +1516,33 @@ test("allows a focused panel with more than three Perspectives", async ({ page }
     { queries: ALL_DEMO_QUERIES },
   )
   expect(state.clusters.length).toBeGreaterThanOrEqual(5)
+  const sixthCluster = {
+    ...state.clusters[4],
+    id: "cluster-synthetic-sixth",
+    name: "Sixth cluster",
+    facets: state.clusters[4].facets.slice(0, 3),
+  }
+  const workspaceRoute = `**/api/focused/workspaces/${workspaceId}`
+  await page.route(workspaceRoute, async (route) => {
+    const response = await route.fetch()
+    const payload = await response.json()
+    payload.active.clusters = [...payload.active.clusters, sixthCluster]
+    await route.fulfill({ response, json: payload })
+  })
+  await page.reload()
+  const sixthHeading = page.getByRole("heading", { name: sixthCluster.name })
+  await sixthHeading.click()
+  const sixthCard = sixthHeading.locator(
+    "xpath=ancestor::div[contains(@class, 'panel')][1]",
+  )
+  await sixthCard.getByRole("button", { name: "Add text", exact: true }).click()
+  const missingFacetInput = sixthCard.getByRole("textbox")
+  await missingFacetInput.fill("Why this cluster matters")
+  await missingFacetInput.press("Enter")
+  await expect(
+    sixthCard.getByRole("button", { name: "Add to matrix", exact: true }),
+  ).toBeVisible()
+  await page.unroute(workspaceRoute)
   for (const cluster of state.clusters.slice(0, 5)) {
     state = await requestJson(
       page.request,

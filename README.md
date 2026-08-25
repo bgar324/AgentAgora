@@ -10,23 +10,29 @@ Supabase deployment support.
 Each workspace begins with one research problem and one root Investigation.
 The exact queries submitted for retrieval remain visible beside the resulting
 literature clusters and are included in workspace exports.
-Perspectives contain four abstract-grounded areas—Scope, Explanation,
-Approach, and Significance—and the researcher selects one or two areas per
-round. Agent turns and the moderator summary remain in the panel drawer, with
-the summary below the conversation. Shared-ground proposals label every changed
-hypothesis part with Before and Proposed values and require confirmation before
-application. Saving creates an immutable checkpoint. The researcher explicitly
-ends the deliberation after the current hypothesis is saved. That terminal
-action reveals only the final Hypothesis and Research Problem outputs and opens
-one dialog that records separate 1–7 divergent- and convergent-thinking scores.
+Perspectives contain four abstract-grounded areas: Scope, Explanation,
+Approach, and Significance. Before round 1, the researcher chooses one lead
+Perspective and generates its baseline hypothesis. The same lead opens every
+round, and each round examines exactly one area. The panel must complete at
+least one round for each area before it can end.
+
+The drawer reports round progress and shows agent turns as they arrive. The
+moderator summary follows the conversation. Each proposal shows Before and
+Proposed values for changed hypothesis parts. The researcher can accept, edit,
+or reject the proposal. Questions can be submitted before or between rounds. A
+question submitted during a round waits until the round finishes.
+
+Saving creates an immutable checkpoint. Review and end shows the final
+hypothesis and lets the researcher select open questions. Confirm and end closes
+the deliberation and opens one dialog for separate 1–7 divergent-thinking and
+convergent-thinking scores.
 
 An open question starts a research branch with fresh literature and Perspectives
-while inheriting the parent’s last applied hypothesis checkpoint. Continue
-imports the branch evidence and agents into the parent, reopens the same
-deliberation, and returns to the existing Canvas. Prior rounds, chat, questions,
-and hypothesis checkpoints remain in place; the earlier completion and score
-remain in completion history. The workspace map retains the question-labeled
-research branch for provenance.
+while inheriting the parent's last applied hypothesis checkpoint. Continue
+imports the branch evidence and agents into the parent and starts a fresh panel
+cycle on the existing Canvas. The prior rounds, chat, questions, hypothesis,
+completion, and score remain in completion history. The workspace map retains
+the question-labeled research branch for provenance.
 On the Canvas, imported agents branch from the Research Problem that initiated
 their literature search and feed the continued panel. The earlier panel,
 Hypothesis, and Research Problem outputs remain visible as the prior checkpoint.

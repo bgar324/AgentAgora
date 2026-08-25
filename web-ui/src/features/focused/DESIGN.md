@@ -38,24 +38,30 @@ Surfaces:
   Wrapped research-question lines are joined through their closing question
   mark. A zero-result search stays retryable and never seals the Investigation.
   Adding a Perspective inserts a pending matrix card immediately. Its own card
-  and button show progress while other clusters remain addable. The server
-  response replaces the card and creates its matching canvas agent; a failed
-  request removes only that card. Continue opens the canvas directly with every
-  matrix Perspective—there is no separate panel-selection step.
-  Before round 1, the drawer explains the multi-round flow and the follow-up
-  question step, then asks the researcher to choose one or two areas.
+  and button show progress while other clusters remain addable. Every cluster
+  editor renders all four hypothesis areas, including a blank editor when the
+  server omits an area. The server response replaces the pending card and
+  creates its matching canvas agent. A failed request removes only that card.
+  Continue opens the canvas directly with every matrix Perspective. There is no
+  separate panel-selection step. Before round 1, the researcher chooses a lead
+  Perspective and generates its baseline hypothesis.
 - Panel — React Flow canvas (nodes/wires/dot grid) + guided drawer:
   while open, the canvas shows the Research Problem, Perspective agents, and
   panel. Adding a Perspective archives the current panel cycle and starts a new
   deliberation with no rounds, chat, questions, or working hypothesis. The new
   Perspective always participates; the researcher chooses which existing
   Perspectives to invite. Archived rounds and hypotheses remain inspectable.
-  Each moderator summary follows its agent turns.
-  Shared ground shows explicit Before and Proposed values for every changed
-  hypothesis part, then requires a separate Apply changes confirmation. Saving
-  creates an immutable checkpoint. End deliberation closes the round/chat/edit
-  lifecycle and reveals only the final Hypothesis and Research Problem outputs,
-  followed by one deliberation-level divergent/convergent scoring dialog.
+  Each round examines exactly one area, and the same lead opens every round.
+  The drawer reports each stage and shows agent turns as the server produces
+  them. Researchers can ask a question before or between rounds. A question
+  submitted during a round waits until that round finishes.
+  Each moderator summary follows its agent turns. Shared ground shows explicit
+  Before and Proposed values for every changed hypothesis part. The researcher
+  can accept, edit, or reject the proposal. Saving creates an immutable
+  checkpoint. After all four areas have at least one completed round, Review
+  and end opens the final hypothesis and open-question selection. Confirm and
+  end closes the round, chat, and edit lifecycle, then opens the
+  deliberation-level divergent and convergent scoring dialog.
   Completed open questions expose Start paper search both in the drawer and on
   their Research Problem node; neither surface forces the user to hunt for the
   other.
@@ -137,10 +143,10 @@ border affordance. CheckRow(checked, onToggle) — 13px checklist row.
 ## Content rules
 
 Sentence case, never uppercase labels. No arrows, no emojis, plain language;
-prefer “panel” in explanatory copy. The explicit terminal action is
-“End deliberation.” Empty states are one actionable line. Buttons say what they
-do (Generate search queries, Add Perspective, Start round, Apply shared ground,
-Apply changes, End deliberation).
+prefer "panel" in explanatory copy. The terminal actions are "Review and end"
+and "Confirm and end." Empty states are one actionable line. Buttons say what
+they do, such as Generate search queries, Add Perspective, Start round, Apply
+shared ground, Apply changes, Review and end, and Confirm and end.
 Busy = spinner inside the triggering button.
 Visible labels start with a capital letter. Internal agent and paper IDs
 never render; use the Perspective name and complete, wrapping

@@ -51,6 +51,7 @@ def panel_perspective(perspective_id: str, name: str, prefix: str) -> Perspectiv
         },
     )
 
+
 def test_legacy_completion_history_materializes_on_session_load() -> None:
     round_state = DeliberationRound(
         n=1,
@@ -84,6 +85,105 @@ def test_legacy_completion_history_materializes_on_session_load() -> None:
     assert archived.round_count == 1
     assert restored.deliberations[0].rounds == []
 
+
+def test_legacy_rotating_rounds_archive_before_new_lead_cycle() -> None:
+    async def go() -> None:
+        service = FocusedPanelService()
+        state = service.create_workspace(
+            problem=PROBLEM,
+            research_questions=[],
+            demo=True,
+        ).active
+        state.perspectives = [
+            panel_perspective("first", "First", "first"),
+            panel_perspective("second", "Second", "second"),
+        ]
+        state = await service.create_deliberation(state.id)
+        deliberation = state.deliberations[0]
+        accepted = hypothesis("accepted legacy")
+        deliberation.hypothesis = accepted.model_copy(deep=True)
+        deliberation.applied_hypothesis = accepted.model_copy(deep=True)
+        deliberation.hypothesis_confirmed = True
+        prior_iids = list(deliberation.agent_iids)
+        deliberation.rounds = [
+            DeliberationRound(
+                n=1,
+                lead_iid=prior_iids[0],
+                participant_iids=prior_iids,
+                facets=["scope", "explanation"],
+                completed=True,
+            ),
+            DeliberationRound(
+                n=2,
+                lead_iid=prior_iids[1],
+                participant_iids=prior_iids,
+                facets=["approach", "significance"],
+                completed=True,
+            ),
+        ]
+        selected_lead_id = state.agents[1].perspective_id
+
+        state = await service.initialize_deliberation(
+            state.id,
+            deliberation.id,
+            selected_lead_id,
+        )
+        initialized = state.deliberations[0]
+        assert initialized.rounds == []
+        assert initialized.lead_perspective_id == selected_lead_id
+        assert initialized.baseline_hypothesis is not None
+        assert set(initialized.agent_iids).isdisjoint(prior_iids)
+        assert len(initialized.completion_history) == 1
+        archived = initialized.completion_history[0]
+        assert archived.reason == "restarted"
+        assert [round_state.lead_iid for round_state in archived.rounds] == prior_iids
+        assert archived.applied_hypothesis == accepted
+
+    asyncio.run(go())
+
+
+def test_completion_requires_four_rounds_even_when_facets_are_covered() -> None:
+    async def go() -> None:
+        service = FocusedPanelService()
+        state = service.create_workspace(
+            problem=PROBLEM,
+            research_questions=[],
+            demo=True,
+        ).active
+        state.perspectives = [
+            panel_perspective("first", "First", "first"),
+            panel_perspective("second", "Second", "second"),
+        ]
+        state = await service.create_deliberation(state.id)
+        deliberation = state.deliberations[0]
+        state = await service.initialize_deliberation(
+            state.id,
+            deliberation.id,
+            state.agents[0].perspective_id,
+        )
+        deliberation = state.deliberations[0]
+        lead_iid = deliberation.agent_iids[0]
+        deliberation.rounds = [
+            DeliberationRound(
+                n=1,
+                lead_iid=lead_iid,
+                participant_iids=deliberation.agent_iids,
+                facets=["scope", "explanation"],
+                completed=True,
+            ),
+            DeliberationRound(
+                n=2,
+                lead_iid=lead_iid,
+                participant_iids=deliberation.agent_iids,
+                facets=["approach", "significance"],
+                completed=True,
+            ),
+        ]
+
+        with pytest.raises(SessionError, match="at least four focused rounds"):
+            await service.complete_deliberation(state.id, deliberation.id)
+
+    asyncio.run(go())
 
 
 async def apply_checkpoint(
@@ -580,13 +680,26 @@ def test_repeated_unsettled_round_does_not_duplicate_open_question() -> None:
         deliberation = state.deliberations[0]
         agent_iids = [agent.iid for agent in state.agents]
 
+        state = await service.initialize_deliberation(
+            state.id,
+            deliberation.id,
+            state.agents[0].perspective_id,
+        )
         for _ in range(2):
-            await service.run_round(
+            state = await service.run_round(
                 state.id,
                 deliberation.id,
                 lead_iid=agent_iids[0],
                 facets=["scope"],
             )
+            current = state.deliberations[0]
+            if not current.hypothesis_confirmed:
+                assert current.hypothesis is not None
+                state = await service.confirm_deliberation_hypothesis(
+                    state.id,
+                    deliberation.id,
+                    current.hypothesis,
+                )
 
         questions = service.get(state.id).deliberations[0].recommended_questions
         identities = {
@@ -613,6 +726,11 @@ def test_round_batches_independent_agent_calls(monkeypatch) -> None:
         state = await service.create_deliberation(state.id)
         deliberation = state.deliberations[0]
         agent_iids = [agent.iid for agent in state.agents]
+        state = await service.initialize_deliberation(
+            state.id,
+            deliberation.id,
+            state.agents[0].perspective_id,
+        )
 
         active = {"answer": 0, "reflection": 0, "post": 0}
         peak = dict(active)
@@ -632,9 +750,7 @@ def test_round_batches_independent_agent_calls(monkeypatch) -> None:
                 active[kind] -= 1
 
         async def tracked_answer(*args, **kwargs):
-            return await track(
-                "answer", lambda: original_answer(*args, **kwargs)
-            )
+            return await track("answer", lambda: original_answer(*args, **kwargs))
 
         async def tracked_reflection(*args, **kwargs):
             return await track(
@@ -663,7 +779,7 @@ def test_round_batches_independent_agent_calls(monkeypatch) -> None:
             facets=["scope"],
         )
 
-        assert peak == {"answer": 2, "reflection": 3, "post": 3}
+        assert peak == {"answer": 2, "reflection": 1, "post": 3}
 
     asyncio.run(go())
 
@@ -685,6 +801,11 @@ def test_concurrent_round_requests_serialize_without_detached_side_effects(
         state = await service.create_deliberation(state.id)
         deliberation = state.deliberations[0]
         agent_iids = [agent.iid for agent in state.agents]
+        state = await service.initialize_deliberation(
+            state.id,
+            deliberation.id,
+            state.agents[0].perspective_id,
+        )
 
         entered = asyncio.Event()
         release = asyncio.Event()
@@ -699,7 +820,16 @@ def test_concurrent_round_requests_serialize_without_detached_side_effects(
                 await release.wait()
             return await original(*args, **kwargs)
 
+        async def unchanged_hypothesis(_resolution, *, current, **_kwargs):
+            assert current is not None
+            return current.model_copy(deep=True)
+
         monkeypatch.setattr(agents, "open_statement", slow_first_open)
+        monkeypatch.setattr(
+            agents,
+            "develop_hypothesis_from_consensus",
+            unchanged_hypothesis,
+        )
         first_round = asyncio.create_task(
             service.run_round(
                 state.id,
@@ -713,7 +843,7 @@ def test_concurrent_round_requests_serialize_without_detached_side_effects(
             service.run_round(
                 state.id,
                 deliberation.id,
-                lead_iid=agent_iids[1],
+                lead_iid=agent_iids[0],
                 facets=["explanation"],
             )
         )
@@ -756,6 +886,12 @@ def test_workspace_lock_preserves_sibling_mutation_after_failed_round(
         child = await service.create_deliberation(child.id)
         deliberation = child.deliberations[0]
         agent_iids = [agent.iid for agent in child.agents]
+        child = await service.initialize_deliberation(
+            child.id,
+            deliberation.id,
+            child.agents[0].perspective_id,
+        )
+        deliberation = child.deliberations[0]
 
         entered = asyncio.Event()
         release = asyncio.Event()
@@ -821,6 +957,11 @@ def test_failed_round_restores_the_entire_in_memory_investigation(
         state = await service.create_deliberation(state.id)
         deliberation = state.deliberations[0]
         agent_iids = [agent.iid for agent in state.agents]
+        state = await service.initialize_deliberation(
+            state.id,
+            deliberation.id,
+            state.agents[0].perspective_id,
+        )
         before = service.get(state.id).model_dump(mode="json")
 
         async def fail_after_reflection(*_args, **_kwargs):

@@ -65,7 +65,11 @@ export interface HypothesisDev {
 }
 
 export type HypothesisPart = keyof HypothesisDev
-export type HypothesisConfirmationMode = "apply_pending" | "edit_applied"
+export type HypothesisConfirmationMode =
+  | "apply_pending"
+  | "edit_applied"
+  | "reject_pending"
+export type HypothesisDecision = "accepted" | "edited" | "rejected"
 
 export interface HypothesisVersion {
   id: string
@@ -167,6 +171,9 @@ export interface DeliberationCompletion {
   chat_count: number
   agent_iids: number[]
   question_ids: string[]
+  lead_perspective_id: string | null
+  baseline_hypothesis: HypothesisDev | null
+  selected_question_ids: string[]
   rating: DeliberationRating | null
   rounds: DeliberationRound[]
   recommended_questions: RecommendedQuestion[]
@@ -190,6 +197,9 @@ export interface DeliberationRound {
   reflections: ParticipantReflection[]
   metrics: RoundMetrics | null
   completed: boolean
+  hypothesis_before: HypothesisDev | null
+  hypothesis_proposal: HypothesisDev | null
+  hypothesis_decision: HypothesisDecision | null
 }
 
 export type QuestionStatus =
@@ -209,11 +219,15 @@ export interface RecommendedQuestion {
   source_round: number | null
   status: QuestionStatus
   child_investigation_id: string | null
+  selected_for_followup: boolean
 }
 
 export interface DeliberationState {
   id: string
   agent_iids: number[]
+  lead_perspective_id: string | null
+  baseline_hypothesis: HypothesisDev | null
+  selected_question_ids: string[]
   rounds: DeliberationRound[]
   revised_perspective: Perspective | null
   hypothesis: HypothesisDev | null
@@ -254,8 +268,15 @@ export type SearchProgressKind =
   | "retrieval_completed"
   | "clustering_started"
   | "clustering_completed"
+  | "round_stage"
+  | "round_turn"
 
 export interface SearchProgressItem {
+  stage?: string
+  step?: number
+  total_steps?: number
+  agent_label?: string
+  text?: string
   generation: number
   sequence: number
   kind: SearchProgressKind

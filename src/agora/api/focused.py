@@ -129,9 +129,14 @@ class IntegrateChildRequest(BaseModel):
     )
 
 
+class InitializeDeliberationRequest(BaseModel):
+    lead_perspective_id: str = Field(min_length=1, max_length=200)
+
+
 class RoundRequest(BaseModel):
     lead_iid: int
-    facets: list[Facet] = Field(min_length=1, max_length=2)
+    facets: list[Facet] = Field(min_length=1, max_length=1)
+    progress_generation: int | None = Field(default=None, ge=1)
 
 
 class ChatRequest(BaseModel):
@@ -154,6 +159,10 @@ class MergeHypothesesRequest(BaseModel):
 class HypothesisRequest(BaseModel):
     hypothesis: HypothesisDev
     mode: HypothesisConfirmationMode
+
+
+class CompleteDeliberationRequest(BaseModel):
+    selected_question_ids: list[str] = Field(default_factory=list, max_length=50)
 
 
 class DeliberationRatingRequest(BaseModel):
@@ -445,6 +454,25 @@ async def create_deliberation(
     return await _acall_view(service, service.create_deliberation(session_id))
 
 
+@focused_router.post(
+    "/sessions/{session_id}/deliberations/{deliberation_id}/initialize"
+)
+async def initialize_deliberation(
+    session_id: str,
+    deliberation_id: str,
+    request: InitializeDeliberationRequest,
+    service: Service,
+) -> WorkspaceView:
+    return await _acall_view(
+        service,
+        service.initialize_deliberation(
+            session_id,
+            deliberation_id,
+            request.lead_perspective_id,
+        ),
+    )
+
+
 @focused_router.post("/sessions/{session_id}/deliberations/{deliberation_id}/rounds")
 async def run_round(
     session_id: str,
@@ -458,6 +486,7 @@ async def run_round(
             session_id,
             deliberation_id,
             lead_iid=request.lead_iid,
+            progress_generation=request.progress_generation,
             facets=request.facets,
         ),
     )
@@ -503,10 +532,15 @@ async def complete_deliberation(
     session_id: str,
     deliberation_id: str,
     service: Service,
+    request: CompleteDeliberationRequest | None = None,
 ) -> WorkspaceView:
     return await _acall_view(
         service,
-        service.complete_deliberation(session_id, deliberation_id),
+        service.complete_deliberation(
+            session_id,
+            deliberation_id,
+            request.selected_question_ids if request is not None else [],
+        ),
     )
 
 

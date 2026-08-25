@@ -8,6 +8,7 @@ import {
   useFocusedPanel,
 } from "@/hooks/use-focused"
 import { useFocusedStore } from "@/store/focused"
+import { FACETS } from "@/types/focused"
 import type {
   ClusterCard,
   Facet,
@@ -1022,8 +1023,20 @@ function ClusterRow({ cluster, index }: { cluster: ClusterCard; index: number })
   const pendingPerspective = !!session?.perspectives.some(
     (p) => p.origin === cluster.id && p.id.startsWith("optimistic:"),
   )
-  const facets = cluster.facets.map(
-    (evidence) => edits[evidence.facet] ?? evidence,
+  const clusterFacets = new Map(
+    cluster.facets.map((evidence) => [evidence.facet, evidence]),
+  )
+  const facets = FACETS.map(
+    (facet): FacetEvidence =>
+      edits[facet] ??
+      clusterFacets.get(facet) ?? {
+        facet,
+        text: "",
+        paper_id: null,
+        sentence_index: null,
+        sentence: null,
+        edited: true,
+      },
   )
   const complete = facets.every((evidence) => evidence.text.trim())
   const papers = cluster.paper_ids
@@ -1042,9 +1055,7 @@ function ClusterRow({ cluster, index }: { cluster: ClusterCard; index: number })
 
   const generate = async () => {
     setGenerationError(null)
-    const payload = cluster.facets.map(
-      (evidence) => edits[evidence.facet] ?? evidence,
-    )
+    const payload = facets
     try {
       await generatePerspective(cluster.id, payload)
     } catch (cause) {

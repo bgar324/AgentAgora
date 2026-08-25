@@ -11,8 +11,8 @@ ResearchQuestion = Annotated[str, Field(min_length=1, max_length=4000)]
 RetrievalTier = Literal["answer", "problem", "candidate"]
 SearchQuery = Annotated[str, Field(min_length=1, max_length=500)]
 
-# Stable wire and display order. A perspective always carries all four facets;
-# a deliberation round activates one or two of them.
+# Stable wire and display order. A Perspective always carries all four facets;
+# each deliberation round activates exactly one.
 FACETS: list[Facet] = ["scope", "explanation", "approach", "significance"]
 
 PERSONA_COLORS = [
@@ -125,7 +125,12 @@ class HypothesisDev(BaseModel):
 
 
 HypothesisPart = Literal["problem", "previous_work", "reasoning", "hypothesis"]
-HypothesisConfirmationMode = Literal["apply_pending", "edit_applied"]
+HypothesisConfirmationMode = Literal[
+    "apply_pending",
+    "edit_applied",
+    "reject_pending",
+]
+HypothesisDecision = Literal["accepted", "edited", "rejected"]
 
 
 class HypothesisVersion(BaseModel):
@@ -250,8 +255,6 @@ class DeliberationRating(BaseModel):
     submitted_at: datetime = Field(default_factory=utcnow)
 
 
-
-
 class DeliberationRound(BaseModel):
     n: int
     lead_iid: int
@@ -263,6 +266,9 @@ class DeliberationRound(BaseModel):
     reflections: list[ParticipantReflection] = Field(default_factory=list)
     metrics: RoundMetrics | None = None
     completed: bool = False
+    hypothesis_before: HypothesisDev | None = None
+    hypothesis_proposal: HypothesisDev | None = None
+    hypothesis_decision: HypothesisDecision | None = None
 
 
 QuestionStatus = Literal["open", "investigating", "addressed", "archived"]
@@ -278,6 +284,7 @@ class RecommendedQuestion(BaseModel):
     source_round: int | None = Field(default=None, ge=1)
     status: QuestionStatus = "open"
     child_investigation_id: str | None = None
+    selected_for_followup: bool = False
 
     @model_validator(mode="after")
     def validate_status(self) -> Self:
@@ -300,6 +307,9 @@ class DeliberationCompletion(BaseModel):
     chat_count: int = Field(default=0, ge=0)
     agent_iids: list[int] = Field(default_factory=list)
     question_ids: list[str] = Field(default_factory=list)
+    lead_perspective_id: str | None = None
+    baseline_hypothesis: HypothesisDev | None = None
+    selected_question_ids: list[str] = Field(default_factory=list)
     rating: DeliberationRating | None = None
     rounds: list[DeliberationRound] = Field(default_factory=list)
     recommended_questions: list[RecommendedQuestion] = Field(default_factory=list)
@@ -335,6 +345,9 @@ class DeliberationCompletion(BaseModel):
 class DeliberationState(BaseModel):
     id: str
     agent_iids: list[int] = Field(default_factory=list)
+    lead_perspective_id: str | None = None
+    baseline_hypothesis: HypothesisDev | None = None
+    selected_question_ids: list[str] = Field(default_factory=list)
     rounds: list[DeliberationRound] = Field(default_factory=list)
     revised_perspective: Perspective | None = None
     hypothesis: HypothesisDev | None = None
@@ -564,7 +577,6 @@ class QuestionAssessment(BaseModel):
 
 class QuestionExpansion(BaseModel):
     queries: list[SuggestedQuery] = Field(default_factory=list)
-
 
 
 class ClusterNaming(BaseModel):

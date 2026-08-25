@@ -409,25 +409,101 @@ export function useFocusedPanel() {
       }),
     [call, sessionId],
   )
-
-  const runRound = useCallback(
-    (deliberationId: string, leadIid: number, facets: Facet[]) =>
+  const initializeDeliberation = useCallback(
+    (deliberationId: string, leadPerspectiveId: string) =>
       call(
-        "Running focused round",
-        `sessions/${sessionId}/deliberations/${deliberationId}/rounds`,
+        "Generating lead hypothesis",
+        `sessions/${sessionId}/deliberations/${deliberationId}/initialize`,
         {
           method: "POST",
-          body: JSON.stringify({ lead_iid: leadIid, facets }),
+          body: JSON.stringify({
+            lead_perspective_id: leadPerspectiveId,
+          }),
         },
       ),
     [call, sessionId],
   )
+
+
+  const runRound = useCallback(
+    async (deliberationId: string, leadIid: number, facets: Facet[]) =>
+      exclusive("Running focused round", async () => {
+        const started = await api<{ generation: number }>(
+          `sessions/${sessionId}/search-progress`,
+          { method: "POST" },
+        )
+        const generation = started.generation
+        searchProgressCleared()
+        let polling = true
+        let cursor = 0
+        const collect = async () => {
+          const progress = await api<SearchProgressResponse>(
+            `sessions/${sessionId}/search-progress?generation=${generation}&after=${cursor}`,
+          )
+          progress.items.forEach(searchProgressAdded)
+          cursor = progress.next
+        }
+        const poll = async () => {
+          while (polling) {
+            try {
+              await collect()
+            } catch {
+              // Progress is advisory; the round request reports failures.
+            }
+            if (polling) {
+              const { promise, resolve } = Promise.withResolvers<void>()
+              window.setTimeout(resolve, 500)
+              await promise
+            }
+          }
+        }
+        const progress = poll()
+        let view: WorkspaceView
+        try {
+          view = await requestView(
+            `sessions/${sessionId}/deliberations/${deliberationId}/rounds`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                lead_iid: leadIid,
+                facets,
+                progress_generation: generation,
+              }),
+            },
+            () => undefined,
+          )
+        } finally {
+          polling = false
+          await progress
+          try {
+            await collect()
+          } catch {
+            // The final round response remains authoritative.
+          }
+        }
+        workspaceViewSet(view)
+        return view.active
+      }),
+    [
+      exclusive,
+      requestView,
+      searchProgressAdded,
+      searchProgressCleared,
+      sessionId,
+      workspaceViewSet,
+    ],
+  )
   const completeDeliberation = useCallback(
-    (deliberationId: string) =>
+    (deliberationId: string, selectedQuestionIds: string[]) =>
       call(
         "Ending deliberation",
         `sessions/${sessionId}/deliberations/${deliberationId}/complete`,
-        { method: "POST" },
+        {
+          method: "POST",
+          body: JSON.stringify({
+            selected_question_ids: selectedQuestionIds,
+          }),
+        },
       ),
     [call, sessionId],
   )
@@ -640,6 +716,7 @@ export function useFocusedPanel() {
     generatePerspective,
     removePerspective,
     createDeliberation,
+    initializeDeliberation,
     runRound,
     completeDeliberation,
     rateDeliberation,
