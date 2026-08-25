@@ -40,14 +40,16 @@ interface QueryCheckpoint {
   sequence: number
   query: string
   retrieved: number | null
+  stopped: boolean
 }
 
 function queryCheckpoints(progress: SearchProgressItem[]): QueryCheckpoint[] {
-  const completedByRun = new Map(
+  const terminalByRun = new Map(
     progress
       .filter(
         (item) =>
-          item.kind === "query_completed" &&
+          (item.kind === "query_completed" ||
+            item.kind === "query_failed") &&
           typeof item.query_run_id === "number",
       )
       .map((item) => [item.query_run_id as number, item]),
@@ -55,14 +57,16 @@ function queryCheckpoints(progress: SearchProgressItem[]): QueryCheckpoint[] {
   return progress
     .filter((item) => item.kind === "query_started" && item.query)
     .map((item) => {
-      const completed = completedByRun.get(item.sequence)
+      const terminal = terminalByRun.get(item.sequence)
       return {
         sequence: item.sequence,
         query: item.query as string,
         retrieved:
-          completed && typeof completed.retrieved === "number"
-            ? completed.retrieved
+          terminal?.kind === "query_completed" &&
+          typeof terminal.retrieved === "number"
+            ? terminal.retrieved
             : null,
+        stopped: terminal?.kind === "query_failed",
       }
     })
 }
@@ -92,6 +96,7 @@ function RetrievalProgressPanel({
           sequence: index,
           query,
           retrieved: null,
+          stopped: false,
         }))
   const retrieval = progress.find(
     (item) => item.kind === "retrieval_completed",
@@ -180,6 +185,11 @@ function RetrievalProgressPanel({
                   <span className="absolute left-0 top-0 grid size-5 place-items-center bg-[var(--panel)] text-[var(--ink-2)]">
                     {completed ? (
                       <Check size={14} strokeWidth={1.8} aria-hidden />
+                    ) : checkpoint.stopped ? (
+                      <span
+                        className="size-1.5 rounded-full bg-[var(--mute)]"
+                        aria-hidden
+                      />
                     ) : active ? (
                       <span data-testid="active-query-spinner">
                         <Spinner className="size-3.5" />
@@ -201,6 +211,8 @@ function RetrievalProgressPanel({
                         </span>{" "}
                         for &quot;{checkpoint.query}&quot;.
                       </>
+                    ) : checkpoint.stopped ? (
+                      <>Search stopped for &quot;{checkpoint.query}&quot;.</>
                     ) : active ? (
                       <>Searching papers for &quot;{checkpoint.query}&quot;</>
                     ) : (
@@ -252,12 +264,16 @@ function RetrievalProgressPanel({
                         <span className="min-w-0 flex-1 text-[12px] leading-snug text-[var(--ink-2)]">
                           {checkpoint.query}
                         </span>
-                        {checkpoint.retrieved !== null && (
+                        {checkpoint.stopped ? (
+                          <span className="shrink-0 text-[11px] text-[var(--mute)]">
+                            Stopped
+                          </span>
+                        ) : checkpoint.retrieved !== null ? (
                           <span className="shrink-0 text-[11px] tabular-nums text-[var(--mute)]">
                             {checkpoint.retrieved}{" "}
                             {checkpoint.retrieved === 1 ? "paper" : "papers"}
                           </span>
-                        )}
+                        ) : null}
                       </li>
                     ))}
                   </ul>

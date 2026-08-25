@@ -8,6 +8,7 @@ import {
   useState,
   type CSSProperties,
 } from "react"
+import Markdown from "react-markdown"
 import {
   Background,
   BackgroundVariant,
@@ -752,10 +753,15 @@ function PanelDrawer({
   const [selectedFacets, setSelectedFacets] = useState<Facet[]>([])
   const [message, setMessage] = useState("")
   const [target, setTarget] = useState<number | null>(null)
+  const [pendingChat, setPendingChat] = useState<{
+    text: string
+    targetIid: number | null
+    targetLabel: string
+  } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const drawerTitleId = useId()
   const drawerRef = useDialogSurface<HTMLElement>(onClose)
-  const chatEndRef = useRef<HTMLDivElement>(null)
+  const latestChatRef = useRef<HTMLDivElement>(null)
   const [hypothesisDraft, setHypothesisDraft] = useState<HypothesisDev | null>(
     () => {
       const current = useFocusedStore
@@ -771,10 +777,10 @@ function PanelDrawer({
     if (!session || !active) onClose()
   }, [session, active, onClose])
   useEffect(() => {
-    if (active?.chat.length) {
-      chatEndRef.current?.scrollIntoView({ block: "nearest" })
+    if (active?.chat.length || pendingChat) {
+      latestChatRef.current?.scrollIntoView({ block: "start" })
     }
-  }, [active?.chat.length])
+  }, [active?.chat.length, pendingChat])
 
 
 
@@ -852,11 +858,26 @@ function PanelDrawer({
   const send = () => {
     const text = message.trim()
     if (!text) return
+    const targetAgent = agents.find((agent) => agent.iid === target)
+    setPendingChat({
+      text,
+      targetIid: target,
+      targetLabel: targetAgent
+        ? (perspectiveOf(targetAgent)?.name ?? targetAgent.label)
+        : "Panel",
+    })
     setMessage("")
-    void act(() => sendChat(active.id, text, target))
+    void act(() => sendChat(active.id, text, target)).finally(() =>
+      setPendingChat(null),
+    )
   }
 
   const runningRound = busy === "Running focused round"
+  const discussedFacetCount = FACETS.filter((facet) =>
+    active.rounds.some(
+      (round) => round.completed && round.facets.includes(facet),
+    ),
+  ).length
 
   return (
     <div className="fixed inset-0 z-40 flex justify-end">
@@ -926,18 +947,57 @@ function PanelDrawer({
               <RoundRecord key={round.n} round={round} />
             ))}
           </div>
-          {active.chat.length > 0 && (
+          {(active.chat.length > 0 || pendingChat) && (
             <section
               className="mt-5 border-t border-[var(--line)] pt-4"
               data-testid="panel-chat-transcript"
             >
               <SectionLabel>Follow-up conversation</SectionLabel>
               <div className="mt-2 flex flex-col gap-2.5">
-                {active.chat.map((turn) => (
-                  <TurnBubble key={turn.id} turn={turn} />
+                {active.chat.map((turn, index) => (
+                  <div
+                    key={turn.id}
+                    ref={
+                      !pendingChat && index === active.chat.length - 1
+                        ? latestChatRef
+                        : undefined
+                    }
+                  >
+                    <TurnBubble turn={turn} />
+                  </div>
                 ))}
+                {pendingChat && (
+                  <>
+                    <TurnBubble
+                      turn={{
+                        id: -2,
+                        agent_iid: null,
+                        agent_label: "",
+                        role: "user",
+                        kind: "user",
+                        facet: null,
+                        text: pendingChat.text,
+                        citations: [],
+                      }}
+                    />
+                    <div ref={latestChatRef}>
+                      <TurnBubble
+                        turn={{
+                          id: -1,
+                          agent_iid: pendingChat.targetIid,
+                          agent_label: pendingChat.targetLabel,
+                          role: "other",
+                          kind: "answer",
+                          facet: null,
+                          text: "Thinking…",
+                          citations: [],
+                        }}
+                        thinking
+                      />
+                    </div>
+                  </>
+                )}
               </div>
-              <div ref={chatEndRef} />
             </section>
           )}
 
@@ -987,13 +1047,18 @@ function PanelDrawer({
                   Choose what this panel should focus on
                 </h2>
                 <p className="mt-1 max-w-[62ch] text-[12px] leading-relaxed text-[var(--mute)]">
-                  Select one or two areas. Each guides its own evidence-grounded
-                  discussion before the moderator produces one synthesis.
+                  Select one or two areas. Areas remain reusable in later rounds.
+                  Aim to discuss all four over the deliberation.
                 </p>
               </div>
-              <span className="shrink-0 rounded-full border border-[var(--line)] bg-[var(--panel)] px-2 py-1 text-[11px] text-[var(--mute)]">
-                {selectedFacets.length}/2 selected
-              </span>
+              <div className="shrink-0 text-right">
+                <span className="rounded-full border border-[var(--line)] bg-[var(--panel)] px-2 py-1 text-[11px] text-[var(--mute)]">
+                  {selectedFacets.length}/2 selected
+                </span>
+                <div className="mt-1.5 text-[10.5px] text-[var(--mute)]">
+                  {discussedFacetCount}/4 discussed
+                </div>
+              </div>
             </div>
 
             <div className="mt-3 grid grid-cols-2 gap-2">
@@ -1001,6 +1066,12 @@ function PanelDrawer({
                 const selected = selectedFacets.includes(facet)
                 const unavailable = !selected && selectedFacets.length >= 2
                 const meta = FACET_META[facet]
+                const discussedRounds = active.rounds
+                  .filter(
+                    (round) =>
+                      round.completed && round.facets.includes(facet),
+                  )
+                  .map((round) => round.n)
                 return (
                   <button
                     key={facet}
@@ -1022,6 +1093,22 @@ function PanelDrawer({
                     </div>
                     <div className="mt-0.5 text-[11px] leading-snug text-[var(--mute)]">
                       {meta.short}
+                    </div>
+                    <div
+                      className="mt-1 text-[10.5px] leading-snug"
+                      data-testid={`facet-history-${facet}`}
+                      style={{
+                        color:
+                          discussedRounds.length > 0
+                            ? meta.color
+                            : "var(--mute)",
+                      }}
+                    >
+                      {discussedRounds.length === 0
+                        ? "Not discussed yet"
+                        : discussedRounds.length === 1
+                          ? `Discussed in round ${discussedRounds[0]}`
+                          : `Discussed in rounds ${discussedRounds.join(", ")}`}
                     </div>
                   </button>
                 )
@@ -1104,7 +1191,7 @@ function PanelDrawer({
                 onClick={send}
                 disabled={!!busy || !message.trim() || agents.length === 0}
               >
-                {busy === "Deliberating" ? <Spinner /> : "Send"}
+                {busy === "Deliberating" && !pendingChat ? <Spinner /> : "Send"}
               </Button>
             </div>
           </footer>
@@ -1924,7 +2011,13 @@ function WorkingHypothesisPanel({
   )
 }
 
-function TurnBubble({ turn }: { turn: Turn }) {
+function TurnBubble({
+  turn,
+  thinking = false,
+}: {
+  turn: Turn
+  thinking?: boolean
+}) {
   const session = useFocusedStore((state) => state.session)
   const openPaperSet = useFocusedStore((state) => state.openPaperSet)
   const perspective =
@@ -1971,13 +2064,20 @@ function TurnBubble({ turn }: { turn: Turn }) {
             </span>
           )}
         </div>
-        <p
-          className={`text-[12.5px] leading-relaxed ${
-            isUser ? "text-white" : "text-[var(--ink)]"
-          }`}
-        >
-          {turn.text}
-        </p>
+        {thinking ? (
+          <p className="flex items-center gap-2 text-[12.5px] leading-relaxed text-[var(--mute)]">
+            <Spinner />
+            Thinking…
+          </p>
+        ) : isUser ? (
+          <p className="whitespace-pre-wrap text-[12.5px] leading-relaxed text-white">
+            {turn.text}
+          </p>
+        ) : (
+          <div className="text-[12.5px] leading-relaxed text-[var(--ink)] [&_a]:underline [&_a]:underline-offset-2 [&_li]:my-1 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-0 [&_p+p]:mt-2 [&_strong]:font-semibold [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5">
+            <Markdown>{turn.text}</Markdown>
+          </div>
+        )}
         {turn.citations.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1.5">
             {turn.citations.map((paperId) => {
