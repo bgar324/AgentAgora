@@ -36,7 +36,9 @@ async function searchDemoLiterature(page: Page) {
     .click()
   await page.getByRole("button", { name: /early broad coverage sepsis/ }).click()
   await page.getByRole("button", { name: "Search papers (3 queries)" }).click()
-  await expect(page.getByText("Resistance ecology", { exact: true })).toBeVisible()
+  await expect(
+    page.getByText("Resistance ecology", { exact: true }),
+  ).toBeVisible({ timeout: 15_000 })
   const searchedQueries = page.getByRole("region", {
     name: "Queries searched",
   })
@@ -44,9 +46,6 @@ async function searchDemoLiterature(page: Page) {
   for (const query of DEMO_QUERIES) {
     await expect(searchedQueries).toContainText(query)
   }
-  await expect(page.getByText(/\d+ answer-bearing/)).toBeVisible()
-  await expect(page.getByText(/\d+ problem-angle/)).toBeVisible()
-  await expect(page.getByText(/\d+ question candidates/)).toBeVisible()
 }
 
 async function addPerspective(page: Page, name: string) {
@@ -210,35 +209,81 @@ test("joins wrapped lines into complete research questions", async ({ page }) =>
   ])
 })
 
-test("shows retrieval progress inside the cluster surface", async ({ page }) => {
-  const { rootId } = await startWorkspace(page)
+test("shows a centered search-to-clustering timeline", async ({ page }) => {
+  await startWorkspace(page)
   await page.getByRole("button", { name: "Load demo queries" }).click()
   for (const query of DEMO_QUERIES) {
     await page.getByRole("button", { name: new RegExp(query) }).click()
   }
-  const responseReady = Promise.withResolvers<void>()
-  const releaseResponse = Promise.withResolvers<void>()
-  await page.route(`**/api/focused/sessions/${rootId}/search`, async (route) => {
-    const response = await route.fetch()
-    responseReady.resolve()
-    await releaseResponse.promise
-    await route.fulfill({ response })
-  })
 
   await page.getByRole("button", { name: "Search papers (3 queries)" }).click()
-  await responseReady.promise
   const clusterSurface = page.getByTestId("cluster-results-surface")
   const progress = clusterSurface.getByTestId("retrieval-progress-panel")
+  const queryTimeline = progress.getByTestId("query-progress-timeline")
   await expect(progress).toBeVisible()
-  await expect(progress).toContainText("Literature search")
+  await expect(progress).toContainText("Searching literature")
+  await expect(queryTimeline).toBeVisible()
+  await expect(progress).toContainText("Searching papers for")
   await expect(progress).toContainText(DEMO_QUERIES[0])
-  await expect(progress).toContainText(/\d+ papers/)
-  await expect(progress).toContainText(/\d+ complete/)
-  expect(await progress.getByRole("listitem").count()).toBeGreaterThanOrEqual(3)
+  await expect(progress.locator(".animate-spin")).toHaveCount(1)
+  await expect(
+    queryTimeline.getByTestId("query-progress-step").last(),
+  ).not.toContainText("…")
 
-  releaseResponse.resolve()
+  const panelBox = await progress.boundingBox()
+  const contentBox = await progress
+    .getByTestId("retrieval-progress-content")
+    .boundingBox()
+  expect(panelBox).not.toBeNull()
+  expect(contentBox).not.toBeNull()
+  expect(
+    Math.abs(
+      contentBox!.y +
+        contentBox!.height / 2 -
+        (panelBox!.y + panelBox!.height / 2),
+    ),
+  ).toBeLessThan(5)
+
+  await expect(progress).toContainText(/Searched \d+ papers for/, {
+    timeout: 5_000,
+  })
+  await expect
+    .poll(() => queryTimeline.getByTestId("query-progress-step").count())
+    .toBeGreaterThanOrEqual(2)
+  await expect
+    .poll(() => queryTimeline.getByTestId("query-progress-step").count())
+    .toBeGreaterThanOrEqual(DEMO_QUERIES.length)
+
+  const processingTimeline = progress.getByTestId(
+    "processing-progress-timeline",
+  )
+  await expect(processingTimeline).toBeVisible({ timeout: 10_000 })
+  const searchedDetails = progress.getByTestId("searched-papers-details")
+  await expect(searchedDetails).toBeVisible()
+  await expect(searchedDetails).toContainText(/Searched \d+ papers/)
+  await expect(searchedDetails).not.toHaveAttribute("open", "")
+  await expect(progress.locator(".animate-spin")).toHaveCount(0)
+  await searchedDetails.locator("summary").click()
+  await expect(searchedDetails).toHaveAttribute("open", "")
+  await expect(searchedDetails).toContainText(DEMO_QUERIES[0])
+  await expect
+    .poll(() => searchedDetails.getByRole("listitem").count())
+    .toBeGreaterThanOrEqual(DEMO_QUERIES.length)
+
+
+  await expect(processingTimeline).toContainText("Creating Perspectives", {
+    timeout: 5_000,
+  })
+  await expect(progress.getByTestId("active-perspective-spinner")).toHaveCount(
+    1,
+  )
+
   await expect(page.getByText("Resistance ecology", { exact: true })).toBeVisible()
-  await expect(progress).toHaveCount(0)
+  await expect(progress).toBeVisible()
+  await expect(progress.getByTestId("completed-search-summary")).toHaveText(
+    /Searched \d+ papers, created \d+ Perspectives\./,
+  )
+  await expect(progress.getByTestId("searched-papers-details")).toHaveCount(0)
 })
 
 

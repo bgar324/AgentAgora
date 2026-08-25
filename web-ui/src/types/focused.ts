@@ -247,6 +247,30 @@ export interface SuggestedQuery {
   question_index: number | null
   round: 1 | 2
 }
+export type SearchProgressKind =
+  | "query_started"
+  | "query_completed"
+  | "retrieval_completed"
+  | "clustering_started"
+  | "clustering_completed"
+
+export interface SearchProgressItem {
+  generation: number
+  sequence: number
+  kind: SearchProgressKind
+  message: string
+  query?: string
+  retrieved?: number
+  query_run_id?: number | null
+  retained?: number
+  query_count?: number
+  papers?: number
+  requested_clusters?: number
+  clusters?: number
+  unassigned?: number
+  method?: string
+}
+
 
 export interface QuestionEvidence {
   paper_id: string

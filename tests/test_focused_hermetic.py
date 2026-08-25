@@ -297,6 +297,36 @@ def test_question_search_records_reach_and_miss() -> None:
         assert [item["sequence"] for item in progress["items"]] == list(
             range(1, progress["next"] + 1)
         )
+        items = progress["items"]
+        started_by_sequence = {
+            item["sequence"]: item
+            for item in items
+            if item["kind"] == "query_started"
+        }
+        completed = [
+            item for item in items if item["kind"] == "query_completed"
+        ]
+        assert completed
+        assert all(
+            started_by_sequence[item["query_run_id"]]["query"] == item["query"]
+            for item in completed
+        )
+        assert [item["kind"] for item in items[-3:]] == [
+            "retrieval_completed",
+            "clustering_started",
+            "clustering_completed",
+        ]
+        retrieval_progress = items[-3]
+        assert retrieval_progress["retrieved"] == sum(
+            item["retrieved"] for item in completed
+        )
+        assert retrieval_progress["retained"] == len(state.papers)
+        assert retrieval_progress["query_count"] == len(completed)
+        assert items[-2]["papers"] == len(state.papers)
+        assert items[-2]["requested_clusters"] == state.clustering.requested_clusters
+        assert items[-1]["clusters"] == len(state.clusters)
+        assert items[-1]["unassigned"] == len(state.unassigned_paper_ids)
+
 
         assert "underfilled corpus expansion" in retrieval.calls
         assert "underfilled corpus expansion" in state.searched_queries
