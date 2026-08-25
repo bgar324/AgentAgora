@@ -643,7 +643,7 @@ function ArchivedPanelDialog({
     <ModalShell title="Panel history" onClose={onClose} wide>
       <p className="mb-3 text-[12px] text-[var(--ink-2)]">
         {completion.reason === "restarted"
-          ? "This panel was archived when a new Perspective restarted deliberation."
+          ? "This panel was archived when a new panel cycle started."
           : "This panel ended with a saved hypothesis."}
       </p>
       <div className="mb-4 flex flex-wrap gap-1.5">
@@ -740,7 +740,9 @@ function PanelDrawer({
 }) {
   const session = useFocusedStore((state) => state.session)
   const busy = useFocusedStore((state) => state.busy)
+  const operationProgress = useFocusedStore((state) => state.searchProgress)
   const {
+    initializeDeliberation,
     createChildInvestigation,
     runRound,
     completeDeliberation,
@@ -752,9 +754,11 @@ function PanelDrawer({
   } = useFocusedPanel()
   const [selectedFacets, setSelectedFacets] = useState<Facet[]>([])
   const [message, setMessage] = useState("")
+  const [leadSelection, setLeadSelection] = useState("")
   const [target, setTarget] = useState<number | null>(null)
   const [pendingChat, setPendingChat] = useState<{
     text: string
+    status: "queued" | "thinking"
     targetIid: number | null
     targetLabel: string
   } | null>(null)
@@ -762,6 +766,7 @@ function PanelDrawer({
   const drawerTitleId = useId()
   const drawerRef = useDialogSurface<HTMLElement>(onClose)
   const latestChatRef = useRef<HTMLDivElement>(null)
+  const flushingQueuedChatRef = useRef(false)
   const [hypothesisDraft, setHypothesisDraft] = useState<HypothesisDev | null>(
     () => {
       const current = useFocusedStore
@@ -770,6 +775,7 @@ function PanelDrawer({
       return current?.hypothesis ? { ...current.hypothesis } : null
     },
   )
+  const runningRound = busy === "Running focused round"
 
   const active = session?.deliberations.find((item) => item.id === deliberationId)
 
@@ -781,6 +787,26 @@ function PanelDrawer({
       latestChatRef.current?.scrollIntoView({ block: "start" })
     }
   }, [active?.chat.length, pendingChat])
+  useEffect(() => {
+    if (
+      runningRound ||
+      pendingChat?.status !== "queued" ||
+      active === undefined ||
+      flushingQueuedChatRef.current
+    ) {
+      return
+    }
+    const queued = pendingChat
+    flushingQueuedChatRef.current = true
+    void sendChat(active.id, queued.text, queued.targetIid)
+      .catch((cause) =>
+        setError(cause instanceof Error ? cause.message : "Request failed"),
+      )
+      .finally(() => {
+        flushingQueuedChatRef.current = false
+        setPendingChat(null)
+      })
+  }, [active, pendingChat, runningRound, sendChat])
 
 
 
@@ -788,10 +814,10 @@ function PanelDrawer({
   const agents = active.agent_iids
     .map((iid) => session.agents.find((item) => item.iid === iid))
     .filter((item): item is AgentState => item !== undefined)
-  const openerIid =
-    agents.length > 0
-      ? agents[active.rounds.length % agents.length].iid
-      : null
+  const leadAgent = agents.find(
+    (agent) => agent.perspective_id === active.lead_perspective_id,
+  )
+  const openerIid = leadAgent?.iid ?? null
 
   const perspectiveOf = (agent: AgentState): Perspective | undefined =>
     session.perspectives.find((item) => item.id === agent.perspective_id)
@@ -810,12 +836,12 @@ function PanelDrawer({
       if (current.includes(facet)) {
         return current.filter((item) => item !== facet)
       }
-      return current.length < 2 ? [...current, facet] : current
+      return current.length < 1 ? [...current, facet] : current
     })
   }
 
   const startRound = () => {
-    if (openerIid == null || selectedFacets.length === 0) return
+    if (openerIid == null || selectedFacets.length !== 1) return
     void act(async () => {
       const state = await runRound(active.id, openerIid, selectedFacets)
       const updated = state.deliberations.find((item) => item.id === active.id)
@@ -823,6 +849,20 @@ function PanelDrawer({
         updated?.hypothesis ? { ...updated.hypothesis } : null,
       )
       setSelectedFacets([])
+      return state
+    })
+  }
+
+  const initializePanel = () => {
+    const leadPerspectiveId =
+      leadSelection || active.lead_perspective_id || agents[0]?.perspective_id
+    if (!leadPerspectiveId) return
+    void act(async () => {
+      const state = await initializeDeliberation(active.id, leadPerspectiveId)
+      const updated = state.deliberations.find((item) => item.id === active.id)
+      setHypothesisDraft(
+        updated?.hypothesis ? { ...updated.hypothesis } : null,
+      )
       return state
     })
   }
@@ -844,11 +884,29 @@ function PanelDrawer({
       )) !== undefined
     )
   }
+  const rejectDraft = async (): Promise<boolean> => {
+    if (!active.applied_hypothesis) return false
+    const rejected =
+      (await act(() =>
+        confirmHypothesis(
+          active.id,
+          active.applied_hypothesis!,
+          "reject_pending",
+        ),
+      )) !== undefined
+    if (rejected) setHypothesisDraft({ ...active.applied_hypothesis })
+    return rejected
+  }
   const saveDraft = async (): Promise<boolean> =>
     (await act(() => saveHypothesis(active.id))) !== undefined
 
-  const endDeliberation = async (): Promise<boolean> => {
-    const ended = (await act(() => completeDeliberation(active.id))) !== undefined
+  const endDeliberation = async (
+    selectedQuestionIds: string[],
+  ): Promise<boolean> => {
+    const ended =
+      (await act(() =>
+        completeDeliberation(active.id, selectedQuestionIds),
+      )) !== undefined
     if (ended) onEnded()
     return ended
   }
@@ -859,25 +917,38 @@ function PanelDrawer({
     const text = message.trim()
     if (!text) return
     const targetAgent = agents.find((agent) => agent.iid === target)
+    const status = runningRound ? "queued" : "thinking"
     setPendingChat({
       text,
+      status,
       targetIid: target,
       targetLabel: targetAgent
         ? (perspectiveOf(targetAgent)?.name ?? targetAgent.label)
         : "Panel",
     })
     setMessage("")
+    if (status === "queued") return
     void act(() => sendChat(active.id, text, target)).finally(() =>
       setPendingChat(null),
     )
   }
 
-  const runningRound = busy === "Running focused round"
   const discussedFacetCount = FACETS.filter((facet) =>
     active.rounds.some(
       (round) => round.completed && round.facets.includes(facet),
     ),
   ).length
+  const selectedLeadId =
+    leadSelection ||
+    active.lead_perspective_id ||
+    agents[0]?.perspective_id ||
+    ""
+  const roundProgress = operationProgress.filter(
+    (item) => item.kind === "round_stage" || item.kind === "round_turn",
+  )
+  const latestRoundStage = [...roundProgress]
+    .reverse()
+    .find((item) => item.kind === "round_stage")
 
   return (
     <div className="fixed inset-0 z-40 flex justify-end">
@@ -989,10 +1060,15 @@ function PanelDrawer({
                           role: "other",
                           kind: "answer",
                           facet: null,
-                          text: "Thinking…",
+                          text:
+                            pendingChat.status === "queued" && runningRound
+                              ? "Queued for after this round"
+                              : "Thinking…",
                           citations: [],
                         }}
-                        thinking
+                        thinking={
+                          pendingChat.status === "thinking" || !runningRound
+                        }
                       />
                     </div>
                   </>
@@ -1002,6 +1078,46 @@ function PanelDrawer({
           )}
 
 
+
+          {runningRound && latestRoundStage && (
+            <section
+              role="status"
+              aria-live="polite"
+              data-testid="round-progress"
+              className="ep-card-enter mt-4 rounded-xl border border-[var(--line)] bg-[var(--bg)] p-4"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[12px] font-semibold text-[var(--ink)]">
+                  {latestRoundStage.message}
+                </span>
+                <span className="text-[10.5px] tabular-nums text-[var(--mute)]">
+                  {latestRoundStage.step}/{latestRoundStage.total_steps}
+                </span>
+              </div>
+              <progress
+                className="mt-2 h-1.5 w-full accent-[var(--green)]"
+                max={latestRoundStage.total_steps}
+                value={latestRoundStage.step}
+              />
+              <div className="mt-3 flex flex-col gap-2">
+                {roundProgress
+                  .filter((item) => item.kind === "round_turn" && item.text)
+                  .map((item) => (
+                    <div
+                      key={item.sequence}
+                      className="rounded-lg border border-[var(--line)] bg-[var(--panel)] px-3 py-2"
+                    >
+                      <div className="text-[10.5px] font-semibold text-[var(--ink-2)]">
+                        {item.agent_label || "Panel"}
+                      </div>
+                      <p className="mt-0.5 text-[11px] leading-relaxed text-[var(--ink-2)]">
+                        {item.text}
+                      </p>
+                    </div>
+                  ))}
+              </div>
+            </section>
+          )}
 
           {active.no_agreement && active.questions_generated && (
             <div className="ep-card-enter mt-5 rounded-xl border border-[var(--line)] bg-[var(--panel)] px-4 py-3.5">
@@ -1017,6 +1133,73 @@ function PanelDrawer({
 
 
           {active.completed_at === null &&
+            active.baseline_hypothesis === null && (
+              <section className="ep-card-enter rounded-xl border border-[var(--line)] bg-[var(--bg)] p-4">
+                <SectionLabel>Set up the panel</SectionLabel>
+                <h2 className="text-[15px] font-semibold tracking-[-0.01em]">
+                  Choose the lead Perspective
+                </h2>
+                <p className="mt-1 text-[12px] leading-relaxed text-[var(--mute)]">
+                  The lead drafts the baseline hypothesis and opens every round.
+                  The remaining Perspectives form the panel.
+                </p>
+                {active.rounds.length > 0 && (
+                  <p className="mt-2 text-[11px] leading-relaxed text-[var(--amber)]">
+                    Confirming a lead archives these earlier rounds, questions,
+                    and chat in Panel history, then starts a new cycle.
+                  </p>
+                )}
+                <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  {agents.map((agent) => {
+                    const perspective = perspectiveOf(agent)
+                    const selected = agent.perspective_id === selectedLeadId
+                    return (
+                      <button
+                        key={agent.iid}
+                        type="button"
+                        aria-pressed={selected}
+                        disabled={!!busy}
+                        onClick={() => setLeadSelection(agent.perspective_id)}
+                        className="rounded-lg border px-3 py-2.5 text-left"
+                        style={{
+                          borderColor: selected
+                            ? (perspective?.color ?? "var(--ink)")
+                            : "var(--line-strong)",
+                          background: selected
+                            ? "var(--panel)"
+                            : "transparent",
+                        }}
+                      >
+                        <span className="text-[12px] font-semibold text-[var(--ink)]">
+                          {perspective?.name ?? agent.label}
+                        </span>
+                        <span className="mt-0.5 block text-[10.5px] text-[var(--mute)]">
+                          {selected ? "Lead" : "Panel member"}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+                <Button
+                  variant="primary"
+                  size="md"
+                  className="mt-3"
+                  disabled={!!busy || !selectedLeadId}
+                  onClick={initializePanel}
+                >
+                  {busy === "Generating lead hypothesis" ? (
+                    <>
+                      <Spinner /> Generating baseline…
+                    </>
+                  ) : (
+                    "Confirm lead and generate baseline"
+                  )}
+                </Button>
+              </section>
+            )}
+
+          {active.completed_at === null &&
+            active.baseline_hypothesis !== null &&
             (active.hypothesis === null || active.hypothesis_confirmed) && (
               <section
                 className={`ep-card-enter rounded-xl border border-[var(--line)] bg-[var(--bg)] p-4 ${
@@ -1034,9 +1217,8 @@ function PanelDrawer({
                   shown on the right.
                 </p>
                 <p className="mt-1.5 max-w-[68ch] text-[12px] leading-relaxed text-[var(--mute)]">
-                  Each round examines one or two areas. Afterward, you can ask
-                  the whole panel or one Perspective a follow-up question before
-                  choosing the next focus.
+                  Each round examines one area. You can revisit an area and ask
+                  the panel or one Perspective a follow-up question between rounds.
                 </p>
               </div>
             )}
@@ -1047,13 +1229,13 @@ function PanelDrawer({
                   Choose what this panel should focus on
                 </h2>
                 <p className="mt-1 max-w-[62ch] text-[12px] leading-relaxed text-[var(--mute)]">
-                  Select one or two areas. Areas remain reusable in later rounds.
-                  Aim to discuss all four over the deliberation.
+                  Select one area. Areas remain reusable. Discuss all four before
+                  ending the deliberation.
                 </p>
               </div>
               <div className="shrink-0 text-right">
                 <span className="rounded-full border border-[var(--line)] bg-[var(--panel)] px-2 py-1 text-[11px] text-[var(--mute)]">
-                  {selectedFacets.length}/2 selected
+                  {selectedFacets.length}/1 selected
                 </span>
                 <div className="mt-1.5 text-[10.5px] text-[var(--mute)]">
                   {discussedFacetCount}/4 discussed
@@ -1064,7 +1246,7 @@ function PanelDrawer({
             <div className="mt-3 grid grid-cols-2 gap-2">
               {FACETS.map((facet) => {
                 const selected = selectedFacets.includes(facet)
-                const unavailable = !selected && selectedFacets.length >= 2
+                const unavailable = !selected && selectedFacets.length >= 1
                 const meta = FACET_META[facet]
                 const discussedRounds = active.rounds
                   .filter(
@@ -1123,7 +1305,7 @@ function PanelDrawer({
                   !!busy ||
                   agents.length < 2 ||
                   openerIid == null ||
-                  selectedFacets.length === 0
+                  selectedFacets.length !== 1
                 }
                 onClick={startRound}
               >
@@ -1147,7 +1329,7 @@ function PanelDrawer({
           </div>
           </div>
         {active.completed_at === null &&
-          active.rounds.some((round) => round.completed) && (
+          active.baseline_hypothesis !== null && (
           <footer
             data-testid="panel-chat-bar"
             className="border-t border-[var(--line)] bg-[var(--panel)] px-5 py-3"
@@ -1164,6 +1346,9 @@ function PanelDrawer({
                 }
                 className="field h-9 max-w-[180px] px-2.5 text-[11px] text-[var(--ink-2)]"
                 aria-label="Message recipient"
+                disabled={
+                  pendingChat !== null || (!!busy && !runningRound)
+                }
               >
                 <option value="all">Panel</option>
                 {agents.map((agent) => (
@@ -1182,14 +1367,23 @@ function PanelDrawer({
                   }
                 }}
                 className="field h-9 min-w-0 flex-1 px-3 text-[13px]"
-                placeholder="Ask the panel about this round…"
-                disabled={!!busy || agents.length === 0}
+                placeholder="Ask a question at any point…"
+                disabled={
+                  pendingChat !== null ||
+                  (!!busy && !runningRound) ||
+                  agents.length === 0
+                }
               />
               <Button
                 variant="primary"
                 size="sm"
                 onClick={send}
-                disabled={!!busy || !message.trim() || agents.length === 0}
+                disabled={
+                  pendingChat !== null ||
+                  (!!busy && !runningRound) ||
+                  !message.trim() ||
+                  agents.length === 0
+                }
               >
                 {busy === "Deliberating" && !pendingChat ? <Spinner /> : "Send"}
               </Button>
@@ -1213,6 +1407,7 @@ function PanelDrawer({
               ending={busy === "Ending deliberation"}
               onChange={setHypothesisDraft}
               onApply={confirmDraft}
+              onReject={rejectDraft}
               onSave={saveDraft}
               onEnd={endDeliberation}
               onRate={onRate}
@@ -1526,6 +1721,7 @@ function WorkingHypothesisPanel({
   ending,
   onChange,
   onApply,
+  onReject,
   onSave,
   onEnd,
   onRate,
@@ -1544,8 +1740,9 @@ function WorkingHypothesisPanel({
   ending: boolean
   onChange: (value: HypothesisDev) => void
   onApply: () => Promise<boolean>
+  onReject: () => Promise<boolean>
   onSave: () => Promise<boolean>
-  onEnd: () => Promise<boolean>
+  onEnd: (selectedQuestionIds: string[]) => Promise<boolean>
   onRate: () => void
   onInvestigateQuestion: (questionId: string) => void
   onOpenChild: (investigationId: string) => void
@@ -1555,6 +1752,9 @@ function WorkingHypothesisPanel({
   ) => void
 }) {
   const visibleQuestions = deliberation.recommended_questions
+  const openQuestions = visibleQuestions.filter(
+    (question) => question.status === "open",
+  )
   const current: HypothesisDev = value ?? {
     problem: "",
     previous_work: "",
@@ -1563,6 +1763,22 @@ function WorkingHypothesisPanel({
   }
   const [editing, setEditing] = useState(false)
   const [applyConfirmationOpen, setApplyConfirmationOpen] = useState(false)
+  const [finalReviewOpen, setFinalReviewOpen] = useState(false)
+  const [selectedQuestionIds, setSelectedQuestionIds] = useState<string[]>(
+    () =>
+      deliberation.recommended_questions
+        .filter(
+          (question) =>
+            question.status === "open" && question.selected_for_followup,
+        )
+        .map((question) => question.id),
+  )
+  const completedRounds = deliberation.rounds.filter((round) => round.completed)
+  const coveredFacets = new Set(
+    completedRounds.flatMap((round) => round.facets),
+  )
+  const allFacetsCovered = FACETS.every((facet) => coveredFacets.has(facet))
+  const enoughRoundsCompleted = completedRounds.length >= 4
   const pending = value !== null && !deliberation.hypothesis_confirmed
   const unsaved =
     deliberation.hypothesis_confirmed &&
@@ -1715,6 +1931,17 @@ function WorkingHypothesisPanel({
                 disabled={busy}
               >
                 {pending ? "Edit update" : "Edit hypothesis"}
+              </Button>
+            )}
+            {!completed && pending && !editing && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="flex-1"
+                onClick={() => void onReject()}
+                disabled={busy}
+              >
+                Reject update
               </Button>
             )}
             {!completed && editing && (
@@ -1910,9 +2137,11 @@ function WorkingHypothesisPanel({
         ) : (
           <>
             <p className="text-[10.5px] leading-relaxed text-[var(--mute)]">
-              {deliberation.rounds.length === 0
-                ? "Complete a round before ending this deliberation."
-                : "End after the current hypothesis is applied and saved. This closes the panel and reveals its final outputs on the canvas."}
+              {!allFacetsCovered
+                ? `Discuss all four areas before ending (${coveredFacets.size}/4 complete).`
+                : !enoughRoundsCompleted
+                  ? `Complete at least four rounds before ending (${completedRounds.length}/4 complete).`
+                  : "Review the final hypothesis and choose which open questions to explore."}
             </p>
             <Button
               variant="primary"
@@ -1920,25 +2149,104 @@ function WorkingHypothesisPanel({
               className="mt-2 w-full"
               disabled={
                 busy ||
-                deliberation.rounds.length === 0 ||
+                !allFacetsCovered ||
+                !enoughRoundsCompleted ||
                 pending ||
                 unsaved ||
                 editing ||
                 savedVersionId === null
               }
-              onClick={() => void onEnd()}
+              onClick={() => setFinalReviewOpen(true)}
+            >
+              Review and end
+            </Button>
+          </>
+        )}
+      </div>
+      {finalReviewOpen && (
+        <ModalShell
+          title="Review and end deliberation"
+          onClose={() => {
+            if (!ending) setFinalReviewOpen(false)
+          }}
+        >
+          <p className="text-[12px] leading-relaxed text-[var(--ink-2)]">
+            Confirm the saved hypothesis and choose the open questions that
+            should remain prioritized.
+          </p>
+          <div className="mt-3 rounded-lg border border-[var(--line)] bg-[var(--bg)] p-3">
+            <SectionLabel>Final hypothesis</SectionLabel>
+            <p className="mt-1 text-[12px] leading-relaxed text-[var(--ink)]">
+              {deliberation.applied_hypothesis?.hypothesis}
+            </p>
+          </div>
+          <div className="mt-3 flex max-h-64 flex-col gap-2 overflow-y-auto">
+            {openQuestions.length > 0 ? (
+              openQuestions.map((question) => {
+                const selected = selectedQuestionIds.includes(question.id)
+                return (
+                  <label
+                    key={question.id}
+                    className="flex cursor-pointer items-start gap-2 rounded-lg border border-[var(--line)] p-2.5"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selected}
+                      disabled={ending}
+                      onChange={() =>
+                        setSelectedQuestionIds((current) =>
+                          selected
+                            ? current.filter((id) => id !== question.id)
+                            : [...current, question.id],
+                        )
+                      }
+                    />
+                    <span className="text-[11px] leading-relaxed text-[var(--ink-2)]">
+                      {question.question}
+                    </span>
+                  </label>
+                )
+              })
+            ) : (
+              <EmptyLine>No open questions to carry forward.</EmptyLine>
+            )}
+          </div>
+          <div className="mt-4 flex justify-end gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={ending}
+              onClick={() => setFinalReviewOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={ending}
+              onClick={() => {
+                const openQuestionIds = new Set(
+                  openQuestions.map((question) => question.id),
+                )
+                void onEnd(
+                  selectedQuestionIds.filter((id) => openQuestionIds.has(id)),
+                ).then((ended) => {
+                  if (ended) setFinalReviewOpen(false)
+                })
+              }}
             >
               {ending ? (
                 <>
                   <Spinner /> Ending…
                 </>
               ) : (
-                "End deliberation"
+                "Confirm and end"
               )}
             </Button>
-          </>
-        )}
-      </div>
+          </div>
+        </ModalShell>
+      )}
+
       {applyConfirmationOpen && (
         <ModalShell
           title="Apply hypothesis changes?"

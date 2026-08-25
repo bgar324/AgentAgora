@@ -52,6 +52,7 @@ from agora.focused.models import (
     RecommendedQuestion,
     RetrievalTier,
     RoundMetrics,
+    RoundResolution,
     SessionState,
     Turn,
     TurnKind,
@@ -85,7 +86,10 @@ SearchProgressKind = Literal[
     "retrieval_completed",
     "clustering_started",
     "clustering_completed",
+    "round_stage",
+    "round_turn",
 ]
+
 
 @dataclass(frozen=True)
 class QuestionRetrieval:
@@ -887,7 +891,6 @@ class FocusedPanelService:
                 status=409,
             )
 
-
         paper_ids = {paper.id for paper in parent.state.papers}
         paper_by_content = {
             (paper.title.casefold(), paper.abstract or ""): paper.id
@@ -1511,7 +1514,6 @@ class FocusedPanelService:
 
         return await self._live_retrieve(clean, session_id=session.state.id)
 
-
     @staticmethod
     def _bounded_corpus(
         answering: dict[str, ExpPaper],
@@ -1538,8 +1540,6 @@ class FocusedPanelService:
                     add(group[rank], "candidate")
         return list(selected.values())
 
-
-
     @staticmethod
     def _target_cluster_count(paper_count: int) -> int:
         if paper_count < 2:
@@ -1550,11 +1550,9 @@ class FocusedPanelService:
             3,
             min(
                 MAX_CLUSTERS,
-                (paper_count + TARGET_CLUSTER_PAPERS - 1)
-                // TARGET_CLUSTER_PAPERS,
+                (paper_count + TARGET_CLUSTER_PAPERS - 1) // TARGET_CLUSTER_PAPERS,
             ),
         )
-
 
     @staticmethod
     def _kmeans_clusters(papers: list[ExpPaper], k: int) -> list[list[ExpPaper]]:
@@ -1611,7 +1609,6 @@ class FocusedPanelService:
         for index, paper in enumerate(papers):
             groups[index % count].append(paper)
         return [group for group in groups if group]
-
 
     @staticmethod
     def _centroid_order(papers: list[ExpPaper]) -> list[ExpPaper]:
@@ -1749,12 +1746,8 @@ class FocusedPanelService:
             provider=self._provider_for(session),
         )
         reach.vocabulary = assessment.vocabulary
-        selected: dict[str, Any] = {
-            item.paper_id: item for item in assessment.selected
-        }
-        selected_papers = [
-            hits[paper_id] for paper_id in selected if paper_id in hits
-        ]
+        selected: dict[str, Any] = {item.paper_id: item for item in assessment.selected}
+        selected_papers = [hits[paper_id] for paper_id in selected if paper_id in hits]
         expansion = await agents.expand_question_search(
             reach.question,
             reach.candidates,
@@ -1790,9 +1783,7 @@ class FocusedPanelService:
         reach.selected = list(selected.values())
         reach.reached = bool(reach.selected)
         answering = {
-            paper_id: hits[paper_id]
-            for paper_id in selected
-            if paper_id in hits
+            paper_id: hits[paper_id] for paper_id in selected if paper_id in hits
         }
         return QuestionRetrieval(
             answering=answering,
@@ -1898,8 +1889,7 @@ class FocusedPanelService:
             question_candidate_groups,
         )
         rate_limited = any(
-            item.get("kind") == "query_failed"
-            and item.get("reason") == "rate_limited"
+            item.get("kind") == "query_failed" and item.get("reason") == "rate_limited"
             for item in self._search_progress.get(session_id, [])
         )
         if (
@@ -1912,18 +1902,12 @@ class FocusedPanelService:
                 state.problem,
                 state.research_questions,
                 prior_queries,
-                [
-                    pair
-                    for reach in reaches
-                    for pair in reach.vocabulary
-                ],
+                [pair for reach in reaches for pair in reach.vocabulary],
                 current_papers=len(papers),
                 target_papers=MIN_CLUSTERING_CORPUS,
                 provider=self._provider_for(session),
             )
-            expansion_queries = [
-                suggestion.query for suggestion in corpus_expansion
-            ]
+            expansion_queries = [suggestion.query for suggestion in corpus_expansion]
             expansion_papers, expansion_succeeded = await self._retrieve_queries(
                 session,
                 expansion_queries,
@@ -1943,8 +1927,7 @@ class FocusedPanelService:
             if item.get("kind") == "query_failed"
         ]
         rate_limited = any(
-            item.get("reason") == "rate_limited"
-            for item in failed_searches
+            item.get("reason") == "rate_limited" for item in failed_searches
         )
         if not papers:
             if rate_limited:
@@ -2004,7 +1987,6 @@ class FocusedPanelService:
         if self._demo(session):
             await asyncio.sleep(DEMO_RETRIEVAL_DELAY_SECONDS)
 
-
         partition_representatives: list[list[ExpPaper]] | None = None
         unassigned_papers: list[ExpPaper] = []
         if self._demo(session):
@@ -2026,10 +2008,7 @@ class FocusedPanelService:
                 papers,
                 requested_clusters=requested_clusters,
             )
-            if (
-                partition is not None
-                and len(partition.groups) >= required_clusters
-            ):
+            if partition is not None and len(partition.groups) >= required_clusters:
                 groups = partition.groups
                 partition_representatives = partition.representatives
                 unassigned_papers = partition.unassigned
@@ -2064,9 +2043,7 @@ class FocusedPanelService:
         state.papers = papers
         state.unassigned_paper_ids = [paper.id for paper in unassigned_papers]
         state.searched = True
-        state.searched_queries = list(
-            dict.fromkeys([*queries, *automatic_queries])
-        )
+        state.searched_queries = list(dict.fromkeys([*queries, *automatic_queries]))
 
         clusters: list[ClusterCard] = []
         ordered_groups = [self._centroid_order(group) for group in groups]
@@ -2134,7 +2111,10 @@ class FocusedPanelService:
             paper_id for cluster in clusters for paper_id in cluster.paper_ids
         }
         unassigned_ids = set(state.unassigned_paper_ids)
-        if clustered_ids & unassigned_ids or clustered_ids | unassigned_ids != known_ids:
+        if (
+            clustered_ids & unassigned_ids
+            or clustered_ids | unassigned_ids != known_ids
+        ):
             raise RuntimeError(
                 "clustering must assign or explicitly unassign every paper"
             )
@@ -2210,9 +2190,7 @@ class FocusedPanelService:
             if not completion.rounds:
                 completion.rounds = [
                     item.model_copy(deep=True)
-                    for item in rounds[
-                        previous_round_count:cumulative_round_count
-                    ]
+                    for item in rounds[previous_round_count:cumulative_round_count]
                 ]
                 completion.round_count = len(completion.rounds)
             if not completion.question_ids:
@@ -2234,7 +2212,7 @@ class FocusedPanelService:
                 completion.chat = [
                     item.model_copy(deep=True)
                     for item in chat[
-                        previous_chat_count:previous_chat_count
+                        previous_chat_count : previous_chat_count
                         + completion.chat_count
                     ]
                 ]
@@ -2292,6 +2270,13 @@ class FocusedPanelService:
                 chat_count=len(current_chat),
                 agent_iids=list(deliberation.agent_iids),
                 question_ids=[question.id for question in current_questions],
+                lead_perspective_id=deliberation.lead_perspective_id,
+                baseline_hypothesis=(
+                    deliberation.baseline_hypothesis.model_copy(deep=True)
+                    if deliberation.baseline_hypothesis is not None
+                    else None
+                ),
+                selected_question_ids=list(deliberation.selected_question_ids),
                 rating=(
                     deliberation.rating.model_copy(deep=True)
                     if deliberation.rating is not None
@@ -2334,8 +2319,14 @@ class FocusedPanelService:
         roster = list(dict.fromkeys(perspective_ids))
         if len(roster) < 2:
             raise SessionError("A panel needs at least two Perspectives.")
-        perspectives = {perspective.id: perspective for perspective in state.perspectives}
-        unknown = [perspective_id for perspective_id in roster if perspective_id not in perspectives]
+        perspectives = {
+            perspective.id: perspective for perspective in state.perspectives
+        }
+        unknown = [
+            perspective_id
+            for perspective_id in roster
+            if perspective_id not in perspectives
+        ]
         if unknown:
             raise SessionError(f"unknown Perspectives: {unknown}", status=404)
         deliberation = state.deliberations[0]
@@ -2346,6 +2337,9 @@ class FocusedPanelService:
         deliberation.rounds = []
         deliberation.recommended_questions = []
         deliberation.chat = []
+        deliberation.lead_perspective_id = None
+        deliberation.baseline_hypothesis = None
+        deliberation.selected_question_ids = []
         deliberation.agent_iids = [
             self._new_panel_agent(session, perspectives[perspective_id]).iid
             for perspective_id in roster
@@ -2644,14 +2638,82 @@ class FocusedPanelService:
                 agent_iids=[agent.iid for agent in state.agents],
                 hypothesis=inherited,
                 applied_hypothesis=(
-                    inherited.model_copy(deep=True)
-                    if inherited is not None
-                    else None
+                    inherited.model_copy(deep=True) if inherited is not None else None
                 ),
                 hypothesis_confirmed=inherited is not None,
             )
         )
         return self._save_state(state)
+
+    @_serialized_session_mutation
+    async def initialize_deliberation(
+        self,
+        session_id: str,
+        deliberation_id: str,
+        lead_perspective_id: str,
+    ) -> SessionState:
+        session = self._require(session_id)
+        state = session.state
+        deliberation = self._deliberation(state, deliberation_id)
+        self._require_open_deliberation(deliberation)
+        if deliberation.rounds:
+            legacy_rounds = (
+                deliberation.lead_perspective_id is None
+                and deliberation.baseline_hypothesis is None
+            )
+            if not legacy_rounds:
+                raise SessionError("The lead cannot change after round 1.")
+            agent_by_iid = {agent.iid: agent for agent in state.agents}
+            roster = [
+                agent_by_iid[iid].perspective_id
+                for iid in deliberation.agent_iids
+                if iid in agent_by_iid
+            ]
+            deliberation = self._restart_deliberation(session, roster)
+        lead = next(
+            (
+                agent
+                for agent in state.agents
+                if agent.iid in deliberation.agent_iids
+                and agent.perspective_id == lead_perspective_id
+            ),
+            None,
+        )
+        if lead is None:
+            raise SessionError("Choose a Perspective wired into this panel.")
+        if (
+            deliberation.lead_perspective_id == lead_perspective_id
+            and deliberation.baseline_hypothesis is not None
+        ):
+            return state
+        baseline = await agents.develop_hypothesis(
+            self._agent_profile(state, lead),
+            provider=self._provider_for(session),
+        )
+        lead.hypothesis = baseline.model_copy(deep=True)
+        deliberation.lead_perspective_id = lead_perspective_id
+        deliberation.baseline_hypothesis = baseline.model_copy(deep=True)
+        deliberation.hypothesis = baseline.model_copy(deep=True)
+        deliberation.applied_hypothesis = baseline.model_copy(deep=True)
+        deliberation.hypothesis_confirmed = True
+        deliberation.working_hypothesis_source_kind = None
+        deliberation.working_hypothesis_source_round = None
+        return self._save_state(state)
+
+    @staticmethod
+    def _deliberation_lead(
+        state: SessionState,
+        deliberation: DeliberationState,
+    ) -> AgentState | None:
+        return next(
+            (
+                agent
+                for agent in state.agents
+                if agent.iid in deliberation.agent_iids
+                and agent.perspective_id == deliberation.lead_perspective_id
+            ),
+            None,
+        )
 
     def _agent_view(
         self, state: SessionState, iid: int
@@ -2821,15 +2883,23 @@ class FocusedPanelService:
         *,
         lead_iid: int,
         facets: list[Facet],
+        progress_generation: int | None = None,
     ) -> SessionState:
-        """Run one user-directed round over one or two selected facets."""
+        """Run one user-directed round over exactly one hypothesis facet."""
         session = self._require(session_id)
         state = session.state
+        if progress_generation is None:
+            self.start_search_progress(state.id)
+        elif self._search_progress_generation.get(state.id) != progress_generation:
+            raise SessionError("Round progress generation is stale.", status=409)
+        self._search_progress_active_generation[state.id] = (
+            self._search_progress_generation[state.id]
+        )
         deliberation = self._deliberation(state, deliberation_id)
         self._require_open_deliberation(deliberation)
         selected = list(dict.fromkeys(facets))
-        if len(selected) != len(facets) or not 1 <= len(selected) <= 2:
-            raise SessionError("Select one or two different areas for this round.")
+        if len(selected) != 1 or len(facets) != 1:
+            raise SessionError("Select exactly one area for this round.")
         if any(facet not in FACETS for facet in selected):
             raise SessionError(
                 "Choose from Scope, Explanation, Approach, and Significance."
@@ -2838,6 +2908,14 @@ class FocusedPanelService:
             raise SessionError("Wire in at least two agents first.")
         if lead_iid not in deliberation.agent_iids:
             raise SessionError("The lead must be wired into this deliberation.")
+        if (
+            deliberation.lead_perspective_id is None
+            or deliberation.baseline_hypothesis is None
+        ):
+            raise SessionError("Choose a lead and generate its baseline first.")
+        configured_lead = self._deliberation_lead(state, deliberation)
+        if configured_lead is None or configured_lead.iid != lead_iid:
+            raise SessionError("Use the configured lead for every round.")
         if (
             deliberation.hypothesis is not None
             and not deliberation.hypothesis_confirmed
@@ -2857,6 +2935,11 @@ class FocusedPanelService:
             participant_iids=participant_iids,
             facets=selected,
         )
+        round_state.hypothesis_before = (
+            deliberation.applied_hypothesis.model_copy(deep=True)
+            if deliberation.applied_hypothesis is not None
+            else None
+        )
         deliberation.rounds.append(round_state)
         before = self._facet_snapshot(state, participant_iids)
 
@@ -2867,8 +2950,36 @@ class FocusedPanelService:
             if iid != lead_iid
         ]
 
+        def report(
+            step: int,
+            stage: str,
+            message: str,
+            *,
+            kind: SearchProgressKind = "round_stage",
+            turn: Turn | None = None,
+        ) -> None:
+            self._publish_search_progress(
+                state.id,
+                kind,
+                message,
+                stage=stage,
+                step=step,
+                total_steps=7,
+                agent_label=turn.agent_label if turn is not None else None,
+                text=turn.text if turn is not None else None,
+            )
+
+        report(1, "lead", "Lead is drafting the opening statement.")
+
         async def speak(turn: Turn) -> None:
             round_state.turns.append(turn)
+            report(
+                1,
+                "exchange",
+                f"{turn.agent_label or 'Panel'} responded.",
+                kind="round_turn",
+                turn=turn,
+            )
 
         for facet in selected:
             statement = await agents.open_statement(
@@ -2892,6 +3003,7 @@ class FocusedPanelService:
                 ),
             )
             await speak(lead_turn)
+            report(2, "panel", "Panel Perspectives are responding.")
 
             answers: list[Turn] = []
             answer_tasks = []
@@ -2968,6 +3080,7 @@ class FocusedPanelService:
                     )
 
             facet_turns = [turn for turn in round_state.turns if turn.facet == facet]
+            report(3, "judging", "Moderator is judging agreement.")
             verdict = await agents.judge_facet(
                 lead_profile,
                 other_profiles,
@@ -3011,6 +3124,7 @@ class FocusedPanelService:
             )
             round_state.verdicts.append(verdict)
 
+        report(4, "summary", "Moderator is synthesizing the round.")
         resolution = await agents.summarize_round(
             selected,
             round_state.verdicts,
@@ -3035,35 +3149,24 @@ class FocusedPanelService:
                 ]
         round_state.resolution = resolution
 
-        reflection_tasks = []
-        try:
-            async with asyncio.TaskGroup() as task_group:
-                for iid in participant_iids:
-                    agent, profile = self._agent_view(state, iid)
-                    reflection_tasks.append(
-                        (
-                            agent,
-                            task_group.create_task(
-                                agents.reflect_on_round(
-                                    iid,
-                                    profile,
-                                    selected,
-                                    resolution,
-                                    provider=self._provider_for(session),
-                                )
-                            ),
-                        )
-                    )
-        except* Exception as errors:  # noqa: BLE001
-            raise errors.exceptions[0]
-        reflected = [
-            (agent, *task.result()) for agent, task in reflection_tasks
-        ]
-        for agent, reflection, updated in reflected:
-            agent.facets = updated
-            if reflection.decision == "revised":
-                agent.facet_version += 1
-            round_state.reflections.append(reflection)
+        report(5, "lead_revision", "Updating the lead Perspective.")
+        consensus_resolution = RoundResolution(
+            summary=resolution.summary,
+            consensus_points=[
+                point.model_copy(deep=True) for point in resolution.consensus_points
+            ],
+        )
+        reflection, updated = await agents.reflect_on_round(
+            lead_iid,
+            lead_profile,
+            selected,
+            consensus_resolution,
+            provider=self._provider_for(session),
+        )
+        lead_agent.facets = updated
+        if reflection.decision == "revised":
+            lead_agent.facet_version += 1
+        round_state.reflections.append(reflection)
 
         after = self._facet_snapshot(state, participant_iids)
         _, revised = self._agent_view(state, lead_iid)
@@ -3078,6 +3181,7 @@ class FocusedPanelService:
         )
         revised.summary = resolution.summary
 
+        report(6, "hypothesis", "Generating the hypothesis proposal.")
         hypothesis_task = None
         try:
             async with asyncio.TaskGroup() as task_group:
@@ -3100,7 +3204,7 @@ class FocusedPanelService:
                 if resolution.consensus_points:
                     hypothesis_task = task_group.create_task(
                         agents.develop_hypothesis_from_consensus(
-                            resolution,
+                            consensus_resolution,
                             current=deliberation.applied_hypothesis,
                             provider=self._provider_for(session),
                         )
@@ -3115,12 +3219,29 @@ class FocusedPanelService:
         if hypothesis_task is not None:
             deliberation.no_agreement = False
             proposed_hypothesis = hypothesis_task.result()
-            current_hypothesis = deliberation.applied_hypothesis
-            if current_hypothesis is not None and self._same_hypothesis(
+            if deliberation.applied_hypothesis is not None:
+                proposed_hypothesis = proposed_hypothesis.model_copy(
+                    update={
+                        part: getattr(deliberation.applied_hypothesis, part)
+                        for part in (
+                            "problem",
+                            "previous_work",
+                            "reasoning",
+                            "hypothesis",
+                        )
+                        if not getattr(proposed_hypothesis, part).strip()
+                        or getattr(proposed_hypothesis, part).strip()
+                        == "Not established yet."
+                    }
+                )
+            round_state.hypothesis_proposal = proposed_hypothesis.model_copy(deep=True)
+            if deliberation.applied_hypothesis is not None and self._same_hypothesis(
                 proposed_hypothesis,
-                current_hypothesis,
+                deliberation.applied_hypothesis,
             ):
-                deliberation.hypothesis = current_hypothesis.model_copy(deep=True)
+                deliberation.hypothesis = deliberation.applied_hypothesis.model_copy(
+                    deep=True
+                )
                 deliberation.hypothesis_confirmed = True
             else:
                 deliberation.hypothesis = proposed_hypothesis
@@ -3157,8 +3278,7 @@ class FocusedPanelService:
                 question.model_copy(
                     update={
                         "id": (
-                            f"{deliberation.id}{cycle_suffix}"
-                            f"-r{round_state.n}-q{index}"
+                            f"{deliberation.id}{cycle_suffix}-r{round_state.n}-q{index}"
                         ),
                         "source_round": round_state.n,
                     }
@@ -3167,6 +3287,7 @@ class FocusedPanelService:
         deliberation.recommended_questions.extend(new_questions)
         deliberation.questions_generated = True
         round_state.completed = True
+        report(7, "saving", "Saving the completed round.")
 
         return self._save_state(state)
 
@@ -3175,6 +3296,7 @@ class FocusedPanelService:
         self,
         session_id: str,
         deliberation_id: str,
+        selected_question_ids: list[str] | None = None,
     ) -> SessionState:
         session = self._require(session_id)
         state = session.state
@@ -3185,6 +3307,50 @@ class FocusedPanelService:
             raise SessionError(
                 "Complete a focused round before ending the deliberation."
             )
+        covered_facets = {
+            facet
+            for round_state in deliberation.rounds
+            if round_state.completed
+            for facet in round_state.facets
+        }
+        missing_facets = [facet for facet in FACETS if facet not in covered_facets]
+        if missing_facets:
+            raise SessionError(
+                "Discuss all four areas before ending the deliberation; "
+                f"missing {missing_facets}."
+            )
+        completed_round_count = sum(
+            round_state.completed for round_state in deliberation.rounds
+        )
+        if completed_round_count < 4:
+            raise SessionError(
+                "Complete at least four focused rounds before ending the "
+                "deliberation."
+            )
+        selected = (
+            deliberation.selected_question_ids
+            if selected_question_ids is None
+            else selected_question_ids
+        )
+        selection = list(dict.fromkeys(selected))
+        known_questions = {
+            question.id: question
+            for question in deliberation.recommended_questions
+            if question.status == "open"
+        }
+        unknown_questions = [
+            question_id
+            for question_id in selection
+            if question_id not in known_questions
+        ]
+        if unknown_questions:
+            raise SessionError(
+                f"unknown open questions: {unknown_questions}",
+                status=404,
+            )
+        deliberation.selected_question_ids = selection
+        for question in deliberation.recommended_questions:
+            question.selected_for_followup = question.id in selection
         if (
             not deliberation.hypothesis_confirmed
             or deliberation.applied_hypothesis is None
@@ -3234,6 +3400,26 @@ class FocusedPanelService:
         self._require_open_deliberation(deliberation)
         if not deliberation.rounds or not deliberation.rounds[-1].completed:
             raise SessionError("Complete a focused round first.")
+        latest_round = deliberation.rounds[-1]
+        if mode == "reject_pending":
+            if deliberation.hypothesis_confirmed:
+                raise SessionError(
+                    "There is no pending hypothesis update to reject.",
+                    status=409,
+                )
+            if deliberation.applied_hypothesis is None:
+                raise SessionError("There is no previous hypothesis to keep.")
+            deliberation.hypothesis = deliberation.applied_hypothesis.model_copy(
+                deep=True
+            )
+            deliberation.hypothesis_confirmed = True
+            lead_agent = self._deliberation_lead(session.state, deliberation)
+            if lead_agent is not None:
+                lead_agent.hypothesis = (
+                    deliberation.applied_hypothesis.model_copy(deep=True)
+                )
+            latest_round.hypothesis_decision = "rejected"
+            return self._save_state(session.state)
         if deliberation.hypothesis is None:
             raise SessionError(
                 "This round did not establish enough common ground for a hypothesis."
@@ -3261,6 +3447,15 @@ class FocusedPanelService:
                     status=409,
                 )
             source_kind: Literal["applied", "edit"] = "applied"
+            latest_round.hypothesis_decision = (
+                "accepted"
+                if latest_round.hypothesis_proposal is not None
+                and self._same_hypothesis(
+                    latest_round.hypothesis_proposal,
+                    applied,
+                )
+                else "edited"
+            )
         else:
             if (
                 not deliberation.hypothesis_confirmed
@@ -3279,6 +3474,9 @@ class FocusedPanelService:
         deliberation.hypothesis = applied.model_copy(deep=True)
         deliberation.applied_hypothesis = applied.model_copy(deep=True)
         deliberation.hypothesis_confirmed = True
+        lead_agent = self._deliberation_lead(session.state, deliberation)
+        if lead_agent is not None:
+            lead_agent.hypothesis = applied.model_copy(deep=True)
         if previous != applied:
             deliberation.working_hypothesis_source_kind = source_kind
             deliberation.working_hypothesis_source_round = deliberation.rounds[-1].n
@@ -3305,8 +3503,7 @@ class FocusedPanelService:
         )
         fresh_cycle = (
             latest_archive is not None
-            and current_version_id
-            == latest_archive.applied_hypothesis_version_id
+            and current_version_id == latest_archive.applied_hypothesis_version_id
         )
         if (
             not fresh_cycle

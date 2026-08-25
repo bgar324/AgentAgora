@@ -1,7 +1,7 @@
 """LLM and deterministic agents for abstract-grounded facet deliberation.
 
-The study protocol has four stable facets—scope, explanation, approach, and
-significance. Users activate one or two facets per round; the moderator records
+The study protocol has four stable facets: scope, explanation, approach, and
+significance. Each round activates exactly one facet. The moderator records
 consensus, genuine disagreement, and unresolved questions without forcing
 opposition.
 """
