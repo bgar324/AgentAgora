@@ -21,9 +21,17 @@ Surfaces:
   five central-plus-DPP representatives for naming and grounded facet
   extraction. Density noise and papers without embeddings remain explicit
   under Unassigned literature, where every abstract stays inspectable.
+  Retrieval is breadth-preserving: answer-bearing papers rank first,
+  problem-angle papers second, and remaining question candidates third. The
+  corpus targets 90 papers, expands with at most four gap queries when
+  underfilled, and remains capped at 200. A corpus with at least 15 embedded
+  papers requests at least three Perspective-eligible clusters; a density
+  result below three falls back to deterministic three-way clustering.
   Submitted and automatically expanded queries remain visible as a read-only
-  record beside the resulting clusters. During retrieval, the UI reports each
-  completed query as `Searched {query}...retrieved {n} papers`.
+  record beside the resulting clusters. While retrieval is active, the empty
+  cluster surface becomes a compact query ledger. It renders each
+  `Searched {query}...retrieved {n} papers` checkpoint as a numbered query row
+  with a separate paper-count badge, then yields the surface to the clusters.
   Wrapped research-question lines are joined through their closing question
   mark. A zero-result search stays retryable and never seals the Investigation.
   Adding a Perspective inserts a pending matrix card immediately. Its own card

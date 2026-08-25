@@ -37,13 +37,6 @@ async function searchDemoLiterature(page: Page) {
   await page.getByRole("button", { name: /early broad coverage sepsis/ }).click()
   await page.getByRole("button", { name: "Search papers (3 queries)" }).click()
   await expect(page.getByText("Resistance ecology", { exact: true })).toBeVisible()
-  const retrievalProgress = page.getByRole("status", {
-    name: "Retrieval progress",
-  })
-  await expect(retrievalProgress).toContainText(
-    "Searched broad-spectrum antibiotic use antimicrobial",
-  )
-  await expect(retrievalProgress).toContainText("retrieved")
   const searchedQueries = page.getByRole("region", {
     name: "Queries searched",
   })
@@ -51,6 +44,9 @@ async function searchDemoLiterature(page: Page) {
   for (const query of DEMO_QUERIES) {
     await expect(searchedQueries).toContainText(query)
   }
+  await expect(page.getByText(/\d+ answer-bearing/)).toBeVisible()
+  await expect(page.getByText(/\d+ problem-angle/)).toBeVisible()
+  await expect(page.getByText(/\d+ question candidates/)).toBeVisible()
 }
 
 async function addPerspective(page: Page, name: string) {
@@ -213,6 +209,38 @@ test("joins wrapped lines into complete research questions", async ({ page }) =>
     "Obligation coverage in adversarial requests",
   ])
 })
+
+test("shows retrieval progress inside the cluster surface", async ({ page }) => {
+  const { rootId } = await startWorkspace(page)
+  await page.getByRole("button", { name: "Load demo queries" }).click()
+  for (const query of DEMO_QUERIES) {
+    await page.getByRole("button", { name: new RegExp(query) }).click()
+  }
+  const responseReady = Promise.withResolvers<void>()
+  const releaseResponse = Promise.withResolvers<void>()
+  await page.route(`**/api/focused/sessions/${rootId}/search`, async (route) => {
+    const response = await route.fetch()
+    responseReady.resolve()
+    await releaseResponse.promise
+    await route.fulfill({ response })
+  })
+
+  await page.getByRole("button", { name: "Search papers (3 queries)" }).click()
+  await responseReady.promise
+  const clusterSurface = page.getByTestId("cluster-results-surface")
+  const progress = clusterSurface.getByTestId("retrieval-progress-panel")
+  await expect(progress).toBeVisible()
+  await expect(progress).toContainText("Literature search")
+  await expect(progress).toContainText(DEMO_QUERIES[0])
+  await expect(progress).toContainText(/\d+ papers/)
+  await expect(progress).toContainText(/\d+ complete/)
+  expect(await progress.getByRole("listitem").count()).toBeGreaterThanOrEqual(3)
+
+  releaseResponse.resolve()
+  await expect(page.getByText("Resistance ecology", { exact: true })).toBeVisible()
+  await expect(progress).toHaveCount(0)
+})
+
 
 test("keeps unassigned density-noise papers inspectable", async ({ page }) => {
   const { rootId } = await startWorkspace(page)

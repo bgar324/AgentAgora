@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, model_validator
 
 Facet = Literal["scope", "explanation", "approach", "significance"]
 ResearchQuestion = Annotated[str, Field(min_length=1, max_length=4000)]
+RetrievalTier = Literal["answer", "problem", "candidate"]
 SearchQuery = Annotated[str, Field(min_length=1, max_length=500)]
 
 # Stable wire and display order. A perspective always carries all four facets;
@@ -43,6 +44,7 @@ class ExpPaper(BaseModel):
     venue: str | None = None
     authors: list[str] = Field(default_factory=list)
     source_query: str | None = None
+    retrieval_tier: RetrievalTier | None = None
     tldr: str | None = None
     open_access_pdf_url: str | None = None
     specter_v2: list[float] | None = None
@@ -103,12 +105,14 @@ class ClusteringDiagnostics(BaseModel):
         "tfidf_kmeans",
         "demo_seeds",
         "single_group",
+        "balanced_fallback",
     ]
     embedded: int = 0
     total: int = 0
     requested_clusters: int = 0
     cluster_sizes: list[int] = Field(default_factory=list)
     silhouette: float | None = None
+    retrieval_tier_counts: dict[RetrievalTier, int] = Field(default_factory=dict)
 
 
 class HypothesisDev(BaseModel):

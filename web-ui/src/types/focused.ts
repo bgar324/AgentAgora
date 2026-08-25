@@ -6,6 +6,7 @@ export const FACETS = [
 ] as const
 
 export type Facet = (typeof FACETS)[number]
+export type RetrievalTier = "answer" | "problem" | "candidate"
 
 export interface ExpPaper {
   id: string
@@ -16,6 +17,7 @@ export interface ExpPaper {
   venue: string | null
   authors: string[]
   source_query: string | null
+  retrieval_tier: RetrievalTier | null
 }
 
 export interface FacetEvidence {
@@ -278,11 +280,13 @@ export interface ClusteringDiagnostics {
     | "tfidf_kmeans"
     | "demo_seeds"
     | "single_group"
+    | "balanced_fallback"
   embedded: number
   total: number
   requested_clusters: number
   cluster_sizes: number[]
   silhouette: number | null
+  retrieval_tier_counts: Partial<Record<RetrievalTier, number>>
 }
 
 export interface SessionState {

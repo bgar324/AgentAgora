@@ -34,6 +34,88 @@ const FACET_META: Record<Facet, { label: string; description: string }> = {
     description: "Why the work is consequential",
   },
 }
+
+interface RetrievalCheckpoint {
+  query: string
+  paperCount: number | null
+}
+
+function parseRetrievalCheckpoint(message: string): RetrievalCheckpoint {
+  const match = message.match(
+    /^Searched (.+)\.\.\.retrieved (\d+) (?:paper|papers)$/,
+  )
+  if (!match) return { query: message, paperCount: null }
+  return { query: match[1], paperCount: Number(match[2]) }
+}
+
+function RetrievalProgressPanel({
+  messages,
+  active,
+}: {
+  messages: string[]
+  active: boolean
+}) {
+  const checkpoints = messages.map(parseRetrievalCheckpoint)
+  return (
+    <section
+      aria-label="Retrieval progress"
+      data-testid="retrieval-progress-panel"
+      role="status"
+      aria-live="polite"
+      className="ep-enter panel flex h-full min-h-[220px] flex-col px-5 py-5 sm:px-7 sm:py-6"
+    >
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--green-bg)]">
+          <span
+            className={`h-2 w-2 rounded-full bg-[var(--green)]${active ? " animate-pulse" : ""}`}
+          />
+        </span>
+        <div className="min-w-0">
+          <SectionLabel>Literature search</SectionLabel>
+          <h2 className="mt-0.5 text-[14px] font-semibold tracking-[-0.015em] text-[var(--ink)]">
+            {active ? "Retrieving papers" : "Retrieval progress"}
+          </h2>
+          <p className="mt-1 text-[11.5px] leading-relaxed text-[var(--mute)]">
+            Each completed query is added here while the corpus takes shape.
+          </p>
+        </div>
+        {checkpoints.length > 0 && (
+          <span className="ml-auto shrink-0 rounded-full border border-[var(--line)] bg-[var(--bg)] px-2 py-1 text-[10.5px] font-medium text-[var(--mute)]">
+            {checkpoints.length} complete
+          </span>
+        )}
+      </div>
+
+      {checkpoints.length === 0 ? (
+        <div className="flex flex-1 items-center justify-center py-8 text-[12px] text-[var(--mute)]">
+          Waiting for the first query…
+        </div>
+      ) : (
+        <ol className="mt-5 overflow-hidden rounded-lg border border-[var(--line)] bg-[var(--bg)]">
+          {checkpoints.map((checkpoint, index) => (
+            <li
+              key={`${index}:${messages[index]}`}
+              className="grid grid-cols-[24px_minmax(0,1fr)] items-center gap-x-2.5 gap-y-1 border-t border-[var(--line)] px-3 py-2.5 first:border-t-0 sm:grid-cols-[24px_minmax(0,1fr)_auto]"
+            >
+              <span className="font-mono text-[10px] tabular-nums text-[var(--mute)]">
+                {String(index + 1).padStart(2, "0")}
+              </span>
+              <span className="min-w-0 text-[12.5px] leading-snug text-[var(--ink-2)]">
+                {checkpoint.query}
+              </span>
+              {checkpoint.paperCount !== null && (
+                <span className="col-start-2 w-fit rounded-full border border-[var(--line)] bg-[var(--panel)] px-2 py-0.5 text-[10.5px] font-medium tabular-nums text-[var(--green)] sm:col-start-3">
+                  {checkpoint.paperCount}{" "}
+                  {checkpoint.paperCount === 1 ? "paper" : "papers"}
+                </span>
+              )}
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
+  )
+}
 export function StageExtraction() {
   const session = useFocusedStore((s) => s.session)
   const picked = useFocusedStore((s) => s.pickedQueries)
@@ -67,6 +149,7 @@ export function StageExtraction() {
   const selectedQueries = queryOptions
     .filter(({ query }) => picked.includes(query))
     .map(({ query }) => query)
+  const tierCounts = session.clustering?.retrieval_tier_counts
 
 
   const act = async (fn: () => Promise<unknown>) => {
@@ -294,10 +377,25 @@ export function StageExtraction() {
                     No literature was saved from the last search.
                   </p>
                 ) : (
-                  <p className="mt-3 text-[12px] leading-relaxed text-[var(--mute)]">
-                    This literature set is preserved. Start from a Research
-                    Problem node when a new question needs new papers.
-                  </p>
+                  <div className="mt-3">
+                    <p className="text-[12px] leading-relaxed text-[var(--mute)]">
+                      {session.papers.length} papers are preserved for clustering
+                      and future research branches.
+                    </p>
+                    {tierCounts && (
+                      <div className="mt-2 flex flex-wrap gap-1.5 text-[10.5px] font-medium">
+                        <span className="rounded-full bg-[var(--green-bg)] px-2 py-0.5 text-[var(--green)]">
+                          {tierCounts.answer ?? 0} answer-bearing
+                        </span>
+                        <span className="rounded-full border border-[var(--line)] bg-[var(--panel)] px-2 py-0.5 text-[var(--ink-2)]">
+                          {tierCounts.problem ?? 0} problem-angle
+                        </span>
+                        <span className="rounded-full bg-[var(--bg)] px-2 py-0.5 text-[var(--mute)]">
+                          {tierCounts.candidate ?? 0} question candidates
+                        </span>
+                      </div>
+                    )}
+                  </div>
                 )}
               </>
             )}
@@ -322,26 +420,6 @@ export function StageExtraction() {
             </section>
           )}
 
-          {searchProgress.length > 0 && (
-            <section
-              aria-label="Retrieval progress"
-              role="status"
-              aria-live="polite"
-              className="ep-enter panel px-4 py-3.5"
-            >
-              <SectionLabel>Retrieval progress</SectionLabel>
-              <div className="mt-2 flex flex-col gap-1.5 border-l-2 border-[var(--green)] pl-2.5">
-                {searchProgress.map((message, index) => (
-                  <p
-                    key={`${index}:${message}`}
-                    className="text-[11px] leading-snug text-[var(--ink-2)]"
-                  >
-                    {message}
-                  </p>
-                ))}
-              </div>
-            </section>
-          )}
 
           {!session.searched &&
             !editingBrief &&
@@ -435,11 +513,18 @@ export function StageExtraction() {
         </div>
 
         {/* the clusters */}
-        <div className="h-full">
+        <div className="h-full" data-testid="cluster-results-surface">
           {!session.searched ? (
-            <div className="ep-enter panel flex h-full min-h-[220px] flex-col items-center justify-center gap-1.5 px-8 text-center">
-              <EmptyLine>Run a search to see the clusters.</EmptyLine>
-            </div>
+            busy === "Searching literature" || searchProgress.length > 0 ? (
+              <RetrievalProgressPanel
+                messages={searchProgress}
+                active={busy === "Searching literature"}
+              />
+            ) : (
+              <div className="ep-enter panel flex h-full min-h-[220px] flex-col items-center justify-center gap-1.5 px-8 text-center">
+                <EmptyLine>Run a search to see the clusters.</EmptyLine>
+              </div>
+            )
           ) : session.clusters.length === 0 ? (
             <div className="ep-enter panel flex h-full min-h-[220px] flex-col items-center justify-center gap-2 px-8 text-center">
               <EmptyLine>No papers matched those searches.</EmptyLine>

@@ -519,6 +519,66 @@ async def expand_question_search(
 
 
 
+CORPUS_EXPAND_SYSTEM = """\
+You expand an underfilled scientific-paper corpus for clustering.
+Write complementary Semantic Scholar queries that cover populations, methods,
+mechanisms, outcomes, and counterpositions underrepresented by the prior
+queries. Use compact title-and-abstract terminology. Do not repeat a prior
+query, write prose questions, or use Boolean operators or quotation marks.
+Return at most four queries of three to eight words."""
+
+
+async def expand_corpus_search(
+    problem: str,
+    questions: list[str],
+    prior_queries: list[str],
+    vocabulary: list[VocabularyPair],
+    *,
+    current_papers: int,
+    target_papers: int,
+    provider: FocusedProvider | None = None,
+) -> list[SuggestedQuery]:
+    parsed = await _structured(
+        provider,
+        CORPUS_EXPAND_SYSTEM,
+        "\n".join(
+            [
+                f"Research problem: {problem}",
+                "Research questions:",
+                *[f"- {question}" for question in questions],
+                f"Current unique papers: {current_papers}",
+                f"Target unique papers: {target_papers}",
+                "Prior queries:",
+                *[f"- {query}" for query in prior_queries],
+                "Observed vocabulary:",
+                *[f"- {pair.ours} -> {pair.theirs}" for pair in vocabulary],
+            ]
+        ),
+        QuerySuggestions,
+        task=FocusedTask.expand_question_search,
+        temperature=0.2,
+    )
+    if parsed is None:
+        return []
+    prior = {" ".join(query.casefold().split()) for query in prior_queries}
+    selected: list[SuggestedQuery] = []
+    seen = set(prior)
+    for suggestion in parsed.queries:
+        query = compact_search_query(suggestion.query)
+        key = " ".join(query.casefold().split())
+        if not query or key in seen:
+            continue
+        seen.add(key)
+        selected.append(
+            suggestion.model_copy(
+                update={"query": query, "kind": "problem", "round": 2}
+            )
+        )
+        if len(selected) == 4:
+            break
+    return selected
+
+
 # ---------------------------------------------------------------------------
 # [2] cluster name + blurb
 # ---------------------------------------------------------------------------

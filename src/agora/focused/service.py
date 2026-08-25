@@ -11,6 +11,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from functools import wraps
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -49,6 +50,7 @@ from agora.focused.models import (
     QuestionReach,
     QuestionStatus,
     RecommendedQuestion,
+    RetrievalTier,
     RoundMetrics,
     SessionState,
     Turn,
@@ -68,9 +70,19 @@ logger = logging.getLogger(__name__)
 MAX_SUGGESTED_QUERIES = 5
 PAPERS_PER_QUERY = 20
 MAX_RETRIEVED_PAPERS = 200
-TARGET_CLUSTER_PAPERS = 20
+TARGET_CLUSTER_PAPERS = 30
 MAX_CLUSTERS = 6
 CLUSTER_REPRESENTATIVE_PAPERS = 5
+
+MIN_CLUSTERING_CORPUS = 90
+MIN_THREE_CLUSTER_PAPERS = 15
+
+@dataclass(frozen=True)
+class QuestionRetrieval:
+    answering: dict[str, ExpPaper]
+    candidates: dict[str, ExpPaper]
+    succeeded: bool
+    expansion_queries: list[str]
 
 
 class SessionError(Exception):
@@ -1425,25 +1437,48 @@ class FocusedPanelService:
 
         return await self._live_retrieve(clean, session_id=session.state.id)
 
+
     @staticmethod
     def _bounded_corpus(
         answering: dict[str, ExpPaper],
         angle: dict[str, ExpPaper],
+        candidate_groups: list[list[ExpPaper]],
     ) -> list[ExpPaper]:
-        papers = list(answering.values())
-        papers.extend(
-            paper for paper_id, paper in angle.items() if paper_id not in answering
-        )
-        return papers[:MAX_RETRIEVED_PAPERS]
+        selected: dict[str, ExpPaper] = {}
+
+        def add(paper: ExpPaper, tier: RetrievalTier) -> None:
+            if paper.id not in selected and len(selected) < MAX_RETRIEVED_PAPERS:
+                selected[paper.id] = paper.model_copy(
+                    deep=True,
+                    update={"retrieval_tier": tier},
+                )
+
+        for paper in answering.values():
+            add(paper, "answer")
+        for paper in angle.values():
+            add(paper, "problem")
+        depth = max((len(group) for group in candidate_groups), default=0)
+        for rank in range(depth):
+            for group in candidate_groups:
+                if rank < len(group):
+                    add(group[rank], "candidate")
+        return list(selected.values())
+
 
 
     @staticmethod
     def _target_cluster_count(paper_count: int) -> int:
         if paper_count < 2:
             return 1
+        if paper_count < MIN_THREE_CLUSTER_PAPERS:
+            return 2
         return max(
-            2,
-            min(MAX_CLUSTERS, paper_count // TARGET_CLUSTER_PAPERS),
+            3,
+            min(
+                MAX_CLUSTERS,
+                (paper_count + TARGET_CLUSTER_PAPERS - 1)
+                // TARGET_CLUSTER_PAPERS,
+            ),
         )
 
 
@@ -1491,6 +1526,18 @@ class FocusedPanelService:
         for paper, label in zip(papers, labels):
             groups[int(label)].append(paper)
         return [group for group in groups if group]
+
+    @staticmethod
+    def _balanced_fallback_clusters(
+        papers: list[ExpPaper],
+        k: int,
+    ) -> list[list[ExpPaper]]:
+        count = max(1, min(k, len(papers)))
+        groups: list[list[ExpPaper]] = [[] for _ in range(count)]
+        for index, paper in enumerate(papers):
+            groups[index % count].append(paper)
+        return [group for group in groups if group]
+
 
     @staticmethod
     def _centroid_order(papers: list[ExpPaper]) -> list[ExpPaper]:
@@ -1550,6 +1597,11 @@ class FocusedPanelService:
             requested_clusters=requested_clusters,
             cluster_sizes=[len(g) for g in groups],
             silhouette=silhouette,
+            retrieval_tier_counts={
+                tier: sum(paper.retrieval_tier == tier for paper in papers)
+                for tier in ("answer", "problem", "candidate")
+                if any(paper.retrieval_tier == tier for paper in papers)
+            },
         )
 
     def _demo_cluster(self, papers: list[ExpPaper]) -> list[list[ExpPaper]]:
@@ -1609,7 +1661,7 @@ class FocusedPanelService:
         session: _Session,
         reach: QuestionReach,
         round1_queries: list[str],
-    ) -> tuple[dict[str, ExpPaper], bool, list[str]]:
+    ) -> QuestionRetrieval:
         reach.queries_r1 = list(round1_queries)
         round1_papers, round1_succeeded = await self._retrieve_queries(
             session,
@@ -1668,10 +1720,11 @@ class FocusedPanelService:
             for paper_id in selected
             if paper_id in hits
         }
-        return (
-            answering,
-            round1_succeeded or round2_succeeded,
-            round2_queries,
+        return QuestionRetrieval(
+            answering=answering,
+            candidates=hits,
+            succeeded=round1_succeeded or round2_succeeded,
+            expansion_queries=round2_queries,
         )
 
     @_serialized_session_mutation
@@ -1715,6 +1768,7 @@ class FocusedPanelService:
         )
         angle_by_id = {paper.id: paper for paper in angle_papers}
         answering_by_id: dict[str, ExpPaper] = {}
+        question_candidate_groups: list[list[ExpPaper]] = []
 
         reaches = [
             reach.model_copy(
@@ -1745,15 +1799,49 @@ class FocusedPanelService:
                     and suggestion.question_index == question_index
                 )
             )
-            answering, question_search_succeeded, round2 = (
-                await self._retrieve_question(session, reach, round1)
-            )
-            search_succeeded = search_succeeded or question_search_succeeded
-            automatic_queries.extend(round2)
-            for paper_id, paper in answering.items():
+            retrieval = await self._retrieve_question(session, reach, round1)
+            search_succeeded = search_succeeded or retrieval.succeeded
+            automatic_queries.extend(retrieval.expansion_queries)
+            question_candidate_groups.append(list(retrieval.candidates.values()))
+            for paper_id, paper in retrieval.answering.items():
                 answering_by_id.setdefault(paper_id, paper)
         state.question_reach = reaches
-        papers = self._bounded_corpus(answering_by_id, angle_by_id)
+        papers = self._bounded_corpus(
+            answering_by_id,
+            angle_by_id,
+            question_candidate_groups,
+        )
+        if len(papers) < MIN_CLUSTERING_CORPUS and not self._demo(session):
+            prior_queries = list(dict.fromkeys([*queries, *automatic_queries]))
+            corpus_expansion = await agents.expand_corpus_search(
+                state.problem,
+                state.research_questions,
+                prior_queries,
+                [
+                    pair
+                    for reach in reaches
+                    for pair in reach.vocabulary
+                ],
+                current_papers=len(papers),
+                target_papers=MIN_CLUSTERING_CORPUS,
+                provider=self._provider_for(session),
+            )
+            expansion_queries = [
+                suggestion.query for suggestion in corpus_expansion
+            ]
+            expansion_papers, expansion_succeeded = await self._retrieve_queries(
+                session,
+                expansion_queries,
+            )
+            search_succeeded = search_succeeded or expansion_succeeded
+            if expansion_papers:
+                question_candidate_groups.append(expansion_papers)
+            automatic_queries.extend(expansion_queries)
+            papers = self._bounded_corpus(
+                answering_by_id,
+                angle_by_id,
+                question_candidate_groups,
+            )
         if not papers:
             if not search_succeeded:
                 raise SessionError(
@@ -1769,30 +1857,53 @@ class FocusedPanelService:
         partition_representatives: list[list[ExpPaper]] | None = None
         unassigned_papers: list[ExpPaper] = []
         if self._demo(session):
+            requested_clusters = self._target_cluster_count(len(papers))
             groups = self._demo_cluster(papers) if papers else []
-            requested_clusters = len(groups)
-            method = "demo_seeds"
+            if len(groups) < requested_clusters:
+                groups = self._balanced_fallback_clusters(
+                    papers,
+                    requested_clusters,
+                )
+                method = "balanced_fallback"
+            else:
+                method = "demo_seeds"
         else:
             requested_clusters = self._target_cluster_count(len(papers))
+            required_clusters = min(
+                requested_clusters,
+                3 if len(papers) >= MIN_THREE_CLUSTER_PAPERS else 2,
+            )
             partition = density_partition(
                 papers,
                 requested_clusters=requested_clusters,
             )
-            if partition is not None:
+            if (
+                partition is not None
+                and len(partition.groups) >= required_clusters
+            ):
                 groups = partition.groups
                 partition_representatives = partition.representatives
                 unassigned_papers = partition.unassigned
                 method = "specter_hdbscan_dpp"
+            elif requested_clusters == 1:
+                groups = [papers]
+                method = "single_group"
             else:
                 groups = self._embedding_clusters(papers, k=requested_clusters)
                 method = "specter_kmeans"
-                if len(groups) < 2:
+                if len(groups) < required_clusters:
                     groups = (
                         self._kmeans_clusters(papers, k=requested_clusters)
                         if len(papers) >= 4
-                        else ([papers] if papers else [])
+                        else []
                     )
-                    method = "tfidf_kmeans" if len(papers) >= 4 else "single_group"
+                    method = "tfidf_kmeans"
+                if len(groups) < required_clusters:
+                    groups = self._balanced_fallback_clusters(
+                        papers,
+                        requested_clusters,
+                    )
+                    method = "balanced_fallback"
 
         state.clustering = self._clustering_diagnostics(
             method,

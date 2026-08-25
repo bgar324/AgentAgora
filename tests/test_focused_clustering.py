@@ -6,6 +6,7 @@ import numpy as np
 
 from agora.focused.clustering import density_partition
 from agora.focused.models import ExpPaper
+from agora.focused.service import FocusedPanelService
 
 
 def papers(count: int) -> list[ExpPaper]:
@@ -92,3 +93,20 @@ def test_density_partition_runs_lightweight_hdbscan_end_to_end() -> None:
     assert result is not None
     assert len(result.groups) == 3
     assert all(len(selected) == 5 for selected in result.representatives)
+
+def test_fifty_eight_paper_fallback_produces_three_groups() -> None:
+    corpus = papers(58)
+    requested = FocusedPanelService._target_cluster_count(len(corpus))
+
+    groups = FocusedPanelService._embedding_clusters(corpus, k=requested)
+
+    assert requested == 3
+    assert len(groups) == 3
+    assert sum(len(group) for group in groups) == 58
+
+def test_balanced_last_resort_guarantees_three_groups() -> None:
+    corpus = papers(15)
+
+    groups = FocusedPanelService._balanced_fallback_clusters(corpus, 3)
+
+    assert [len(group) for group in groups] == [5, 5, 5]

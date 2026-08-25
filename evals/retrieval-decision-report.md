@@ -134,12 +134,18 @@ This is the smallest design that follows the evidence without preserving two ful
 
 ## Implemented production pipeline
 
-The production focused path now keeps Youngseung's two-round retrieval and
-200-paper cap, then runs lightweight UMAP/HDBSCAN directly over SPECTER
+The production focused path keeps Youngseung's two-round retrieval, but Luna
+assessment now ranks rather than deletes question candidates. Answer-bearing
+papers rank first, problem-angle papers second, and remaining question
+candidates third. The corpus targets 90 papers, can issue four gap-filling
+queries, and remains capped at 200.
+
+The retained corpus runs through lightweight UMAP/HDBSCAN over SPECTER
 embeddings. It selects three central and two DPP-diverse representatives per
-cluster without importing BERTopic or DSPy into the focused process. If density
-clustering cannot produce three usable groups, the existing deterministic
-K-means path remains the fallback.
+cluster without importing BERTopic or DSPy into the focused process. Corpora
+with at least 15 embedded papers request at least three clusters. If density
+clustering cannot produce three usable groups, deterministic K-means provides
+the three-way fallback.
 
 HDBSCAN noise and papers without embeddings are stored as explicit unassigned
 paper IDs. The Extraction UI exposes those papers under **Unassigned

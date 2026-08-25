@@ -56,6 +56,11 @@ class HermeticRetrieval:
                 title="Suggestion timing conditions homogenization",
                 abstract="Suggestion timing conditions homogenization of written output.",
             ),
+            "expansion-1": FocusedSearchResult(
+                id="expansion-1",
+                title="Independent drafting before AI assistance",
+                abstract="Independent drafting preserves variation in written output.",
+            ),
         }
         self.results = {
             "ai writing tools workplace": ["angle-1", "angle-2"],
@@ -64,6 +69,7 @@ class HermeticRetrieval:
             "ai suggestions output diversity": ["q-answer"],
             "ai suggestion homogenization": ["q-follow"],
             "withdrawn tool capability": [],
+            "underfilled corpus expansion": ["expansion-1"],
         }
 
     async def search(self, query: str, limit: int = 8):
@@ -87,19 +93,31 @@ class HermeticProvider:
         user = messages[-1]["content"]
         self.schemas.append(schema.__name__)
         if schema is QuerySuggestions:
-            parsed = QuerySuggestions(
-                queries=[
-                    SuggestedQuery(
-                        query=(
-                            "ai suggestions output diversity"
-                            if index == 1
-                            else f"ai writing tools workplace {index}"
-                        ),
-                        rationale="Problem-angle literature.",
-                    )
-                    for index in range(1, 4)
-                ]
-            )
+            if "Current unique papers:" in user:
+                parsed = QuerySuggestions(
+                    queries=[
+                        SuggestedQuery(
+                            query="underfilled corpus expansion",
+                            rationale="Adds an underrepresented corpus angle.",
+                            kind="problem",
+                            round=2,
+                        )
+                    ]
+                )
+            else:
+                parsed = QuerySuggestions(
+                    queries=[
+                        SuggestedQuery(
+                            query=(
+                                "ai suggestions output diversity"
+                                if index == 1
+                                else f"ai writing tools workplace {index}"
+                            ),
+                            rationale="Problem-angle literature.",
+                        )
+                        for index in range(1, 4)
+                    ]
+                )
         elif schema is QuestionPlan:
             if "withdrawn" in user:
                 parsed = QuestionPlan(
@@ -280,6 +298,8 @@ def test_question_search_records_reach_and_miss() -> None:
             range(1, progress["next"] + 1)
         )
 
+        assert "underfilled corpus expansion" in retrieval.calls
+        assert "underfilled corpus expansion" in state.searched_queries
         assert "ai suggestion homogenization" in retrieval.calls
         assert "withdrawn tool capability" in retrieval.calls
         assert state.question_reach[0].queries_r2 == [
@@ -301,6 +321,10 @@ def test_question_search_records_reach_and_miss() -> None:
         )
         assert provider.schemas.count("ClusterNamings") == 1
         papers = {paper.id: paper for paper in state.papers}
+        assert papers["q-answer"].retrieval_tier == "answer"
+        assert papers["angle-1"].retrieval_tier == "problem"
+        assert papers["expansion-1"].retrieval_tier == "candidate"
+        assert sum(state.clustering.retrieval_tier_counts.values()) == len(papers)
         for cluster in state.clusters:
             assert cluster.representative_paper_ids
             assert set(cluster.representative_paper_ids) <= set(cluster.paper_ids)
@@ -552,7 +576,71 @@ def test_corpus_budget_prioritizes_question_answers() -> None:
         f"angle-{index}": ExpPaper(id=f"angle-{index}", title=f"Angle {index}")
         for index in range(250)
     }
-    papers = FocusedPanelService._bounded_corpus(answering, angle)
+    papers = FocusedPanelService._bounded_corpus(answering, angle, [])
     assert len(papers) == 200
     assert papers[0].id == "q-answer"
+    assert papers[0].retrieval_tier == "answer"
+    assert papers[1].retrieval_tier == "problem"
     assert "angle-249" not in {paper.id for paper in papers}
+
+
+def test_corpus_retains_question_candidates_round_robin() -> None:
+    answering = {"answer": ExpPaper(id="answer", title="Answer")}
+    angle = {
+        f"angle-{index}": ExpPaper(id=f"angle-{index}", title=f"Angle {index}")
+        for index in range(35)
+    }
+    groups = [
+        [
+            ExpPaper(id=f"q{group}-{index}", title=f"Q{group} paper {index}")
+            for index in range(56)
+        ]
+        for group in range(3)
+    ]
+
+    papers = FocusedPanelService._bounded_corpus(answering, angle, groups)
+
+    assert len(papers) == 200
+    assert papers[0].retrieval_tier == "answer"
+    assert all(paper.retrieval_tier == "problem" for paper in papers[1:36])
+    candidate_ids = {
+        paper.id for paper in papers if paper.retrieval_tier == "candidate"
+    }
+    assert all(
+        any(paper_id.startswith(f"q{group}-") for paper_id in candidate_ids)
+        for group in range(3)
+    )
+
+
+def test_traced_clinical_funnel_cannot_collapse_to_two_clusters() -> None:
+    groups = [
+        [
+            ExpPaper(id=f"q{group}-{index}", title=f"Q{group} paper {index}")
+            for index in range(size)
+        ]
+        for group, size in enumerate((56, 56, 50))
+    ]
+    answering_papers = [*groups[0][:9], *groups[1][:8], *groups[2][:13]]
+    answering = {paper.id: paper for paper in answering_papers}
+    angle = {
+        f"angle-{index}": ExpPaper(id=f"angle-{index}", title=f"Angle {index}")
+        for index in range(35)
+    }
+
+    corpus = FocusedPanelService._bounded_corpus(answering, angle, groups)
+    tier_counts = {
+        tier: sum(paper.retrieval_tier == tier for paper in corpus)
+        for tier in ("answer", "problem", "candidate")
+    }
+
+    assert len(corpus) >= 90
+    assert tier_counts["answer"] == 30
+    assert tier_counts["problem"] == 35
+    assert FocusedPanelService._target_cluster_count(len(corpus)) >= 3
+
+
+def test_fifty_eight_papers_request_three_clusters() -> None:
+    assert FocusedPanelService._target_cluster_count(14) == 2
+    assert FocusedPanelService._target_cluster_count(15) == 3
+    assert FocusedPanelService._target_cluster_count(58) == 3
+    assert FocusedPanelService._target_cluster_count(90) == 3
