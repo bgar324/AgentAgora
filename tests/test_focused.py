@@ -766,6 +766,55 @@ def test_round_stops_at_exchange_limit_without_unanimous_hypothesis(
     asyncio.run(go())
 
 
+def test_unanimous_narrow_ground_preserves_disagreement(monkeypatch) -> None:
+    async def go() -> None:
+        async def disagreement_with_shared_ground(*_args, **_kwargs):
+            return FacetVerdict(
+                facet="scope",
+                status="disagreement",
+                summary="The panel disagrees about the governing population.",
+                proposed_shared_ground="The evidence concerns antibiotic exposure.",
+                disagreement="Which exposed population should govern the claim.",
+                contested_by=["Host and microbiome"],
+            )
+
+        monkeypatch.setattr(
+            agents,
+            "judge_facet",
+            disagreement_with_shared_ground,
+        )
+        service, session_id, deliberation_id, agent_iids = await _demo_panel()
+        state = await service.run_round(
+            session_id,
+            deliberation_id,
+            lead_iid=agent_iids[0],
+            facets=["scope"],
+        )
+        round_state = state.deliberations[0].rounds[0]
+
+        assert round_state.stop_reason == "unanimous"
+        assert round_state.verdicts[0].status == "disagreement"
+        assert (
+            round_state.verdicts[0].consensus
+            == "The evidence concerns antibiotic exposure."
+        )
+        assert (
+            round_state.verdicts[0].disagreement
+            == "Which exposed population should govern the claim."
+        )
+        assert round_state.resolution is not None
+        assert len(round_state.resolution.consensus_points) == 1
+        assert len(round_state.resolution.disagreement_points) == 1
+        assert round_state.hypothesis_proposal is not None
+        assert state.deliberations[0].recommended_questions
+        assert all(
+            question.source_kind == "disagreement"
+            for question in state.deliberations[0].recommended_questions
+        )
+
+    asyncio.run(go())
+
+
 def test_shared_ground_assent_fails_closed_without_provider() -> None:
     async def go() -> None:
         assent = await agents.assent_to_shared_ground(

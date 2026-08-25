@@ -881,7 +881,7 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   await expect(
     page
       .getByRole("dialog", { name: "Focused panel" })
-      .getByText("1 completed rounds", { exact: true }),
+      .getByText("1 completed round", { exact: true }),
   ).toBeVisible({ timeout: 30_000 })
   await expect(page.getByText("Working hypothesis", { exact: true })).toBeVisible()
   await expect(page.getByText("Update ready", { exact: true })).toBeVisible()
@@ -1273,6 +1273,12 @@ test("allows ending after one completed area", async ({ page }) => {
   await expect(
     page.getByPlaceholder("Ask a question at any point…"),
   ).toHaveCount(0)
+  await expect(
+    page.getByRole("button", { name: "Start paper search" }),
+  ).toHaveCount(0)
+  await expect(
+    page.getByText("Not selected for follow-up.", { exact: true }),
+  ).toBeVisible()
 })
 test("shows a direct agent reply in the panel conversation", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
@@ -1542,7 +1548,7 @@ test("reloads the authoritative workspace after a revision conflict", async ({
 })
 
 
-test("keeps repeated research problems from separate rounds", async ({ page }) => {
+test("keeps repeated questions distinct while promoting the selected follow-up", async ({ page }) => {
   const { rootId, workspaceId } = await startWorkspace(page)
   let state = await prepareConsensusCheckpoint(
     page.request,
@@ -1595,6 +1601,7 @@ test("keeps repeated research problems from separate rounds", async ({ page }) =
     page.request,
     `/api/focused/sessions/${rootId}/deliberations/${deliberation.id}/complete`,
     "post",
+    { selected_question_ids: [repeated[1].id] },
   )
 
   await page.goto(`/focused?workspace=${workspaceId}`)
@@ -1602,7 +1609,10 @@ test("keeps repeated research problems from separate rounds", async ({ page }) =
     page
       .locator('[data-testid^="research-problem-node-"]')
       .filter({ hasText: firstQuestion.question }),
-  ).toHaveCount(2)
+  ).toHaveCount(1)
+  await expect(
+    page.getByTestId(`research-problem-node-${repeated[1].id}`),
+  ).toBeVisible()
 })
 
 

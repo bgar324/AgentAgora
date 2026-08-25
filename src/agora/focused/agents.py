@@ -1373,17 +1373,17 @@ async def summarize_round(
     consensus = [
         _point_from_verdict(verdict, kind="consensus")
         for verdict in verdicts
-        if verdict.status == "consensus"
+        if verdict.consensus.strip()
     ]
     disagreements = [
         _point_from_verdict(verdict, kind="disagreement")
         for verdict in verdicts
-        if verdict.status == "disagreement"
+        if verdict.disagreement.strip()
     ]
     unsettled = [
         _point_from_verdict(verdict, kind="unsettled")
         for verdict in verdicts
-        if verdict.status == "unsettled"
+        if verdict.unsettled.strip()
     ]
     if not disagreements and not unsettled:
         facet = facets[0]

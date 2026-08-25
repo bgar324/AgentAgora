@@ -3233,13 +3233,8 @@ class FocusedPanelService:
             if unanimous:
                 final_verdict = verdict.model_copy(
                     update={
-                        "status": "consensus",
-                        "summary": "Every Perspective accepted the proposed shared ground.",
                         "consensus": verdict.proposed_shared_ground,
-                        "disagreement": "",
-                        "unsettled": "",
                         "supporting": list(positions),
-                        "contested_by": [],
                     }
                 )
                 round_state.stop_reason = "unanimous"
@@ -3708,10 +3703,30 @@ class FocusedPanelService:
         active_facets = latest_round.facets if latest_round else list(FACETS)
         round_context = ""
         if latest_round is not None:
+            latest_exchange_n = max(
+                (turn.exchange_n or 1 for turn in latest_round.turns),
+                default=1,
+            )
+            latest_exchange = [
+                turn
+                for turn in latest_round.turns
+                if (turn.exchange_n or 1) == latest_exchange_n
+            ]
+            final_check = (
+                latest_round.moderator_checks[-1]
+                if latest_round.moderator_checks
+                else None
+            )
             round_context = (
                 "\n".join(
                     f"{turn.agent_label or 'Panel'}: {turn.text}"
-                    for turn in latest_round.turns
+                    for turn in latest_exchange
+                )
+                + "\n\nFinal moderator check:\n"
+                + (
+                    final_check.model_dump_json(indent=2)
+                    if final_check is not None
+                    else "No moderator check recorded."
                 )
                 + "\n\nModerator resolution:\n"
                 + (

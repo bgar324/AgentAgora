@@ -950,6 +950,9 @@ function PanelDrawer({
     )
   }
 
+  const completedRoundCount = active.rounds.filter(
+    (round) => round.completed,
+  ).length
   const discussedFacetCount = FACETS.filter((facet) =>
     active.rounds.some(
       (round) => round.completed && round.facets.includes(facet),
@@ -998,7 +1001,9 @@ function PanelDrawer({
           <span className="text-[11px] text-[var(--mute)]">
             {active.completed_at
               ? "Ended"
-              : `${active.rounds.filter((round) => round.completed).length} completed rounds`}
+              : `${completedRoundCount} completed ${
+                  completedRoundCount === 1 ? "round" : "rounds"
+                }`}
           </span>
           <button
             type="button"
@@ -1581,15 +1586,19 @@ function RoundRecord({
                     {check.proposed_shared_ground ||
                       "No substantive shared ground yet."}
                   </p>
-                  <div className="mt-2 flex flex-wrap gap-1.5">
+                  <div className="mt-2 flex flex-col gap-1.5">
                     {check.assents.map((assent) => (
-                      <span
+                      <div
                         key={assent.agent_iid}
-                        title={assent.reason}
-                        className="rounded-full border border-[var(--line)] px-2 py-0.5 text-[9.5px] text-[var(--ink-2)]"
+                        className="flex items-start gap-2 text-[9.5px]"
                       >
-                        {assent.agent_label}: {assent.decision}
-                      </span>
+                        <span className="shrink-0 rounded-full border border-[var(--line)] px-2 py-0.5 text-[var(--ink-2)]">
+                          {assent.agent_label}: {assent.decision}
+                        </span>
+                        <span className="pt-0.5 leading-relaxed text-[var(--mute)]">
+                          {assent.reason}
+                        </span>
+                      </div>
                     ))}
                   </div>
                 </div>
@@ -2260,10 +2269,12 @@ function WorkingHypothesisPanel({
                       <>
                         <span className="self-center text-[9.5px] text-[var(--mute)]">
                           {completed
-                            ? "Start a child Investigation with fresh literature and Perspectives."
+                            ? item.selected_for_followup
+                              ? "Start a child Investigation with fresh literature and Perspectives."
+                              : "Not selected for follow-up."
                             : "Its Research Problem node appears when you end the deliberation."}
                         </span>
-                        {completed && (
+                        {completed && item.selected_for_followup && (
                           <Button
                             variant="outline"
                             size="sm"
