@@ -18,13 +18,14 @@ class FocusedTask(StrEnum):
     name_clusters = "name_clusters"
     extract_cluster_facets = "extract_cluster_facets"
     derive_framing = "derive_framing"
+    suggest_deliberation_threads = "suggest_deliberation_threads"
     open_statement = "open_statement"
     answer_statement = "answer_statement"
     find_support_query = "find_support_query"
     select_support_passage = "select_support_passage"
-    judge_facet = "judge_facet"
+    judge_thread = "judge_thread"
     assent_shared_ground = "assent_shared_ground"
-    summarize_round = "summarize_round"
+    summarize_thread = "summarize_thread"
     reflect_on_round = "reflect_on_round"
     develop_hypothesis = "develop_hypothesis"
     develop_hypothesis_from_consensus = "develop_hypothesis_from_consensus"
@@ -40,14 +41,15 @@ TASK_ROLES: Final = MappingProxyType(
         FocusedTask.assess_question_papers: FocusedModelRole.corpus,
         FocusedTask.name_clusters: FocusedModelRole.corpus,
         FocusedTask.extract_cluster_facets: FocusedModelRole.corpus,
+        FocusedTask.suggest_deliberation_threads: FocusedModelRole.reasoning,
         FocusedTask.derive_framing: FocusedModelRole.reasoning,
         FocusedTask.open_statement: FocusedModelRole.reasoning,
         FocusedTask.answer_statement: FocusedModelRole.reasoning,
         FocusedTask.find_support_query: FocusedModelRole.query,
         FocusedTask.select_support_passage: FocusedModelRole.corpus,
-        FocusedTask.judge_facet: FocusedModelRole.evaluation,
+        FocusedTask.judge_thread: FocusedModelRole.evaluation,
         FocusedTask.assent_shared_ground: FocusedModelRole.reasoning,
-        FocusedTask.summarize_round: FocusedModelRole.evaluation,
+        FocusedTask.summarize_thread: FocusedModelRole.evaluation,
         FocusedTask.reflect_on_round: FocusedModelRole.reasoning,
         FocusedTask.develop_hypothesis: FocusedModelRole.reasoning,
         FocusedTask.develop_hypothesis_from_consensus: FocusedModelRole.evaluation,

@@ -58,9 +58,6 @@ export interface Perspective {
 }
 
 export interface HypothesisDev {
-  problem: string
-  previous_work: string
-  reasoning: string
   hypothesis: string
 }
 
@@ -85,7 +82,14 @@ export interface HypothesisVersion {
   created_at: string
 }
 
-export type TurnKind = "open" | "answer" | "support" | "user" | "system"
+export type TurnKind =
+  | "open"
+  | "answer"
+  | "support"
+  | "challenge"
+  | "reply"
+  | "user"
+  | "system"
 
 export interface Turn {
   id: number
@@ -97,10 +101,14 @@ export interface Turn {
   text: string
   citations: string[]
   exchange_n: number | null
+  reply_to_turn_id: number | null
+  relation: "answer" | "reply" | "support" | "challenge" | null
+  assumption: string
+  hypothesis_fragments: string[]
 }
 
-export interface FacetVerdict {
-  facet: Facet
+export interface ThreadVerdict {
+  facets: Facet[]
   status: "consensus" | "disagreement" | "unsettled"
   summary: string
   proposed_shared_ground: string
@@ -118,22 +126,34 @@ export interface SharedGroundAssent {
   agent_label: string
   decision: "accept" | "qualify" | "reject"
   reason: string
+  challenge_turn_id: number | null
+  challenge: string
 }
 
 export interface ModeratorCheck {
   exchange_n: number
   proposed_shared_ground: string
-  verdict: FacetVerdict
+  verdict: ThreadVerdict
   assents: SharedGroundAssent[]
   unanimous: boolean
 }
 
 export interface DeliberationPoint {
-  facet: Facet
+  facets: Facet[]
   text: string
   rationale: string
   perspective_names: string[]
   citations: string[]
+}
+
+export interface DeliberationThread {
+  id: string
+  title: string
+  question: string
+  context: string
+  facets: Facet[]
+  perspective_names: string[]
+  hypothesis_fragments: string[]
 }
 
 export interface RoundResolution {
@@ -189,6 +209,7 @@ export interface DeliberationCompletion {
   agent_iids: number[]
   question_ids: string[]
   lead_perspective_id: string | null
+  threads: DeliberationThread[]
   baseline_hypothesis: HypothesisDev | null
   selected_question_ids: string[]
   rating: DeliberationRating | null
@@ -208,8 +229,9 @@ export interface DeliberationRound {
   lead_iid: number
   participant_iids: number[]
   facets: Facet[]
+  thread_id: string | null
   turns: Turn[]
-  verdicts: FacetVerdict[]
+  verdict: ThreadVerdict | null
   resolution: RoundResolution | null
   reflections: ParticipantReflection[]
   metrics: RoundMetrics | null
@@ -243,6 +265,7 @@ export interface RecommendedQuestion {
 
 export interface DeliberationState {
   id: string
+  threads: DeliberationThread[]
   agent_iids: number[]
   lead_perspective_id: string | null
   baseline_hypothesis: HypothesisDev | null
@@ -401,6 +424,7 @@ export interface InvestigationSummary {
 }
 
 export interface WorkspaceState {
+  schema_version: 6
   revision: number
   id: string
   created_at: string

@@ -426,7 +426,7 @@ export function useFocusedPanel() {
 
 
   const runRound = useCallback(
-    async (deliberationId: string, leadIid: number, facets: Facet[]) =>
+    async (deliberationId: string, leadIid: number, threadId: string) =>
       exclusive("Running focused round", async () => {
         const started = await api<{ generation: number }>(
           `sessions/${sessionId}/search-progress`,
@@ -466,7 +466,7 @@ export function useFocusedPanel() {
               method: "POST",
               body: JSON.stringify({
                 lead_iid: leadIid,
-                facets,
+                thread_id: threadId,
                 progress_generation: generation,
               }),
             },
@@ -531,18 +531,13 @@ export function useFocusedPanel() {
       deliberationId: string,
       hypothesis: HypothesisDev,
       mode: HypothesisConfirmationMode,
-      selectedParts?: HypothesisPart[],
     ) =>
       call(
         "Applying hypothesis",
         `sessions/${sessionId}/deliberations/${deliberationId}/hypothesis`,
         {
           method: "PUT",
-          body: JSON.stringify({
-            hypothesis,
-            mode,
-            selected_parts: selectedParts,
-          }),
+          body: JSON.stringify({ hypothesis, mode }),
         },
       ),
     [call, sessionId],
@@ -645,7 +640,7 @@ export function useFocusedPanel() {
     async (
       targetInvestigationId: string,
       sourceVersionId: string,
-      partsFromSource: HypothesisPart[],
+      hypothesis: HypothesisDev,
     ) => {
       if (!workspaceId) throw new Error("No active workspace.")
       return viewCall(
@@ -656,7 +651,7 @@ export function useFocusedPanel() {
           body: JSON.stringify({
             target_investigation_id: targetInvestigationId,
             source_version_id: sourceVersionId,
-            parts_from_source: partsFromSource,
+            hypothesis,
           }),
         },
       )

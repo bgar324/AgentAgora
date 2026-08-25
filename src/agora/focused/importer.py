@@ -19,7 +19,10 @@ def _by_workspace(
     return {
         workspace.id: (
             workspace,
-            [states[investigation_id] for investigation_id in workspace.investigation_ids],
+            [
+                states[investigation_id]
+                for investigation_id in workspace.investigation_ids
+            ],
         )
         for workspace in workspaces
     }

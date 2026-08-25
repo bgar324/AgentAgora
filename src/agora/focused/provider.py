@@ -34,9 +34,9 @@ class FocusedProvider:
                 return self._models.reasoning
             case FocusedModelRole.evaluation:
                 return self._models.evaluation
+
     def set_cache_scope(self, scope: str) -> None:
         self._cache_scope = scope.strip()
-
 
     async def generate_structured(
         self,
@@ -55,7 +55,9 @@ class FocusedProvider:
             temperature=(
                 None
                 if phase.reasoning_effort is not None
-                else phase.temperature if temperature is None else temperature
+                else phase.temperature
+                if temperature is None
+                else temperature
             ),
             max_output_tokens=max_output_tokens or phase.max_tokens,
             reasoning_effort=phase.reasoning_effort,

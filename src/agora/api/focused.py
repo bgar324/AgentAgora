@@ -9,11 +9,9 @@ from pydantic import BaseModel, Field
 from agora.focused.agents import FocusedAgentError
 from agora.focused.models import (
     DeliberationRating,
-    Facet,
     FacetEvidence,
     HypothesisConfirmationMode,
     HypothesisDev,
-    HypothesisPart,
     QuestionStatus,
     ResearchQuestion,
     SearchQuery,
@@ -135,7 +133,7 @@ class InitializeDeliberationRequest(BaseModel):
 
 class RoundRequest(BaseModel):
     lead_iid: int
-    facets: list[Facet] = Field(min_length=1, max_length=1)
+    thread_id: str = Field(min_length=1, max_length=200)
     progress_generation: int | None = Field(default=None, ge=1)
 
 
@@ -153,17 +151,12 @@ class QuestionStatusRequest(BaseModel):
 class MergeHypothesesRequest(BaseModel):
     target_investigation_id: str
     source_version_id: str
-    parts_from_source: list[HypothesisPart] = Field(min_length=1, max_length=4)
+    hypothesis: HypothesisDev
 
 
 class HypothesisRequest(BaseModel):
     hypothesis: HypothesisDev
     mode: HypothesisConfirmationMode
-    selected_parts: list[HypothesisPart] | None = Field(
-        default=None,
-        min_length=1,
-        max_length=4,
-    )
 
 
 class CompleteDeliberationRequest(BaseModel):
@@ -299,7 +292,7 @@ async def merge_hypotheses(
             workspace_id,
             target_investigation_id=request.target_investigation_id,
             source_version_id=request.source_version_id,
-            parts_from_source=request.parts_from_source,
+            hypothesis=request.hypothesis,
         )
     )
 
@@ -491,8 +484,8 @@ async def run_round(
             session_id,
             deliberation_id,
             lead_iid=request.lead_iid,
+            thread_id=request.thread_id,
             progress_generation=request.progress_generation,
-            facets=request.facets,
         ),
     )
 
@@ -511,7 +504,6 @@ async def confirm_deliberation_hypothesis(
             deliberation_id,
             request.hypothesis,
             mode=request.mode,
-            selected_parts=request.selected_parts,
         ),
     )
 

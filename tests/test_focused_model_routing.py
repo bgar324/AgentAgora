@@ -41,12 +41,10 @@ def routes() -> FocusedModelSettings:
         (FocusedTask.assess_question_papers, "low", 6_000),
         (FocusedTask.suggest_queries, "low", 2_000),
         (FocusedTask.open_statement, "medium", 2_000),
-        (FocusedTask.summarize_round, "high", 4_000),
+        (FocusedTask.summarize_thread, "high", 4_000),
     ],
 )
-def test_provider_routes_tasks_to_requested_models(
-    task, effort, max_tokens
-) -> None:
+def test_provider_routes_tasks_to_requested_models(task, effort, max_tokens) -> None:
     async def go() -> None:
         llm = RecordingLLM()
         provider = FocusedProvider(llm=llm, models=routes())
@@ -71,7 +69,6 @@ def test_provider_routes_tasks_to_requested_models(
         assert llm.calls[1]["cache_namespace"] == (
             f"focused-panel:cold-run:{TASK_ROLES[task].value}"
         )
-
 
     asyncio.run(go())
 

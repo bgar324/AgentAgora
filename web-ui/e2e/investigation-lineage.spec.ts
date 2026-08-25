@@ -93,6 +93,7 @@ type RoundApiState = {
   deliberations: Array<{
     id: string
     lead_perspective_id: string | null
+    threads: Array<{ id: string; facets: string[] }>
     hypothesis: unknown
     hypothesis_confirmed: boolean
   }>
@@ -166,11 +167,15 @@ async function prepareConsensusCheckpoint(
     "post",
     { lead_perspective_id: state.agents[0].perspective_id },
   )
+  const thread = state.deliberations[0].threads.find(
+    (candidate: { facets: string[] }) => candidate.facets.includes(facet),
+  )
+  if (!thread) throw new Error(`Expected a Thread for ${facet}.`)
   state = await requestJson(
     request,
     `/api/focused/sessions/${investigationId}/deliberations/${deliberation.id}/rounds`,
     "post",
-    { lead_iid: state.agents[0].iid, facets: [facet] },
+    { lead_iid: state.agents[0].iid, thread_id: thread.id },
   )
   const candidate = state.deliberations[0].hypothesis
   expect(candidate).toBeTruthy()
@@ -200,11 +205,15 @@ async function runAndApplyRound(
       agent.perspective_id === deliberation.lead_perspective_id,
   )
   if (!lead) throw new Error("Expected the configured lead Perspective.")
+  const thread = deliberation.threads.find(
+    (candidate: { facets: string[] }) => candidate.facets.includes(facet),
+  )
+  if (!thread) throw new Error(`Expected a Thread for ${facet}.`)
   state = await requestJson(
     request,
     `/api/focused/sessions/${investigationId}/deliberations/${deliberation.id}/rounds`,
     "post",
-    { lead_iid: lead.iid, facets: [facet] },
+    { lead_iid: lead.iid, thread_id: thread.id },
   )
   const current = state.deliberations[0]
   if (current.hypothesis_confirmed) return state
@@ -690,16 +699,18 @@ test("continues an open question on the existing canvas", async ({ page }) => {
     await route.fulfill({ response })
     roundResponseDelivered.resolve()
   })
-  await page.getByRole("button", { name: /Scope Who, where/ }).click()
-  await page.getByRole("button", { name: "Start round" }).click()
+  await page
+    .getByRole("button", { name: /Acute benefit versus ecological harm/ })
+    .click()
+  await page.getByRole("button", { name: "Start Thread" }).click()
   await questionInput.fill("Which uncertainty remains after this exchange?")
   await page.getByRole("button", { name: "Send" }).click()
   await expect(page.getByTestId("panel-chat-transcript")).toContainText(
-    "Queued for after this round",
+    "Queued for after this Thread",
   )
   await roundResponseReady.promise
   await expect(page.getByTestId("round-progress")).toContainText(
-    "Saving the completed round.",
+    "Saving the completed Thread.",
   )
   await expect(page.getByTestId("round-progress")).toContainText("7/7")
   await expect(page.getByTestId("round-progress")).toContainText(
@@ -715,7 +726,7 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   await roundResponseDelivered.promise
   await page.unroute(roundRoute)
   await expect(
-    page.getByText("Queued for after this round", { exact: true }),
+    page.getByText("Queued for after this Thread", { exact: true }),
   ).toHaveCount(0, { timeout: 10_000 })
   await expect(questionInput).toBeEnabled({ timeout: 10_000 })
 
@@ -728,9 +739,12 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   )
   const firstRoundDiscussion = page.getByTestId("round-1-discussion")
   await expect(firstRoundDiscussion).toContainText("Exchange 1")
+  await expect(firstRoundDiscussion).toContainText("Exchange 2")
   await expect(firstRoundDiscussion).toContainText("Moderator check")
   await expect(firstRoundDiscussion).toContainText("Unanimous")
-  await expect(firstRoundDiscussion).toContainText("Lead")
+  await expect(firstRoundDiscussion).toContainText("Assumption:")
+  await expect(firstRoundDiscussion).toContainText("Responding to T")
+  await expect(firstRoundDiscussion.getByText("challenge", { exact: true })).toBeVisible()
   const agreementPrompt = page.getByRole("button", {
     name: "Why this agreement?",
   })
@@ -742,10 +756,10 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   await questionInput.fill("")
   const moderatorSummary = page.getByTestId("round-1-summary")
   await expect(
-    moderatorSummary.getByText("Moderator", { exact: true }),
+    moderatorSummary.getByText("Thread resolution", { exact: true }),
   ).toBeVisible()
   await expect(
-    moderatorSummary.getByText("Round summary", { exact: true }),
+    moderatorSummary.getByText("Moderator synthesis", { exact: true }),
   ).toBeVisible()
   const summaryBox = await page.getByTestId("round-1-summary").boundingBox()
   const discussionBox = await page
@@ -754,7 +768,7 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   expect(summaryBox?.y).toBeGreaterThan(
     (discussionBox?.y ?? 0) + (discussionBox?.height ?? 0),
   )
-  await expect(page.getByText(/of 4 parts changed/)).toBeVisible()
+  await expect(page.getByText("Possible solution", { exact: true })).toBeVisible()
   await expect(
     page.getByRole("dialog", { name: "Rate this deliberation" }),
   ).toHaveCount(0)
@@ -763,51 +777,23 @@ test("continues an open question on the existing canvas", async ({ page }) => {
     name: "Apply hypothesis changes?",
   })
   await expect(applyConfirmation).toBeVisible()
-  const changedCards = applyConfirmation.locator(
-    '[data-testid^="changed-hypothesis-part-"]',
-  )
-  await expect(changedCards).toHaveCount(2)
-  await expect(applyConfirmation.getByRole("checkbox")).toHaveCount(2)
-  await expect(applyConfirmation.getByRole("checkbox").first()).toBeChecked()
-  await applyConfirmation.getByRole("button", { name: "Cancel" }).click()
-  await expect(page.getByText("Update ready", { exact: true })).toBeVisible()
-
-  const beforePartialApply = await requestJson(
+  await expect(applyConfirmation).toContainText("Current hypothesis")
+  await expect(applyConfirmation).toContainText("Proposed hypothesis")
+  await expect(applyConfirmation.getByRole("checkbox")).toHaveCount(0)
+  const beforeApply = await requestJson(
     page.request,
     `/api/focused/sessions/${rootId}`,
     "get",
   )
-  const beforeDeliberation = beforePartialApply.deliberations[0]
-  const hypothesisParts = [
-    "problem",
-    "previous_work",
-    "reasoning",
-    "hypothesis",
-  ] as const
-  const changedKeys = hypothesisParts.filter(
-    (part) =>
-      beforeDeliberation.hypothesis[part] !==
-      beforeDeliberation.applied_hypothesis[part],
-  )
-  expect(changedKeys).toHaveLength(2)
-
-  await page.getByRole("button", { name: "Apply shared ground" }).click()
-  await applyConfirmation.getByRole("checkbox").first().uncheck()
-  await applyConfirmation.getByRole("button", { name: "Apply 1 part" }).click()
-  const afterPartialApply = await requestJson(
+  await applyConfirmation.getByRole("button", { name: "Apply proposal" }).click()
+  const afterApply = await requestJson(
     page.request,
     `/api/focused/sessions/${rootId}`,
     "get",
   )
-  const appliedHypothesis =
-    afterPartialApply.deliberations[0].applied_hypothesis
-  expect(appliedHypothesis[changedKeys[0]]).toBe(
-    beforeDeliberation.applied_hypothesis[changedKeys[0]],
+  expect(afterApply.deliberations[0].applied_hypothesis).toEqual(
+    beforeApply.deliberations[0].hypothesis,
   )
-  expect(appliedHypothesis[changedKeys[1]]).toBe(
-    beforeDeliberation.hypothesis[changedKeys[1]],
-  )
-  await expect(page.getByText("Applied, not saved", { exact: true })).toBeVisible()
   await page.getByRole("button", { name: "Save hypothesis" }).click()
   await expect(page.getByText("Saved H1", { exact: true })).toBeVisible()
   await page.keyboard.press("Escape")
@@ -855,7 +841,7 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   const archivedPanel = page.getByRole("dialog", { name: "Panel history" })
   await expect(archivedPanel).toBeVisible()
   await expect(
-    archivedPanel.getByRole("region", { name: "Archived round 1" }),
+    archivedPanel.getByRole("region", { name: "Archived Thread 1" }),
   ).toBeVisible()
   await expect(archivedPanel).toContainText("Exchange 1")
   await expect(archivedPanel).toContainText("Moderator check")
@@ -876,27 +862,29 @@ test("continues an open question on the existing canvas", async ({ page }) => {
     .getByRole("button", { name: "Confirm lead and generate baseline" })
     .click()
   await expect(page.getByText("Applied, not saved", { exact: true })).toBeVisible()
-  await page.getByRole("button", { name: /Explanation How/ }).click()
-  await page.getByRole("button", { name: "Start round" }).click()
+  await page
+    .getByRole("button", { name: /Mechanism of downstream harm/ })
+    .click()
+  await page.getByRole("button", { name: "Start Thread" }).click()
   await expect(
     page
       .getByRole("dialog", { name: "Focused panel" })
-      .getByText("1 completed round", { exact: true }),
+      .getByText("1 completed Thread", { exact: true }),
   ).toBeVisible({ timeout: 30_000 })
   await expect(page.getByText("Working hypothesis", { exact: true })).toBeVisible()
   await expect(page.getByText("Update ready", { exact: true })).toBeVisible()
   await applySharedGround(page)
-  for (const [facet, round] of [
-    [/Approach How the claim/, 2],
-    [/Significance Why the result/, 3],
-    [/Scope Who, where/, 4],
+  for (const [thread, round] of [
+    [/Targeting without delayed cure/, 2],
+    [/Acute benefit versus ecological harm/, 3],
+    [/Mechanism of downstream harm/, 4],
   ] as const) {
-    await page.getByRole("button", { name: facet }).click()
-    await page.getByRole("button", { name: "Start round" }).click()
+    await page.getByRole("button", { name: thread }).click()
+    await page.getByRole("button", { name: "Start Thread" }).click()
     await expect(
       page
         .getByRole("dialog", { name: "Focused panel" })
-        .getByText(`${round} completed rounds`, { exact: true }),
+        .getByText(`${round} completed Threads`, { exact: true }),
     ).toBeVisible({ timeout: 30_000 })
     if (await page.getByText("Update ready", { exact: true }).isVisible()) {
       await applySharedGround(page)
@@ -1228,8 +1216,10 @@ test("promotes and merges versioned hypotheses through the workspace map", async
 
   await h1.getByRole("button", { name: "Compare and merge" }).click()
   await expect(page.getByText("Compare H1 with H2", { exact: true })).toBeVisible()
-  await page.getByRole("checkbox", { name: /Use H1 Reasoning/ }).check()
-  await page.getByRole("button", { name: "Merge 1 step" }).click()
+  await page
+    .getByRole("textbox", { name: "Combined hypothesis" })
+    .fill("Combine the parent and child solution candidates in one testable intervention.")
+  await page.getByRole("button", { name: "Save merged hypothesis" }).click()
 
   const h3 = page.getByTestId("hypothesis-version-H3")
   await expect(h3).toBeVisible()
@@ -1339,21 +1329,15 @@ test("edits an applied hypothesis without reusing pending-update semantics", asy
   await page.goto(`/focused?workspace=${workspaceId}`)
   await page.getByRole("button", { name: "Join" }).click()
   await applySharedGround(page)
-  await expect(page.getByTestId("facet-history-scope")).toHaveText(
-    "Discussed in round 1",
-  )
-  await expect(page.getByTestId("facet-history-explanation")).toHaveText(
-    "Not discussed yet",
-  )
-  await expect(page.getByText("1/4 discussed", { exact: true })).toBeVisible()
-  const reusableScope = page.getByRole("button", {
-    name: /Scope.*Discussed in round 1/,
+  const boundaryThread = page.getByRole("button", {
+    name: /Acute benefit versus ecological harm.*Thread 1/,
   })
-  await expect(reusableScope).toBeEnabled()
-  await reusableScope.click()
-  await expect(reusableScope).toHaveAttribute("aria-pressed", "true")
-  await reusableScope.click()
-  await expect(reusableScope).toHaveAttribute("aria-pressed", "false")
+  await expect(page.getByText("1/3 discussed", { exact: true })).toBeVisible()
+  await expect(boundaryThread).toBeEnabled()
+  await boundaryThread.click()
+  await expect(boundaryThread).toHaveAttribute("aria-pressed", "true")
+  await boundaryThread.click()
+  await expect(boundaryThread).toHaveAttribute("aria-pressed", "false")
   await page.getByRole("button", { name: "Save hypothesis" }).click()
   await page.getByRole("button", { name: "Edit hypothesis" }).click()
   await expect(
@@ -1363,8 +1347,8 @@ test("edits an applied hypothesis without reusing pending-update semantics", asy
   await expect(page.getByRole("button", { name: "Edit hypothesis" })).toBeVisible()
   await page.getByRole("button", { name: "Edit hypothesis" }).click()
   await page
-    .getByRole("textbox", { name: "Reasoning hypothesis step" })
-    .fill("Researcher-edited reasoning")
+    .getByRole("textbox", { name: "Possible solution hypothesis step" })
+    .fill("Researcher-edited solution candidate")
   await applyHypothesisChanges(page, "Apply edits")
   await page.getByRole("button", { name: "Save hypothesis" }).click()
   await page.keyboard.press("Escape")
@@ -1376,8 +1360,7 @@ test("edits an applied hypothesis without reusing pending-update semantics", asy
   const edited = workspaceState.hypothesis_versions.find(
     (version: { id: string }) => version.id === "H2",
   )
-  expect(edited.step_sources.problem).toBe("H1")
-  expect(edited.step_sources.reasoning).toBe("H2")
+  expect(edited.step_sources).toEqual({ hypothesis: "H2" })
 })
 
 
@@ -1569,7 +1552,10 @@ test("keeps repeated questions distinct while promoting the selected follow-up",
     page.request,
     `/api/focused/sessions/${rootId}/deliberations/${deliberation.id}/rounds`,
     "post",
-    { lead_iid: state.agents[0].iid, facets: ["scope"] },
+    {
+      lead_iid: state.agents[0].iid,
+      thread_id: state.deliberations[0].threads[0].id,
+    },
   )
   const repeated = state.deliberations[0].recommended_questions.filter(
     (question: { question: string }) =>

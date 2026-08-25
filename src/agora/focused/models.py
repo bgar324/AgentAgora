@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 Facet = Literal["scope", "explanation", "approach", "significance"]
 ResearchQuestion = Annotated[str, Field(min_length=1, max_length=4000)]
@@ -116,15 +116,14 @@ class ClusteringDiagnostics(BaseModel):
 
 
 class HypothesisDev(BaseModel):
-    """A hypothesis developed in four inspectable steps."""
+    """One testable solution candidate for the research problem."""
 
-    problem: str = Field(min_length=1, max_length=4000)
-    previous_work: str = Field(min_length=1, max_length=4000)
-    reasoning: str = Field(min_length=1, max_length=4000)
+    model_config = ConfigDict(extra="forbid")
+
     hypothesis: str = Field(min_length=1, max_length=4000)
 
 
-HypothesisPart = Literal["problem", "previous_work", "reasoning", "hypothesis"]
+HypothesisPart = Literal["hypothesis"]
 HypothesisConfirmationMode = Literal[
     "apply_pending",
     "edit_applied",
@@ -163,6 +162,8 @@ class TurnKind(str, Enum):
     support = "support"
     user = "user"
     system = "system"
+    challenge = "challenge"
+    reply = "reply"
 
 
 class Turn(BaseModel):
@@ -175,17 +176,16 @@ class Turn(BaseModel):
     text: str
     citations: list[str] = Field(default_factory=list)
     exchange_n: int | None = Field(default=None, ge=1)
+    reply_to_turn_id: int | None = None
+    relation: Literal["answer", "reply", "support", "challenge"] | None = None
+    assumption: str = ""
+    hypothesis_fragments: list[str] = Field(default_factory=list)
 
 
-class FacetVerdict(BaseModel):
-    """Moderator finding for one active facet.
+class ThreadVerdict(BaseModel):
+    """Moderator finding for one scientific Thread."""
 
-    ``disagreement`` is reserved for genuinely incompatible positions.
-    ``unsettled`` captures missing evidence, boundaries, or unanswered
-    questions without manufacturing opposition.
-    """
-
-    facet: Facet
+    facets: list[Facet] = Field(min_length=1, max_length=4)
     status: Literal["consensus", "disagreement", "unsettled"]
     summary: str
     proposed_shared_ground: str = ""
@@ -203,12 +203,14 @@ class SharedGroundAssent(BaseModel):
     agent_label: str
     decision: Literal["accept", "qualify", "reject"]
     reason: str = ""
+    challenge_turn_id: int | None = None
+    challenge: str = ""
 
 
 class ModeratorCheck(BaseModel):
     exchange_n: int = Field(ge=1)
     proposed_shared_ground: str
-    verdict: FacetVerdict
+    verdict: ThreadVerdict
     assents: list[SharedGroundAssent] = Field(default_factory=list)
     unanimous: bool = False
 
@@ -224,11 +226,21 @@ class ModeratorCheck(BaseModel):
 
 
 class DeliberationPoint(BaseModel):
-    facet: Facet
+    facets: list[Facet] = Field(min_length=1, max_length=4)
     text: str
     rationale: str = ""
     perspective_names: list[str] = Field(default_factory=list)
     citations: list[str] = Field(default_factory=list)
+
+
+class DeliberationThread(BaseModel):
+    id: str
+    title: str = Field(min_length=1, max_length=200)
+    question: str = Field(min_length=1, max_length=1000)
+    context: str = Field(default="", max_length=2000)
+    facets: list[Facet] = Field(min_length=1, max_length=4)
+    perspective_names: list[str] = Field(default_factory=list)
+    hypothesis_fragments: list[str] = Field(default_factory=list)
 
 
 class RoundResolution(BaseModel):
@@ -286,9 +298,10 @@ class DeliberationRound(BaseModel):
     n: int
     lead_iid: int
     participant_iids: list[int] = Field(default_factory=list)
-    facets: list[Facet] = Field(min_length=1, max_length=2)
+    facets: list[Facet] = Field(min_length=1, max_length=4)
+    thread_id: str | None = None
     turns: list[Turn] = Field(default_factory=list)
-    verdicts: list[FacetVerdict] = Field(default_factory=list)
+    verdict: ThreadVerdict | None = None
     resolution: RoundResolution | None = None
     reflections: list[ParticipantReflection] = Field(default_factory=list)
     metrics: RoundMetrics | None = None
@@ -337,6 +350,7 @@ class DeliberationCompletion(BaseModel):
     agent_iids: list[int] = Field(default_factory=list)
     question_ids: list[str] = Field(default_factory=list)
     lead_perspective_id: str | None = None
+    threads: list[DeliberationThread] = Field(default_factory=list)
     baseline_hypothesis: HypothesisDev | None = None
     selected_question_ids: list[str] = Field(default_factory=list)
     rating: DeliberationRating | None = None
@@ -373,6 +387,7 @@ class DeliberationCompletion(BaseModel):
 
 class DeliberationState(BaseModel):
     id: str
+    threads: list[DeliberationThread] = Field(default_factory=list)
     agent_iids: list[int] = Field(default_factory=list)
     lead_perspective_id: str | None = None
     baseline_hypothesis: HypothesisDev | None = None
@@ -538,6 +553,7 @@ class WorkspaceState(BaseModel):
     id: str
     created_at: datetime = Field(default_factory=utcnow)
     revision: int = Field(default=0, ge=0)
+    schema_version: Literal[6] = 6
     problem: str = Field(max_length=4000)
     root_investigation_id: str
     active_investigation_id: str
@@ -637,6 +653,15 @@ class FacetExtraction(BaseModel):
 
 class Statement(BaseModel):
     text: str = Field(description="One short spoken turn, 1-3 sentences.")
+    assumption: str = Field(
+        default="",
+        description="The assumption or causal belief supporting this turn.",
+    )
+    relation: Literal["answer", "reply", "support", "challenge"] = "answer"
+    hypothesis_fragments: list[str] = Field(
+        default_factory=list,
+        description="Exact excerpts from the current hypothesis addressed by the turn.",
+    )
     citations: list[str] = Field(
         default_factory=list,
         description="Paper IDs or titles supporting the statement.",
@@ -652,8 +677,7 @@ class SupportPassage(BaseModel):
     reason: str = Field(description="Why this passage supports the statement.")
 
 
-class FacetVerdictDraft(BaseModel):
-    facet: Facet
+class ThreadVerdictDraft(BaseModel):
     status: Literal["consensus", "disagreement", "unsettled"]
     summary: str
     proposed_shared_ground: str = ""
@@ -664,13 +688,28 @@ class FacetVerdictDraft(BaseModel):
     contested_by: list[str] = Field(default_factory=list)
 
 
-class FacetVerdicts(BaseModel):
-    verdicts: list[FacetVerdictDraft]
+class ThreadVerdictOutput(BaseModel):
+    verdict: ThreadVerdictDraft
 
 
 class SharedGroundAssentDraft(BaseModel):
     decision: Literal["accept", "qualify", "reject"]
     reason: str
+    challenge_turn_id: int | None = None
+    challenge: str = ""
+
+
+class DeliberationThreadDraft(BaseModel):
+    title: str
+    question: str
+    context: str
+    facets: list[Facet]
+    perspective_names: list[str] = Field(default_factory=list)
+    hypothesis_fragments: list[str] = Field(default_factory=list)
+
+
+class DeliberationThreads(BaseModel):
+    threads: list[DeliberationThreadDraft] = Field(default_factory=list)
 
 
 class ReflectionDraft(BaseModel):

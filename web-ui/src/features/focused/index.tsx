@@ -559,13 +559,14 @@ function ResetDialog({
   )
 }
 
+const DEMO_PROBLEM =
+  "Should antibiotics be prescribed broadly? I suspect the faster cure trades off against resistance and gut-flora harm."
+const DEMO_QUESTIONS =
+  "Does broad-spectrum use raise resistance enough to matter at population level?\nDoes it harm the patient's own flora in ways that outlast the infection?\nWhen does speed to cure outweigh both?"
+
 function StartScreen() {
-  const [problem, setProblem] = useState(
-    "Should antibiotics be prescribed broadly? I suspect the faster cure trades off against resistance and gut-flora harm.",
-  )
-  const [questions, setQuestions] = useState(
-    "Does broad-spectrum use raise resistance enough to matter at population level?\nDoes it harm the patient's own flora in ways that outlast the infection?\nWhen does speed to cure outweigh both?",
-  )
+  const [problem, setProblem] = useState(DEMO_PROBLEM)
+  const [questions, setQuestions] = useState(DEMO_QUESTIONS)
   const [demo, setDemo] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [starting, setStarting] = useState(false)
@@ -606,6 +607,7 @@ function StartScreen() {
               id="focused-problem"
               value={problem}
               onChange={(e) => setProblem(e.target.value)}
+              disabled={demo}
               rows={3}
               className="field w-full resize-none px-3 py-2.5 text-[13px] leading-relaxed placeholder:text-[var(--mute)]"
               placeholder="Jot down the question or hunch you're exploring."
@@ -619,6 +621,7 @@ function StartScreen() {
               id="focused-questions"
               value={questions}
               onChange={(e) => setQuestions(e.target.value)}
+              disabled={demo}
               rows={4}
               className="field w-full resize-none px-3 py-2.5 text-[13px] leading-relaxed placeholder:text-[var(--mute)]"
               placeholder="One per line."
@@ -628,11 +631,24 @@ function StartScreen() {
             <input
               type="checkbox"
               checked={demo}
-              onChange={(e) => setDemo(e.target.checked)}
+              onChange={(e) => {
+                const enabled = e.target.checked
+                setDemo(enabled)
+                if (enabled) {
+                  setProblem(DEMO_PROBLEM)
+                  setQuestions(DEMO_QUESTIONS)
+                }
+              }}
               className="size-3.5 accent-[var(--node)]"
             />
             Demo mode
           </label>
+          {demo && (
+            <p className="text-[11px] leading-relaxed text-[var(--mute)]">
+              Demo mode uses this fixed antibiotic scenario so its literature,
+              Perspectives, and deliberation remain coherent.
+            </p>
+          )}
           {error && (
             <div className="text-[13px] text-[var(--red)]">{error}</div>
           )}
