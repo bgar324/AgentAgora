@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from agora.config.settings import GPT_5_6_LUNA
 from agora.core.errors import ProviderError
 from agora.evaluation.retrieval import (
     EvalCluster,
@@ -187,14 +188,14 @@ def _evidence_papers(
     ]
 
 
-class BlindedSolJudge:
+class BlindedRetrievalJudge:
     """Judge pooled pipeline outputs through opaque, shape-normalized packets."""
 
     def __init__(
         self,
         llm: LLMProvider,
         *,
-        model: str = "gpt-5.6-sol",
+        model: str = GPT_5_6_LUNA,
         paper_batch_size: int = PAPERS_PER_BATCH,
         disable_prompt_cache: bool = False,
     ) -> None:

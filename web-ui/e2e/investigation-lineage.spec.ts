@@ -985,6 +985,37 @@ test("promotes and merges versioned hypotheses through the workspace map", async
 })
 
 
+test("shows a direct agent reply in the panel conversation", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  const { rootId, workspaceId } = await startWorkspace(page)
+  const state = await prepareConsensusCheckpoint(page.request, rootId, false)
+  const agent = state.agents[0]
+  const perspective = state.perspectives.find(
+    (item: { id: string }) => item.id === agent.perspective_id,
+  )
+
+  await page.goto(`/focused?workspace=${workspaceId}`)
+  await page.getByRole("button", { name: "Join" }).click()
+  await page
+    .getByRole("combobox", { name: "Message recipient" })
+    .selectOption(String(agent.iid))
+  await page
+    .getByPlaceholder("Ask the panel about this round…")
+    .fill("What evidence sets your boundary?")
+  await page.getByRole("button", { name: "Send" }).click()
+
+  const transcript = page.getByTestId("panel-chat-transcript")
+  await expect(transcript).toBeVisible()
+  await expect(transcript).toContainText("What evidence sets your boundary?")
+  const reply = transcript.getByText(
+    `From the ${perspective.name} perspective`,
+    { exact: false },
+  )
+  await expect(reply).toBeVisible()
+  await expect(reply).toBeInViewport()
+})
+
+
 test("edits an applied hypothesis without reusing pending-update semantics", async ({
   page,
 }) => {

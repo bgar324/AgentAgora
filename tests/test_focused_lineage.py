@@ -597,6 +597,77 @@ def test_repeated_unsettled_round_does_not_duplicate_open_question() -> None:
     asyncio.run(go())
 
 
+def test_round_batches_independent_agent_calls(monkeypatch) -> None:
+    async def go() -> None:
+        service = FocusedPanelService()
+        state = service.create_workspace(
+            problem=PROBLEM,
+            research_questions=[],
+            demo=True,
+        ).active
+        state.perspectives = [
+            panel_perspective("first", "First", "first"),
+            panel_perspective("second", "Second", "second"),
+            panel_perspective("third", "Third", "third"),
+        ]
+        state = await service.create_deliberation(state.id)
+        deliberation = state.deliberations[0]
+        agent_iids = [agent.iid for agent in state.agents]
+
+        active = {"answer": 0, "reflection": 0, "post": 0}
+        peak = dict(active)
+        original_answer = agents.answer_statement
+        original_reflection = agents.reflect_on_round
+        original_metrics = service._round_metrics
+        original_framing = agents.derive_framing
+        original_questions = agents.recommend_questions
+
+        async def track(kind, operation):
+            active[kind] += 1
+            peak[kind] = max(peak[kind], active[kind])
+            await asyncio.sleep(0)
+            try:
+                return await operation()
+            finally:
+                active[kind] -= 1
+
+        async def tracked_answer(*args, **kwargs):
+            return await track(
+                "answer", lambda: original_answer(*args, **kwargs)
+            )
+
+        async def tracked_reflection(*args, **kwargs):
+            return await track(
+                "reflection", lambda: original_reflection(*args, **kwargs)
+            )
+
+        async def tracked_metrics(*args, **kwargs):
+            return await track("post", lambda: original_metrics(*args, **kwargs))
+
+        async def tracked_framing(*args, **kwargs):
+            return await track("post", lambda: original_framing(*args, **kwargs))
+
+        async def tracked_questions(*args, **kwargs):
+            return await track("post", lambda: original_questions(*args, **kwargs))
+
+        monkeypatch.setattr(agents, "answer_statement", tracked_answer)
+        monkeypatch.setattr(agents, "reflect_on_round", tracked_reflection)
+        monkeypatch.setattr(service, "_round_metrics", tracked_metrics)
+        monkeypatch.setattr(agents, "derive_framing", tracked_framing)
+        monkeypatch.setattr(agents, "recommend_questions", tracked_questions)
+
+        await service.run_round(
+            state.id,
+            deliberation.id,
+            lead_iid=agent_iids[0],
+            facets=["scope"],
+        )
+
+        assert peak == {"answer": 2, "reflection": 3, "post": 3}
+
+    asyncio.run(go())
+
+
 def test_concurrent_round_requests_serialize_without_detached_side_effects(
     monkeypatch,
 ) -> None:

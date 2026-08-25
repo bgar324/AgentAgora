@@ -19,7 +19,7 @@ def _object_schemas(value: Any):
 def test_openrouter_uses_strict_json_schema_for_structured_outputs() -> None:
     for schema_type in (QuerySuggestions, FacetVerdicts, ClusterNamings):
         request = _request(
-            model="openai/gpt-4o-mini",
+            model="openai/gpt-5.6-luna",
             messages=[{"role": "user", "content": "Draft structured output"}],
             temperature=0.0,
             max_output_tokens=800,

@@ -1,6 +1,13 @@
 "use client"
 
-import { useEffect, useId, useMemo, useState, type CSSProperties } from "react"
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react"
 import {
   Background,
   BackgroundVariant,
@@ -748,6 +755,7 @@ function PanelDrawer({
   const [error, setError] = useState<string | null>(null)
   const drawerTitleId = useId()
   const drawerRef = useDialogSurface<HTMLElement>(onClose)
+  const chatEndRef = useRef<HTMLDivElement>(null)
   const [hypothesisDraft, setHypothesisDraft] = useState<HypothesisDev | null>(
     () => {
       const current = useFocusedStore
@@ -762,6 +770,12 @@ function PanelDrawer({
   useEffect(() => {
     if (!session || !active) onClose()
   }, [session, active, onClose])
+  useEffect(() => {
+    if (active?.chat.length) {
+      chatEndRef.current?.scrollIntoView({ block: "nearest" })
+    }
+  }, [active?.chat.length])
+
 
 
   if (!session || !active) return null
@@ -912,6 +926,21 @@ function PanelDrawer({
               <RoundRecord key={round.n} round={round} />
             ))}
           </div>
+          {active.chat.length > 0 && (
+            <section
+              className="mt-5 border-t border-[var(--line)] pt-4"
+              data-testid="panel-chat-transcript"
+            >
+              <SectionLabel>Follow-up conversation</SectionLabel>
+              <div className="mt-2 flex flex-col gap-2.5">
+                {active.chat.map((turn) => (
+                  <TurnBubble key={turn.id} turn={turn} />
+                ))}
+              </div>
+              <div ref={chatEndRef} />
+            </section>
+          )}
+
 
 
           {active.no_agreement && active.questions_generated && (

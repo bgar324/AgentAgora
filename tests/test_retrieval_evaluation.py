@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from agora.evaluation.judge import (
-    BlindedSolJudge,
+    BlindedRetrievalJudge,
     PaperJudgment,
     PaperJudgments,
     PerspectiveGroundingJudgment,
@@ -342,16 +342,16 @@ def test_rejects_a_paper_assigned_to_two_clusters() -> None:
 
 def test_dspy_metering_excludes_cache_replays() -> None:
     lm = SimpleNamespace(
-        model="openai/gpt-5.6-terra",
+        model="openai/gpt-5.6-luna",
         history=[
             {
-                "model": "openai/gpt-5.6-terra",
+                "model": "openai/gpt-5.6-luna",
                 "usage": {"input_tokens": 100, "output_tokens": 20},
                 "cost": 0.02,
                 "response": SimpleNamespace(cache_hit=False),
             },
             {
-                "model": "openai/gpt-5.6-terra",
+                "model": "openai/gpt-5.6-luna",
                 "usage": {},
                 "cost": 0.02,
                 "response": SimpleNamespace(cache_hit=True),
@@ -609,7 +609,7 @@ def test_blinded_judge_normalizes_and_pools_acceptance_scores() -> None:
 
     async def go() -> None:
         llm = FakeLLM()
-        judge = BlindedSolJudge(llm)
+        judge = BlindedRetrievalJudge(llm)
         case = RetrievalCase(
             id="hci",
             problem="How do explanations affect calibrated trust?",

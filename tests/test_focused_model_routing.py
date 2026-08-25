@@ -7,6 +7,7 @@ import pytest
 
 from agora.config.settings import (
     FocusedModelSettings,
+    ModelSettings,
     PhaseModel,
     load_settings,
 )
@@ -27,23 +28,25 @@ class RecordingLLM:
 
 def routes() -> FocusedModelSettings:
     return FocusedModelSettings(
-        corpus=PhaseModel("luna", None, 6_000, "low"),
-        query=PhaseModel("terra-query", None, 2_000, "low"),
-        reasoning=PhaseModel("terra-reasoning", None, 2_000, "medium"),
-        evaluation=PhaseModel("sol", None, 4_000, "high"),
+        corpus=PhaseModel("gpt-5.6-luna", None, 6_000, "low"),
+        query=PhaseModel("gpt-5.6-luna", None, 2_000, "low"),
+        reasoning=PhaseModel("gpt-5.6-luna", None, 2_000, "medium"),
+        evaluation=PhaseModel("gpt-5.6-luna", None, 4_000, "high"),
     )
 
 
 @pytest.mark.parametrize(
-    ("task", "model", "effort"),
+    ("task", "effort", "max_tokens"),
     [
-        (FocusedTask.assess_question_papers, "luna", "low"),
-        (FocusedTask.suggest_queries, "terra-query", "low"),
-        (FocusedTask.open_statement, "terra-reasoning", "medium"),
-        (FocusedTask.summarize_round, "sol", "high"),
+        (FocusedTask.assess_question_papers, "low", 6_000),
+        (FocusedTask.suggest_queries, "low", 2_000),
+        (FocusedTask.open_statement, "medium", 2_000),
+        (FocusedTask.summarize_round, "high", 4_000),
     ],
 )
-def test_provider_routes_tasks_to_requested_models(task, model, effort) -> None:
+def test_provider_routes_tasks_to_requested_models(
+    task, effort, max_tokens
+) -> None:
     async def go() -> None:
         llm = RecordingLLM()
         provider = FocusedProvider(llm=llm, models=routes())
@@ -54,8 +57,9 @@ def test_provider_routes_tasks_to_requested_models(task, model, effort) -> None:
             temperature=0.7,
         )
         request = llm.calls[0]
-        assert request["model"] == model
+        assert request["model"] == "gpt-5.6-luna"
         assert request["reasoning_effort"] == effort
+        assert request["max_output_tokens"] == max_tokens
         assert request["temperature"] is None
         assert request["cache_namespace"] == f"focused-panel:{TASK_ROLES[task].value}"
         provider.set_cache_scope("cold-run")
@@ -72,12 +76,21 @@ def test_provider_routes_tasks_to_requested_models(task, model, effort) -> None:
     asyncio.run(go())
 
 
-def test_focused_model_defaults_use_official_openai_ids() -> None:
-    models = FocusedModelSettings()
-    assert models.corpus.model == "gpt-5.6-luna"
-    assert models.query.model == "gpt-5.6-terra"
-    assert models.reasoning.model == "gpt-5.6-terra"
-    assert models.evaluation.model == "gpt-5.6-sol"
+def test_all_model_defaults_use_gpt_5_6_luna() -> None:
+    focused = FocusedModelSettings()
+    assert {
+        focused.corpus.model,
+        focused.query.model,
+        focused.reasoning.model,
+        focused.evaluation.model,
+    } == {"gpt-5.6-luna"}
+
+    legacy = ModelSettings()
+    assert {
+        legacy.brief.model,
+        legacy.panel.model,
+        legacy.deliberation.model,
+    } == {"openai/gpt-5.6-luna"}
 
 
 def test_supabase_startup_requires_openai_key(monkeypatch) -> None:
