@@ -69,7 +69,7 @@ async function applyHypothesisChanges(
     name: "Apply hypothesis changes?",
   })
   await expect(confirmation).toBeVisible()
-  await confirmation.getByRole("button", { name: "Apply changes" }).click()
+  await confirmation.getByRole("button", { name: /Apply \d+ parts?/ }).click()
   await expect(confirmation).toHaveCount(0)
 }
 
@@ -702,6 +702,15 @@ test("continues an open question on the existing canvas", async ({ page }) => {
     "Saving the completed round.",
   )
   await expect(page.getByTestId("round-progress")).toContainText("7/7")
+  await expect(page.getByTestId("round-progress")).toContainText(
+    "Moderator check",
+  )
+  await expect(page.getByTestId("round-progress")).toContainText("Unanimous")
+  await expect(
+    page
+      .getByTestId("round-progress")
+      .getByText("No substantive shared ground yet.", { exact: true }),
+  ).toHaveCount(0)
   releaseRoundResponse.resolve()
   await roundResponseDelivered.promise
   await page.unroute(roundRoute)
@@ -717,6 +726,20 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   await expect(page.getByTestId("round-1-summary")).toContainText(
     "The panel compared",
   )
+  const firstRoundDiscussion = page.getByTestId("round-1-discussion")
+  await expect(firstRoundDiscussion).toContainText("Exchange 1")
+  await expect(firstRoundDiscussion).toContainText("Moderator check")
+  await expect(firstRoundDiscussion).toContainText("Unanimous")
+  await expect(firstRoundDiscussion).toContainText("Lead")
+  const agreementPrompt = page.getByRole("button", {
+    name: "Why this agreement?",
+  })
+  await expect(agreementPrompt).toBeVisible()
+  await agreementPrompt.click()
+  await expect(questionInput).toHaveValue(
+    "Why did the panel agree on this shared ground?",
+  )
+  await questionInput.fill("")
   const moderatorSummary = page.getByTestId("round-1-summary")
   await expect(
     moderatorSummary.getByText("Moderator", { exact: true }),
@@ -740,12 +763,50 @@ test("continues an open question on the existing canvas", async ({ page }) => {
     name: "Apply hypothesis changes?",
   })
   await expect(applyConfirmation).toBeVisible()
-  await expect(
-    applyConfirmation.locator('[data-testid^="changed-hypothesis-part-"]'),
-  ).toHaveCount(2)
+  const changedCards = applyConfirmation.locator(
+    '[data-testid^="changed-hypothesis-part-"]',
+  )
+  await expect(changedCards).toHaveCount(2)
+  await expect(applyConfirmation.getByRole("checkbox")).toHaveCount(2)
+  await expect(applyConfirmation.getByRole("checkbox").first()).toBeChecked()
   await applyConfirmation.getByRole("button", { name: "Cancel" }).click()
   await expect(page.getByText("Update ready", { exact: true })).toBeVisible()
-  await applySharedGround(page)
+
+  const beforePartialApply = await requestJson(
+    page.request,
+    `/api/focused/sessions/${rootId}`,
+    "get",
+  )
+  const beforeDeliberation = beforePartialApply.deliberations[0]
+  const hypothesisParts = [
+    "problem",
+    "previous_work",
+    "reasoning",
+    "hypothesis",
+  ] as const
+  const changedKeys = hypothesisParts.filter(
+    (part) =>
+      beforeDeliberation.hypothesis[part] !==
+      beforeDeliberation.applied_hypothesis[part],
+  )
+  expect(changedKeys).toHaveLength(2)
+
+  await page.getByRole("button", { name: "Apply shared ground" }).click()
+  await applyConfirmation.getByRole("checkbox").first().uncheck()
+  await applyConfirmation.getByRole("button", { name: "Apply 1 part" }).click()
+  const afterPartialApply = await requestJson(
+    page.request,
+    `/api/focused/sessions/${rootId}`,
+    "get",
+  )
+  const appliedHypothesis =
+    afterPartialApply.deliberations[0].applied_hypothesis
+  expect(appliedHypothesis[changedKeys[0]]).toBe(
+    beforeDeliberation.applied_hypothesis[changedKeys[0]],
+  )
+  expect(appliedHypothesis[changedKeys[1]]).toBe(
+    beforeDeliberation.hypothesis[changedKeys[1]],
+  )
   await expect(page.getByText("Applied, not saved", { exact: true })).toBeVisible()
   await page.getByRole("button", { name: "Save hypothesis" }).click()
   await expect(page.getByText("Saved H1", { exact: true })).toBeVisible()
@@ -796,7 +857,18 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   await expect(
     archivedPanel.getByRole("region", { name: "Archived round 1" }),
   ).toBeVisible()
+  await expect(archivedPanel).toContainText("Exchange 1")
+  await expect(archivedPanel).toContainText("Moderator check")
   await expect(archivedPanel).toContainText("Last working hypothesis")
+  await archivedPanel
+    .getByRole("button", { name: "Resistance ecology", exact: true })
+    .click()
+  await expect(
+    page.getByRole("dialog", { name: "Resistance ecology" }).getByText(
+      /Lead Perspective · Version/,
+    ),
+  ).toBeVisible()
+  await page.keyboard.press("Escape")
   await page.keyboard.press("Escape")
 
   await page.getByRole("button", { name: "Join" }).click()
@@ -835,7 +907,7 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   await expect(page.getByTestId("saved-hypothesis-node-H2")).toHaveCount(0)
   await expect(
     page.locator('[data-testid^="research-problem-node-"]'),
-  ).toHaveCount(1)
+  ).toHaveCount(0)
   expect(duplicateKeyWarnings).toEqual([])
 
   await page.getByRole("button", { name: "Review and end" }).click()
@@ -843,6 +915,7 @@ test("continues an open question on the existing canvas", async ({ page }) => {
     name: "Review and end deliberation",
   })
   await expect(finalReview).toBeVisible()
+  await expect(finalReview.getByRole("checkbox").first()).not.toBeChecked()
   const beforeEnding = await requestJson(
     page.request,
     `/api/focused/sessions/${rootId}`,
@@ -1040,9 +1113,10 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   const conversation = page.getByTestId("panel-conversation-scroll")
   await expect(conversation).toBeVisible()
   await expect(
-    drawer.getByText("Discuss all four areas before ending (0/4 complete).", {
-      exact: true,
-    }),
+    drawer.getByText(
+      "Complete a round before reviewing and ending the deliberation.",
+      { exact: true },
+    ),
   ).toBeVisible()
   await expect(
     drawer.getByRole("button", { name: "Review and end" }),
@@ -1175,6 +1249,31 @@ test("promotes and merges versioned hypotheses through the workspace map", async
 })
 
 
+
+
+test("allows ending after one completed area", async ({ page }) => {
+  const { rootId, workspaceId } = await startWorkspace(page)
+  await prepareConsensusCheckpoint(page.request, rootId, false)
+  await page.goto(`/focused?workspace=${workspaceId}`)
+  await page.getByRole("button", { name: "Join" }).click()
+  await applySharedGround(page)
+  await page.getByRole("button", { name: "Save hypothesis" }).click()
+
+  const reviewButton = page.getByRole("button", { name: "Review and end" })
+  await expect(reviewButton).toBeEnabled()
+  await reviewButton.click()
+  const finalReview = page.getByRole("dialog", {
+    name: "Review and end deliberation",
+  })
+  await finalReview.getByRole("button", { name: "Confirm and end" }).click()
+  await expect(page.getByText("Deliberation ended", { exact: true })).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Why this agreement?" }),
+  ).toHaveCount(0)
+  await expect(
+    page.getByPlaceholder("Ask a question at any point…"),
+  ).toHaveCount(0)
+})
 test("shows a direct agent reply in the panel conversation", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   const { rootId, workspaceId } = await startWorkspace(page)

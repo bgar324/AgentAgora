@@ -51,20 +51,25 @@ Surfaces:
   deliberation with no rounds, chat, questions, or working hypothesis. The new
   Perspective always participates; the researcher chooses which existing
   Perspectives to invite. Archived rounds and hypotheses remain inspectable.
-  Each round examines exactly one area, and the same lead opens every round.
-  The drawer reports each stage and shows agent turns as the server produces
-  them. Researchers can ask a question before or between rounds. A question
-  submitted during a round waits until that round finishes.
-  Each moderator summary follows its agent turns. Shared ground shows explicit
-  Before and Proposed values for every changed hypothesis part. The researcher
-  can accept, edit, or reject the proposal. Saving creates an immutable
-  checkpoint. After all four areas have at least one completed round, Review
-  and end opens the final hypothesis and open-question selection. Confirm and
-  end closes the round, chat, and edit lifecycle, then opens the
-  deliberation-level divergent and convergent scoring dialog.
-  Completed open questions expose Start paper search both in the drawer and on
-  their Research Problem node; neither surface forces the user to hunt for the
-  other.
+  Each round examines exactly one area, and the same lead opens every exchange.
+  A round runs up to three exchanges. After each complete exchange, the
+  moderator proposes concrete shared ground and every Perspective accepts,
+  qualifies, or rejects it. Unanimous acceptance ends the loop; otherwise the
+  third exchange returns the disagreement or unsettled boundary without forcing
+  consensus. The drawer reports each stage, groups agent turns by exchange, and
+  shows every moderator check. Researchers can ask a question before or between
+  rounds. A question submitted during a round waits until that round finishes.
+  Each final moderator summary follows its exchanges. Shared ground shows
+  explicit Before and accented Proposed values for every changed hypothesis
+  part. The researcher selects which proposed parts to apply; unselected parts
+  retain the current text. Saving creates an immutable checkpoint. Review and
+  end becomes available after any completed round with a saved hypothesis.
+  Selected open questions become Research Problem nodes; unselected questions
+  remain in panel history. Confirm and end closes the round, chat, and edit
+  lifecycle, then opens the deliberation-level divergent and convergent scoring
+  dialog.
+  Selected open questions expose Start paper search in the drawer and on their
+  Research Problem node. Unselected open questions remain available in history.
   A Research Problem opens a temporary literature branch. Back to panel returns
   to the parent without changing the branch. After the current parent
   deliberation ends, Add to panel imports the branch’s evidence and Perspectives
@@ -146,7 +151,7 @@ Sentence case, never uppercase labels. No arrows, no emojis, plain language;
 prefer "panel" in explanatory copy. The terminal actions are "Review and end"
 and "Confirm and end." Empty states are one actionable line. Buttons say what
 they do, such as Generate search queries, Add Perspective, Start round, Apply
-shared ground, Apply changes, Review and end, and Confirm and end.
+shared ground, Apply selected parts, Review and end, and Confirm and end.
 Busy = spinner inside the triggering button.
 Visible labels start with a capital letter. Internal agent and paper IDs
 never render; use the Perspective name and complete, wrapping

@@ -168,7 +168,15 @@ export function StageDeliberation() {
         : (completion.rounds.at(-1)?.participant_iids ?? [])
     const questionIdsForCompletion = (
       completion: DeliberationState["completion_history"][number],
-    ) => completion.question_ids
+    ) =>
+      Array.from(
+        new Set([
+          ...completion.selected_question_ids,
+          ...completion.recommended_questions
+            .filter((question) => question.child_investigation_id !== null)
+            .map((question) => question.id),
+        ]),
+      )
     const questionCycle = new Map<string, number>()
     history.forEach((completion, cycle) => {
       questionIdsForCompletion(completion).forEach((questionId) => {
@@ -357,17 +365,17 @@ export function StageDeliberation() {
       },
     })
     if (ended && completedRounds.length > 0) {
-      const historicalQuestionIds = new Set(
-        history.flatMap((completion) =>
-          questionIdsForCompletion(completion),
-        ),
-      )
       addArtifacts(
         currentCycle,
         deliberation.final_hypothesis_version_id,
-        deliberation.recommended_questions
-          .filter((question) => !historicalQuestionIds.has(question.id))
-          .map((question) => question.id),
+        Array.from(
+          new Set([
+            ...deliberation.selected_question_ids,
+            ...deliberation.recommended_questions
+              .filter((question) => question.child_investigation_id !== null)
+              .map((question) => question.id),
+          ]),
+        ),
       )
     }
     return result
@@ -399,7 +407,15 @@ export function StageDeliberation() {
       cycle < history.length ? historyPanelId(cycle) : currentPanelId
     const questionIdsForCompletion = (
       completion: DeliberationState["completion_history"][number],
-    ) => completion.question_ids
+    ) =>
+      Array.from(
+        new Set([
+          ...completion.selected_question_ids,
+          ...completion.recommended_questions
+            .filter((question) => question.child_investigation_id !== null)
+            .map((question) => question.id),
+        ]),
+      )
     const questionCycle = new Map<string, number>()
     history.forEach((completion, cycle) => {
       questionIdsForCompletion(completion).forEach((questionId) => {
@@ -509,12 +525,18 @@ export function StageDeliberation() {
           questionIdsForCompletion(completion),
         ),
       )
+      const currentQuestionIds = Array.from(
+        new Set([
+          ...deliberation.selected_question_ids,
+          ...deliberation.recommended_questions
+            .filter((question) => question.child_investigation_id !== null)
+            .map((question) => question.id),
+        ]),
+      ).filter((questionId) => !historicalQuestionIds.has(questionId))
       addArtifactEdges(
         history.length,
         deliberation.final_hypothesis_version_id,
-        deliberation.recommended_questions
-          .filter((question) => !historicalQuestionIds.has(question.id))
-          .map((question) => question.id),
+        currentQuestionIds,
       )
     }
     return result
@@ -663,22 +685,8 @@ function ArchivedPanelDialog({
       </div>
       <div className="flex flex-col gap-4">
         {completion.rounds.map((round) => (
-          <section
-            key={round.n}
-            aria-label={`Archived round ${round.n}`}
-            className="rounded-lg border border-[var(--line)] p-3"
-          >
-            <SectionLabel>Round {round.n}</SectionLabel>
-            <div className="mt-2 flex flex-col gap-2">
-              {round.turns.map((turn) => (
-                <TurnBubble key={turn.id} turn={turn} />
-              ))}
-            </div>
-            {round.resolution && (
-              <div className="mt-3">
-                <ResolutionCard resolution={round.resolution} />
-              </div>
-            )}
+          <section key={round.n} aria-label={`Archived round ${round.n}`}>
+            <RoundRecord round={round} />
           </section>
         ))}
       </div>
@@ -766,6 +774,7 @@ function PanelDrawer({
   const drawerTitleId = useId()
   const drawerRef = useDialogSurface<HTMLElement>(onClose)
   const latestChatRef = useRef<HTMLDivElement>(null)
+  const chatInputRef = useRef<HTMLInputElement>(null)
   const flushingQueuedChatRef = useRef(false)
   const [hypothesisDraft, setHypothesisDraft] = useState<HypothesisDev | null>(
     () => {
@@ -822,7 +831,9 @@ function PanelDrawer({
   const perspectiveOf = (agent: AgentState): Perspective | undefined =>
     session.perspectives.find((item) => item.id === agent.perspective_id)
 
-  const act = async (operation: () => Promise<unknown>) => {
+  const act = async <Result,>(
+    operation: () => Promise<Result>,
+  ): Promise<Result | undefined> => {
     setError(null)
     try {
       return await operation()
@@ -867,22 +878,28 @@ function PanelDrawer({
     })
   }
 
-  const confirmDraft = async (): Promise<boolean> => {
-    if (
-      !hypothesisDraft ||
-      Object.values(hypothesisDraft).some((part) => !part.trim())
-    ) {
+  const confirmDraft = async (
+    draft: HypothesisDev,
+    selectedParts?: (keyof HypothesisDev)[],
+  ): Promise<boolean> => {
+    if (Object.values(draft).some((part) => !part.trim())) {
       setError("Complete all four hypothesis fields.")
       return false
     }
     const mode = active.hypothesis_confirmed
       ? "edit_applied"
       : "apply_pending"
-    return (
-      (await act(() =>
-        confirmHypothesis(active.id, hypothesisDraft, mode),
-      )) !== undefined
+    const state = await act(() =>
+      confirmHypothesis(active.id, draft, mode, selectedParts),
     )
+    if (!state) return false
+    const updated = state.deliberations.find((item) => item.id === active.id)
+    setHypothesisDraft(
+      updated?.applied_hypothesis
+        ? { ...updated.applied_hypothesis }
+        : null,
+    )
+    return true
   }
   const rejectDraft = async (): Promise<boolean> => {
     if (!active.applied_hypothesis) return false
@@ -944,11 +961,17 @@ function PanelDrawer({
     agents[0]?.perspective_id ||
     ""
   const roundProgress = operationProgress.filter(
-    (item) => item.kind === "round_stage" || item.kind === "round_turn",
+    (item) =>
+      item.kind === "round_stage" ||
+      item.kind === "round_turn" ||
+      item.kind === "round_check",
   )
   const latestRoundStage = [...roundProgress]
     .reverse()
     .find((item) => item.kind === "round_stage")
+  const latestExchangeProgress = [...roundProgress]
+    .reverse()
+    .find((item) => typeof item.exchange_n === "number")
 
   return (
     <div className="fixed inset-0 z-40 flex justify-end">
@@ -997,12 +1020,18 @@ function PanelDrawer({
             {agents.map((agent) => {
               const perspective = perspectiveOf(agent)
               return (
-                <IdentityChip
-                  key={agent.iid}
-                  color={perspective?.color ?? "var(--ink-2)"}
-                  name={perspective?.name ?? agent.label}
-                  onClick={() => onOpenAgent(agent)}
-                />
+                <div key={agent.iid} className="flex items-center gap-1">
+                  <IdentityChip
+                    color={perspective?.color ?? "var(--ink-2)"}
+                    name={perspective?.name ?? agent.label}
+                    onClick={() => onOpenAgent(agent)}
+                  />
+                  {agent.iid === openerIid && (
+                    <span className="text-[9.5px] font-semibold text-[var(--green)]">
+                      Lead
+                    </span>
+                  )}
+                </div>
               )
             })}
             {agents.length < 2 && (
@@ -1014,8 +1043,20 @@ function PanelDrawer({
           <div className="mt-4 min-w-0">
             <div className="min-w-0">
               <div className="flex flex-col gap-5">
-            {active.rounds.map((round) => (
-              <RoundRecord key={round.n} round={round} />
+            {active.rounds.map((round, index) => (
+              <RoundRecord
+                key={round.n}
+                round={round}
+                showPrompts={
+                  active.completed_at === null &&
+                  round.completed &&
+                  index === active.rounds.length - 1
+                }
+                onPrompt={(prompt) => {
+                  setMessage(prompt)
+                  window.requestAnimationFrame(() => chatInputRef.current?.focus())
+                }}
+              />
             ))}
           </div>
           {(active.chat.length > 0 || pendingChat) && (
@@ -1049,6 +1090,7 @@ function PanelDrawer({
                         facet: null,
                         text: pendingChat.text,
                         citations: [],
+                        exchange_n: null,
                       }}
                     />
                     <div ref={latestChatRef}>
@@ -1065,6 +1107,7 @@ function PanelDrawer({
                               ? "Queued for after this round"
                               : "Thinking…",
                           citations: [],
+                          exchange_n: null,
                         }}
                         thinking={
                           pendingChat.status === "thinking" || !runningRound
@@ -1091,6 +1134,9 @@ function PanelDrawer({
                   {latestRoundStage.message}
                 </span>
                 <span className="text-[10.5px] tabular-nums text-[var(--mute)]">
+                  {latestExchangeProgress?.exchange_n
+                    ? `Exchange ${latestExchangeProgress.exchange_n}/${latestExchangeProgress.max_exchanges ?? 3} · `
+                    : ""}
                   {latestRoundStage.step}/{latestRoundStage.total_steps}
                 </span>
               </div>
@@ -1101,20 +1147,53 @@ function PanelDrawer({
               />
               <div className="mt-3 flex flex-col gap-2">
                 {roundProgress
-                  .filter((item) => item.kind === "round_turn" && item.text)
-                  .map((item) => (
-                    <div
-                      key={item.sequence}
-                      className="rounded-lg border border-[var(--line)] bg-[var(--panel)] px-3 py-2"
-                    >
-                      <div className="text-[10.5px] font-semibold text-[var(--ink-2)]">
-                        {item.agent_label || "Panel"}
+                  .filter(
+                    (item) =>
+                      (item.kind === "round_turn" && item.text) ||
+                      item.kind === "round_check",
+                  )
+                  .map((item) =>
+                    item.kind === "round_check" ? (
+                      <div
+                        key={item.sequence}
+                        className="rounded-lg border border-[var(--line)] bg-[var(--bg)] px-3 py-2"
+                      >
+                        <div className="flex items-center justify-between gap-2 text-[10.5px] font-semibold">
+                          <span>Moderator check</span>
+                          <span
+                            className={
+                              item.unanimous
+                                ? "text-[var(--green)]"
+                                : "text-[var(--amber)]"
+                            }
+                          >
+                            {item.unanimous ? "Unanimous" : "Continuing"}
+                          </span>
+                        </div>
+                        <p className="mt-0.5 text-[11px] leading-relaxed text-[var(--ink-2)]">
+                          {item.proposed_shared_ground ||
+                            "No substantive shared ground yet."}
+                        </p>
                       </div>
-                      <p className="mt-0.5 text-[11px] leading-relaxed text-[var(--ink-2)]">
-                        {item.text}
-                      </p>
-                    </div>
-                  ))}
+                    ) : (
+                      <div
+                        key={item.sequence}
+                        className="rounded-lg border border-[var(--line)] bg-[var(--panel)] px-3 py-2"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[10.5px] font-semibold text-[var(--ink-2)]">
+                            {item.agent_label || "Panel"}
+                          </span>
+                          <span className="text-[9.5px] text-[var(--mute)]">
+                            Exchange {item.exchange_n ?? 1}
+                          </span>
+                        </div>
+                        <p className="mt-0.5 text-[11px] leading-relaxed text-[var(--ink-2)]">
+                          {item.text}
+                        </p>
+                      </div>
+                    ),
+                  )}
               </div>
             </section>
           )}
@@ -1229,8 +1308,8 @@ function PanelDrawer({
                   Choose what this panel should focus on
                 </h2>
                 <p className="mt-1 max-w-[62ch] text-[12px] leading-relaxed text-[var(--mute)]">
-                  Select one area. Areas remain reusable. Discuss all four before
-                  ending the deliberation.
+                  Select one area. Areas remain reusable, and you can end after
+                  any completed round.
                 </p>
               </div>
               <div className="shrink-0 text-right">
@@ -1358,6 +1437,7 @@ function PanelDrawer({
                 ))}
               </select>
               <input
+                ref={chatInputRef}
                 value={message}
                 onChange={(event) => setMessage(event.target.value)}
                 onKeyDown={(event) => {
@@ -1429,7 +1509,18 @@ function PanelDrawer({
   )
 }
 
-function RoundRecord({ round }: { round: DeliberationRound }) {
+function RoundRecord({
+  round,
+  showPrompts = false,
+  onPrompt,
+}: {
+  round: DeliberationRound
+  showPrompts?: boolean
+  onPrompt?: (prompt: string) => void
+}) {
+  const exchangeNumbers = Array.from(
+    new Set(round.turns.map((turn) => turn.exchange_n ?? 1)),
+  )
   return (
     <section className="ep-enter">
       <div className="mb-2 flex items-center gap-2">
@@ -1449,14 +1540,63 @@ function RoundRecord({ round }: { round: DeliberationRound }) {
         )}
       </div>
 
-
       <div
-        className="flex flex-col gap-2.5"
+        className="flex flex-col gap-3"
         data-testid={`round-${round.n}-discussion`}
       >
-        {round.turns.map((turn) => (
-          <TurnBubble key={turn.id} turn={turn} />
-        ))}
+        {exchangeNumbers.map((exchangeN) => {
+          const check = round.moderator_checks.find(
+            (item) => item.exchange_n === exchangeN,
+          )
+          return (
+            <section
+              key={exchangeN}
+              className="rounded-xl border border-[var(--line)] p-3"
+            >
+              <div className="mb-2 text-[10.5px] font-semibold text-[var(--mute)]">
+                Exchange {exchangeN}
+              </div>
+              <div className="flex flex-col gap-2.5">
+                {round.turns
+                  .filter((turn) => (turn.exchange_n ?? 1) === exchangeN)
+                  .map((turn) => (
+                    <TurnBubble key={turn.id} turn={turn} />
+                  ))}
+              </div>
+              {check && (
+                <div className="mt-3 rounded-lg bg-[var(--bg)] p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <SectionLabel>Moderator check</SectionLabel>
+                    <span
+                      className={`text-[10.5px] font-semibold ${
+                        check.unanimous
+                          ? "text-[var(--green)]"
+                          : "text-[var(--amber)]"
+                      }`}
+                    >
+                      {check.unanimous ? "Unanimous" : "Not unanimous"}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-[11.5px] leading-relaxed text-[var(--ink-2)]">
+                    {check.proposed_shared_ground ||
+                      "No substantive shared ground yet."}
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {check.assents.map((assent) => (
+                      <span
+                        key={assent.agent_iid}
+                        title={assent.reason}
+                        className="rounded-full border border-[var(--line)] px-2 py-0.5 text-[9.5px] text-[var(--ink-2)]"
+                      >
+                        {assent.agent_label}: {assent.decision}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </section>
+          )
+        })}
       </div>
       {round.resolution && (
         <div data-testid={`round-${round.n}-summary`}>
@@ -1477,7 +1617,10 @@ function RoundRecord({ round }: { round: DeliberationRound }) {
                   <span className="text-[11px] font-semibold text-[var(--ink)]">
                     {FACET_META[verdict.facet].label}
                   </span>
-                  <span className="text-[10.5px] font-semibold" style={{ color: meta.color }}>
+                  <span
+                    className="text-[10.5px] font-semibold"
+                    style={{ color: meta.color }}
+                  >
                     {meta.label}
                   </span>
                 </div>
@@ -1490,22 +1633,68 @@ function RoundRecord({ round }: { round: DeliberationRound }) {
         </div>
       )}
 
-
       {round.reflections.some((item) => item.decision === "revised") && (
         <div className="mt-3 rounded-lg border border-[var(--line)] px-3 py-2.5">
-          <SectionLabel>Perspective updates</SectionLabel>
-          <div className="mt-1 flex flex-col gap-1.5">
+          <SectionLabel>Lead Perspective update</SectionLabel>
+          <div className="mt-1 flex flex-col gap-2">
             {round.reflections
               .filter((item) => item.decision === "revised")
               .map((item) => (
                 <div key={item.agent_iid} className="text-[11px] leading-relaxed">
-                  <span className="font-semibold text-[var(--ink)]">
-                    {item.perspective_name}
-                  </span>{" "}
-                  <span className="text-[var(--mute)]">{item.reason}</span>
+                  <div>
+                    <span className="font-semibold text-[var(--ink)]">
+                      {item.perspective_name}
+                    </span>{" "}
+                    <span className="text-[var(--mute)]">{item.reason}</span>
+                  </div>
+                  {item.revisions.map((revision) => (
+                    <p
+                      key={revision.facet}
+                      className="mt-1 text-[var(--ink-2)]"
+                    >
+                      <span className="font-semibold">
+                        {FACET_META[revision.facet].label}:
+                      </span>{" "}
+                      {revision.text}
+                    </p>
+                  ))}
                 </div>
               ))}
           </div>
+        </div>
+      )}
+
+      {showPrompts && onPrompt && (
+        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-[var(--line)] pt-3">
+          <span className="text-[10.5px] text-[var(--mute)]">
+            Ask about this round:
+          </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() =>
+              onPrompt(
+                round.stop_reason === "unanimous"
+                  ? "Why did the panel agree on this shared ground?"
+                  : "Which disagreements or uncertainties remain unresolved?",
+              )
+            }
+          >
+            {round.stop_reason === "unanimous"
+              ? "Why this agreement?"
+              : "What remains unresolved?"}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() =>
+              onPrompt(
+                "Which part of the working hypothesis would you change, and why?",
+              )
+            }
+          >
+            What would you change?
+          </Button>
         </div>
       )}
     </section>
@@ -1739,7 +1928,10 @@ function WorkingHypothesisPanel({
   completed: boolean
   ending: boolean
   onChange: (value: HypothesisDev) => void
-  onApply: () => Promise<boolean>
+  onApply: (
+    value: HypothesisDev,
+    selectedParts: (keyof HypothesisDev)[],
+  ) => Promise<boolean>
   onReject: () => Promise<boolean>
   onSave: () => Promise<boolean>
   onEnd: (selectedQuestionIds: string[]) => Promise<boolean>
@@ -1764,6 +1956,9 @@ function WorkingHypothesisPanel({
   const [editing, setEditing] = useState(false)
   const [applyConfirmationOpen, setApplyConfirmationOpen] = useState(false)
   const [finalReviewOpen, setFinalReviewOpen] = useState(false)
+  const [selectedHypothesisParts, setSelectedHypothesisParts] = useState<
+    (keyof HypothesisDev)[]
+  >([])
   const [selectedQuestionIds, setSelectedQuestionIds] = useState<string[]>(
     () =>
       deliberation.recommended_questions
@@ -1773,12 +1968,7 @@ function WorkingHypothesisPanel({
         )
         .map((question) => question.id),
   )
-  const completedRounds = deliberation.rounds.filter((round) => round.completed)
-  const coveredFacets = new Set(
-    completedRounds.flatMap((round) => round.facets),
-  )
-  const allFacetsCovered = FACETS.every((facet) => coveredFacets.has(facet))
-  const enoughRoundsCompleted = completedRounds.length >= 4
+  const hasCompletedRound = deliberation.rounds.some((round) => round.completed)
   const pending = value !== null && !deliberation.hypothesis_confirmed
   const unsaved =
     deliberation.hypothesis_confirmed &&
@@ -1859,7 +2049,7 @@ function WorkingHypothesisPanel({
                   {part.prompt}
                 </span>
                 {changed && (
-                  <span className="ml-auto text-[9.5px] font-medium text-[var(--ink-2)]">
+                  <span className="ml-auto text-[9.5px] font-semibold text-[var(--amber)]">
                     Changed
                   </span>
                 )}
@@ -1898,6 +2088,15 @@ function WorkingHypothesisPanel({
                       ? "text-[var(--ink-2)]"
                       : "text-[var(--mute)]"
                   }`}
+                  style={
+                    changed
+                      ? {
+                          borderColor: "var(--amber)",
+                          background:
+                            "color-mix(in srgb, var(--amber) 7%, var(--panel))",
+                        }
+                      : undefined
+                  }
                 >
                   {current[part.key] || "Not established yet."}
                 </div>
@@ -1960,7 +2159,12 @@ function WorkingHypothesisPanel({
                 variant={pending ? "primary" : "outline"}
                 size="sm"
                 className="flex-1"
-                onClick={() => setApplyConfirmationOpen(true)}
+                onClick={() => {
+                  setSelectedHypothesisParts(
+                    changedParts.map((part) => part.key),
+                  )
+                  setApplyConfirmationOpen(true)
+                }}
                 disabled={busy || changedParts.length === 0}
               >
                 {applying ? (
@@ -2137,26 +2341,30 @@ function WorkingHypothesisPanel({
         ) : (
           <>
             <p className="text-[10.5px] leading-relaxed text-[var(--mute)]">
-              {!allFacetsCovered
-                ? `Discuss all four areas before ending (${coveredFacets.size}/4 complete).`
-                : !enoughRoundsCompleted
-                  ? `Complete at least four rounds before ending (${completedRounds.length}/4 complete).`
-                  : "Review the final hypothesis and choose which open questions to explore."}
+              {hasCompletedRound
+                ? "Review the saved hypothesis and choose which open questions to prioritize before ending."
+                : "Complete a round before reviewing and ending the deliberation."}
             </p>
             <Button
               variant="primary"
               size="sm"
               className="mt-2 w-full"
               disabled={
+                !hasCompletedRound ||
                 busy ||
-                !allFacetsCovered ||
-                !enoughRoundsCompleted ||
                 pending ||
                 unsaved ||
                 editing ||
                 savedVersionId === null
               }
-              onClick={() => setFinalReviewOpen(true)}
+              onClick={() => {
+                setSelectedQuestionIds(
+                  openQuestions
+                    .filter((question) => question.selected_for_followup)
+                    .map((question) => question.id),
+                )
+                setFinalReviewOpen(true)
+              }}
             >
               Review and end
             </Button>
@@ -2255,33 +2463,57 @@ function WorkingHypothesisPanel({
           }}
         >
           <p className="mb-4 text-[12px] leading-relaxed text-[var(--ink-2)]">
-            This updates {changedParts.length} of {HYPOTHESIS_PARTS.length} parts
-            in the working hypothesis.
+            Select the proposed parts to apply. Unselected parts keep their
+            current text.
           </p>
           <div className="flex max-h-[52vh] flex-col gap-3 overflow-y-auto">
-            {changedParts.map((part) => (
-              <article
-                key={part.key}
-                data-testid={`changed-hypothesis-part-${part.key}`}
-                className="rounded-lg border border-[var(--line)] px-3 py-2.5"
-              >
-                <div className="text-[11px] font-semibold text-[var(--ink)]">
-                  {part.label}
-                </div>
-                <div className="mt-2 text-[9.5px] font-medium text-[var(--mute)]">
-                  Before
-                </div>
-                <p className="mt-0.5 text-[11px] leading-relaxed text-[var(--ink-2)]">
-                  {baseline?.[part.key] || "Not established yet."}
-                </p>
-                <div className="mt-2 text-[9.5px] font-medium text-[var(--mute)]">
-                  Proposed
-                </div>
-                <p className="mt-0.5 text-[11px] leading-relaxed text-[var(--ink)]">
-                  {current[part.key] || "Not established yet."}
-                </p>
-              </article>
-            ))}
+            {changedParts.map((part) => {
+              const selected = selectedHypothesisParts.includes(part.key)
+              return (
+                <label
+                  key={part.key}
+                  data-testid={`changed-hypothesis-part-${part.key}`}
+                  className="cursor-pointer rounded-lg border px-3 py-2.5"
+                  style={{
+                    borderColor: selected ? "var(--amber)" : "var(--line)",
+                    background: selected
+                      ? "color-mix(in srgb, var(--amber) 7%, var(--panel))"
+                      : "transparent",
+                  }}
+                >
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      aria-label={`Apply ${part.label}`}
+                      checked={selected}
+                      disabled={applying || baseline === null}
+                      onChange={() =>
+                        setSelectedHypothesisParts((currentParts) =>
+                          selected
+                            ? currentParts.filter((key) => key !== part.key)
+                            : [...currentParts, part.key],
+                        )
+                      }
+                    />
+                    <span className="text-[11px] font-semibold text-[var(--ink)]">
+                      {part.label}
+                    </span>
+                  </div>
+                  <div className="mt-2 text-[9.5px] font-medium text-[var(--mute)]">
+                    Before
+                  </div>
+                  <p className="mt-0.5 text-[11px] leading-relaxed text-[var(--ink-2)]">
+                    {baseline?.[part.key] || "Not established yet."}
+                  </p>
+                  <div className="mt-2 text-[9.5px] font-medium text-[var(--amber)]">
+                    Proposed
+                  </div>
+                  <p className="mt-0.5 text-[11px] leading-relaxed text-[var(--ink)]">
+                    {current[part.key] || "Not established yet."}
+                  </p>
+                </label>
+              )
+            })}
           </div>
           <div className="mt-5 flex justify-end gap-2">
             <Button
@@ -2295,9 +2527,9 @@ function WorkingHypothesisPanel({
             <Button
               variant="primary"
               size="sm"
-              disabled={applying}
+              disabled={applying || selectedHypothesisParts.length === 0}
               onClick={() => {
-                void onApply().then((applied) => {
+                void onApply(current, selectedHypothesisParts).then((applied) => {
                   if (!applied) return
                   setEditing(false)
                   setApplyConfirmationOpen(false)
@@ -2309,7 +2541,9 @@ function WorkingHypothesisPanel({
                   <Spinner /> Applying…
                 </>
               ) : (
-                "Apply changes"
+                `Apply ${selectedHypothesisParts.length} part${
+                  selectedHypothesisParts.length === 1 ? "" : "s"
+                }`
               )}
             </Button>
           </div>
@@ -2361,6 +2595,11 @@ function TurnBubble({
             style={isUser ? undefined : { color: identityColor }}
           >
             {isUser ? "Researcher" : turn.agent_label || "Panel"}
+            {turn.role === "lead" && (
+              <span className="ml-1 text-[9.5px] text-[var(--green)]">
+                Lead
+              </span>
+            )}
           </span>
           {turn.facet && (
             <span
@@ -2555,14 +2794,38 @@ function AgentModal({ agent, onClose }: { agent: AgentState | null; onClose: () 
   if (!agent || !session) return null
   const perspective = session.perspectives.find((item) => item.id === agent.perspective_id)
   if (!perspective) return null
+  const deliberation = session.deliberations[0]
+  const archivedCycle = deliberation?.completion_history.find(
+    (completion) =>
+      completion.agent_iids.includes(agent.iid) ||
+      completion.rounds.some((round) =>
+        round.participant_iids.includes(agent.iid),
+      ),
+  )
+  const leadPerspectiveId = archivedCycle
+    ? archivedCycle.lead_perspective_id
+    : deliberation?.lead_perspective_id
+  const isLead = leadPerspectiveId === agent.perspective_id
+  const displayedPerspective = isLead
+    ? ((archivedCycle
+        ? archivedCycle.revised_perspective
+        : deliberation?.revised_perspective) ?? perspective)
+    : perspective
   return (
     <ModalShell title={perspective.name} onClose={onClose}>
       <div className="mb-3">
-        <SectionLabel>Current Perspective</SectionLabel>
+        <SectionLabel>
+          {isLead
+            ? `Lead Perspective · Version ${agent.facet_version}`
+            : archivedCycle
+              ? "Archived Perspective"
+              : "Current Perspective"}
+        </SectionLabel>
       </div>
       <div className="grid grid-cols-2 gap-3">
         {FACETS.map((facet) => {
           const evidence = agent.facets[facet]
+          const baselineEvidence = perspective.facets[facet]
           return (
             <div key={facet} className="rounded-lg border border-[var(--line)] p-3">
               <div className="text-[11px] font-semibold" style={{ color: FACET_META[facet].color }}>
@@ -2571,6 +2834,12 @@ function AgentModal({ agent, onClose }: { agent: AgentState | null; onClose: () 
               <p className="mt-1 text-[12px] leading-relaxed text-[var(--ink-2)]">
                 {evidence?.text ?? "Not established"}
               </p>
+              {baselineEvidence?.text &&
+                baselineEvidence.text !== evidence?.text && (
+                  <p className="mt-2 text-[10px] leading-relaxed text-[var(--mute)]">
+                    Started from: {baselineEvidence.text}
+                  </p>
+                )}
               {evidence?.paper_id && (
                 <button
                   type="button"
@@ -2587,15 +2856,15 @@ function AgentModal({ agent, onClose }: { agent: AgentState | null; onClose: () 
           )
         })}
       </div>
-      {perspective.framing && (
+      {displayedPerspective.framing && (
         <div className="mt-4 grid grid-cols-2 gap-3 border-t border-[var(--line)] pt-3">
           <div>
             <SectionLabel>Framing</SectionLabel>
-            <p className="mt-1 text-[12px] leading-relaxed text-[var(--ink-2)]">{perspective.framing.framing}</p>
+            <p className="mt-1 text-[12px] leading-relaxed text-[var(--ink-2)]">{displayedPerspective.framing.framing}</p>
           </div>
           <div>
             <SectionLabel>Position</SectionLabel>
-            <p className="mt-1 text-[12px] leading-relaxed text-[var(--ink-2)]">{perspective.framing.position}</p>
+            <p className="mt-1 text-[12px] leading-relaxed text-[var(--ink-2)]">{displayedPerspective.framing.position}</p>
           </div>
         </div>
       )}

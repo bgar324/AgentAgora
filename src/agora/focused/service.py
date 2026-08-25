@@ -41,11 +41,13 @@ from agora.focused.models import (
     Facet,
     FacetDistance,
     FacetEvidence,
+    FacetVerdict,
     HypothesisConfirmationMode,
     HypothesisDev,
     HypothesisPart,
     HypothesisVersion,
     InvestigationSummary,
+    ModeratorCheck,
     Perspective,
     QuestionReach,
     QuestionStatus,
@@ -54,6 +56,7 @@ from agora.focused.models import (
     RoundMetrics,
     RoundResolution,
     SessionState,
+    SharedGroundAssent,
     Turn,
     TurnKind,
     WorkspaceState,
@@ -79,6 +82,7 @@ MIN_CLUSTERING_CORPUS = 90
 MIN_THREE_CLUSTER_PAPERS = 15
 DEMO_RETRIEVAL_DELAY_SECONDS = 1.05
 MAX_SEARCH_PROGRESS_EVENTS = 192
+MAX_DELIBERATION_EXCHANGES = 3
 SearchProgressKind = Literal[
     "query_started",
     "query_completed",
@@ -88,6 +92,7 @@ SearchProgressKind = Literal[
     "clustering_completed",
     "round_stage",
     "round_turn",
+    "round_check",
 ]
 
 
@@ -2957,6 +2962,7 @@ class FocusedPanelService:
             *,
             kind: SearchProgressKind = "round_stage",
             turn: Turn | None = None,
+            check: ModeratorCheck | None = None,
         ) -> None:
             self._publish_search_progress(
                 state.id,
@@ -2967,26 +2973,64 @@ class FocusedPanelService:
                 total_steps=7,
                 agent_label=turn.agent_label if turn is not None else None,
                 text=turn.text if turn is not None else None,
+                exchange_n=(
+                    turn.exchange_n
+                    if turn is not None
+                    else check.exchange_n
+                    if check is not None
+                    else None
+                ),
+                max_exchanges=MAX_DELIBERATION_EXCHANGES,
+                proposed_shared_ground=(
+                    check.proposed_shared_ground if check is not None else None
+                ),
+                unanimous=check.unanimous if check is not None else None,
             )
 
         report(1, "lead", "Lead is drafting the opening statement.")
+        report(2, "panel", "Panel Perspectives are exchanging responses.")
 
         async def speak(turn: Turn) -> None:
             round_state.turns.append(turn)
             report(
-                1,
+                2,
                 "exchange",
                 f"{turn.agent_label or 'Panel'} responded.",
                 kind="round_turn",
                 turn=turn,
             )
 
-        for facet in selected:
+        facet = selected[0]
+        final_verdict: FacetVerdict | None = None
+        for exchange_n in range(1, MAX_DELIBERATION_EXCHANGES + 1):
+            prior_turns = [
+                f"{turn.agent_label or 'Panel'}: {turn.text}"
+                for turn in round_state.turns
+                if turn.facet == facet
+            ]
+            previous_check = (
+                round_state.moderator_checks[-1]
+                if round_state.moderator_checks
+                else None
+            )
+            moderator_feedback = (
+                (
+                    f"Proposed shared ground: "
+                    f"{previous_check.proposed_shared_ground}\n"
+                    + "\n".join(
+                        f"- {assent.agent_label}: {assent.decision} — {assent.reason}"
+                        for assent in previous_check.assents
+                    )
+                )
+                if previous_check is not None
+                else None
+            )
             statement = await agents.open_statement(
                 lead_profile,
                 facet,
                 provider=self._provider_for(session),
-                round_turns=[turn.text for turn in round_state.turns],
+                round_turns=prior_turns,
+                moderator_feedback=moderator_feedback,
             )
             lead_turn = Turn(
                 id=session.next_turn_id(),
@@ -3001,9 +3045,9 @@ class FocusedPanelService:
                     statement.citations,
                     set(lead_profile.sources),
                 ),
+                exchange_n=exchange_n,
             )
             await speak(lead_turn)
-            report(2, "panel", "Panel Perspectives are responding.")
 
             answers: list[Turn] = []
             answer_tasks = []
@@ -3025,6 +3069,8 @@ class FocusedPanelService:
                                         lead_agent.label,
                                         statement.text,
                                         provider=self._provider_for(session),
+                                        round_turns=prior_turns,
+                                        moderator_feedback=moderator_feedback,
                                     )
                                 ),
                             )
@@ -3046,11 +3092,14 @@ class FocusedPanelService:
                         response.citations,
                         set(profile.sources),
                     ),
+                    exchange_n=exchange_n,
                 )
                 answers.append(turn)
                 await speak(turn)
 
-            if not any(turn.citations for turn in [lead_turn, *answers]):
+            if exchange_n == 1 and not any(
+                turn.citations for turn in [lead_turn, *answers]
+            ):
                 support_result = await agents.retrieve_support(
                     lead_turn.text,
                     lead_profile,
@@ -3076,16 +3125,19 @@ class FocusedPanelService:
                                 support.citations,
                                 {paper.id for paper in state.papers},
                             ),
+                            exchange_n=exchange_n,
                         )
                     )
 
             facet_turns = [turn for turn in round_state.turns if turn.facet == facet]
-            report(3, "judging", "Moderator is judging agreement.")
+            labeled_turns = [
+                f"{turn.agent_label or 'Panel'}: {turn.text}" for turn in facet_turns
+            ]
             verdict = await agents.judge_facet(
                 lead_profile,
                 other_profiles,
                 facet,
-                [turn.text for turn in facet_turns],
+                labeled_turns,
                 provider=self._provider_for(session),
                 shared_ground=(
                     DEMO_SHARED_GROUND[facet]
@@ -3122,13 +3174,109 @@ class FocusedPanelService:
                     "evidence": evidence,
                 }
             )
-            round_state.verdicts.append(verdict)
+
+            assent_tasks = []
+            try:
+                async with asyncio.TaskGroup() as task_group:
+                    for iid in participant_iids:
+                        agent, profile = self._agent_view(state, iid)
+                        assent_tasks.append(
+                            (
+                                agent,
+                                task_group.create_task(
+                                    agents.assent_to_shared_ground(
+                                        profile,
+                                        facet,
+                                        verdict.proposed_shared_ground,
+                                        labeled_turns,
+                                        provider=self._provider_for(session),
+                                        demo=self._demo(session),
+                                    )
+                                ),
+                            )
+                        )
+            except* Exception as errors:  # noqa: BLE001
+                raise errors.exceptions[0]
+            assents = [
+                SharedGroundAssent(
+                    agent_iid=agent.iid,
+                    agent_label=agent.label,
+                    decision=task.result().decision,
+                    reason=task.result().reason,
+                )
+                for agent, task in assent_tasks
+            ]
+            unanimous = (
+                bool(verdict.proposed_shared_ground.strip())
+                and len(assents) == len(participant_iids)
+                and all(assent.decision == "accept" for assent in assents)
+            )
+            check = ModeratorCheck(
+                exchange_n=exchange_n,
+                proposed_shared_ground=verdict.proposed_shared_ground,
+                verdict=verdict.model_copy(deep=True),
+                assents=assents,
+                unanimous=unanimous,
+            )
+            round_state.moderator_checks.append(check)
+            report(
+                3,
+                "judging",
+                (
+                    f"All Perspectives accepted shared ground in exchange {exchange_n}."
+                    if unanimous
+                    else f"Exchange {exchange_n} did not reach unanimous agreement."
+                ),
+                kind="round_check",
+                check=check,
+            )
+            if unanimous:
+                final_verdict = verdict.model_copy(
+                    update={
+                        "status": "consensus",
+                        "summary": "Every Perspective accepted the proposed shared ground.",
+                        "consensus": verdict.proposed_shared_ground,
+                        "disagreement": "",
+                        "unsettled": "",
+                        "supporting": list(positions),
+                        "contested_by": [],
+                    }
+                )
+                round_state.stop_reason = "unanimous"
+                break
+            final_verdict = verdict
+
+        if final_verdict is None:
+            raise RuntimeError("deliberation exchange loop produced no verdict")
+        if round_state.stop_reason is None:
+            round_state.stop_reason = "exchange_limit"
+            if final_verdict.status == "consensus":
+                final_verdict = final_verdict.model_copy(
+                    update={
+                        "status": "unsettled",
+                        "summary": (
+                            "The moderator proposed shared ground, but not every "
+                            "Perspective accepted it."
+                        ),
+                        "consensus": "",
+                        "unsettled": (
+                            "The panel did not unanimously accept the proposed "
+                            "shared ground."
+                        ),
+                        "supporting": [],
+                    }
+                )
+        round_state.verdicts = [final_verdict]
+        report(3, "judging", "Moderator finalized the agreement check.")
 
         report(4, "summary", "Moderator is synthesizing the round.")
         resolution = await agents.summarize_round(
             selected,
             round_state.verdicts,
-            [turn.text for turn in round_state.turns],
+            [
+                f"{turn.agent_label or 'Panel'}: {turn.text}"
+                for turn in round_state.turns
+            ],
             provider=self._provider_for(session),
         )
         known_papers = {paper.id for paper in state.papers}
@@ -3281,6 +3429,9 @@ class FocusedPanelService:
                             f"{deliberation.id}{cycle_suffix}-r{round_state.n}-q{index}"
                         ),
                         "source_round": round_state.n,
+                        "status": "open",
+                        "child_investigation_id": None,
+                        "selected_for_followup": False,
                     }
                 )
             )
@@ -3306,26 +3457,6 @@ class FocusedPanelService:
         if not deliberation.rounds or not deliberation.rounds[-1].completed:
             raise SessionError(
                 "Complete a focused round before ending the deliberation."
-            )
-        covered_facets = {
-            facet
-            for round_state in deliberation.rounds
-            if round_state.completed
-            for facet in round_state.facets
-        }
-        missing_facets = [facet for facet in FACETS if facet not in covered_facets]
-        if missing_facets:
-            raise SessionError(
-                "Discuss all four areas before ending the deliberation; "
-                f"missing {missing_facets}."
-            )
-        completed_round_count = sum(
-            round_state.completed for round_state in deliberation.rounds
-        )
-        if completed_round_count < 4:
-            raise SessionError(
-                "Complete at least four focused rounds before ending the "
-                "deliberation."
             )
         selected = (
             deliberation.selected_question_ids
@@ -3394,6 +3525,7 @@ class FocusedPanelService:
         deliberation_id: str,
         hypothesis: HypothesisDev,
         mode: HypothesisConfirmationMode = "apply_pending",
+        selected_parts: list[HypothesisPart] | None = None,
     ) -> SessionState:
         session = self._require(session_id)
         deliberation = self._deliberation(session.state, deliberation_id)
@@ -3415,8 +3547,8 @@ class FocusedPanelService:
             deliberation.hypothesis_confirmed = True
             lead_agent = self._deliberation_lead(session.state, deliberation)
             if lead_agent is not None:
-                lead_agent.hypothesis = (
-                    deliberation.applied_hypothesis.model_copy(deep=True)
+                lead_agent.hypothesis = deliberation.applied_hypothesis.model_copy(
+                    deep=True
                 )
             latest_round.hypothesis_decision = "rejected"
             return self._save_state(session.state)
@@ -3424,11 +3556,19 @@ class FocusedPanelService:
             raise SessionError(
                 "This round did not establish enough common ground for a hypothesis."
             )
+        candidate = hypothesis
+        if selected_parts is not None:
+            if deliberation.applied_hypothesis is None:
+                raise SessionError("There is no applied hypothesis to retain.")
+            selected = list(dict.fromkeys(selected_parts))
+            candidate = deliberation.applied_hypothesis.model_copy(
+                update={part: getattr(hypothesis, part) for part in selected}
+            )
         parts = (
-            hypothesis.problem.strip(),
-            hypothesis.previous_work.strip(),
-            hypothesis.reasoning.strip(),
-            hypothesis.hypothesis.strip(),
+            candidate.problem.strip(),
+            candidate.previous_work.strip(),
+            candidate.reasoning.strip(),
+            candidate.hypothesis.strip(),
         )
         if any(not part for part in parts):
             raise SessionError("Complete all four parts of the hypothesis.")
@@ -3557,9 +3697,29 @@ class FocusedPanelService:
             raise SessionError("No agents wired into this deliberation.")
         limit = {"low": 1, "med": 2}.get(proactivity, len(speakers))
         speakers = speakers[:limit]
-        active_facets = (
-            deliberation.rounds[-1].facets if deliberation.rounds else list(FACETS)
+        latest_round = next(
+            (
+                round_state
+                for round_state in reversed(deliberation.rounds)
+                if round_state.completed
+            ),
+            None,
         )
+        active_facets = latest_round.facets if latest_round else list(FACETS)
+        round_context = ""
+        if latest_round is not None:
+            round_context = (
+                "\n".join(
+                    f"{turn.agent_label or 'Panel'}: {turn.text}"
+                    for turn in latest_round.turns
+                )
+                + "\n\nModerator resolution:\n"
+                + (
+                    latest_round.resolution.model_dump_json(indent=2)
+                    if latest_round.resolution is not None
+                    else "No resolution recorded."
+                )
+            )
 
         deliberation.chat.append(
             Turn(
@@ -3570,30 +3730,51 @@ class FocusedPanelService:
             )
         )
 
-        history = [turn.text for turn in deliberation.chat]
-        for iid in speakers:
-            agent, perspective = self._agent_view(state, iid)
-            reply = await agents.reply_to_user(
-                perspective,
-                message,
-                history,
-                active_facets=active_facets,
-                provider=self._provider_for(session),
+        history = [
+            f"{turn.agent_label or turn.role}: {turn.text}"
+            for turn in deliberation.chat
+        ]
+        reply_tasks = []
+        try:
+            async with asyncio.TaskGroup() as task_group:
+                for iid in speakers:
+                    agent, perspective = self._agent_view(state, iid)
+                    reply_tasks.append(
+                        (
+                            agent,
+                            perspective,
+                            task_group.create_task(
+                                agents.reply_to_user(
+                                    perspective,
+                                    message,
+                                    history,
+                                    active_facets=active_facets,
+                                    round_context=round_context,
+                                    working_hypothesis=deliberation.applied_hypothesis,
+                                    provider=self._provider_for(session),
+                                )
+                            ),
+                        )
+                    )
+        except* Exception as errors:  # noqa: BLE001
+            raise errors.exceptions[0]
+        for agent, perspective, task in reply_tasks:
+            reply = task.result()
+            deliberation.chat.append(
+                Turn(
+                    id=session.next_turn_id(),
+                    agent_iid=agent.iid,
+                    agent_label=agent.label,
+                    role="other",
+                    kind=TurnKind.answer,
+                    text=reply.text,
+                    citations=self._canonical_citations(
+                        state,
+                        reply.citations,
+                        set(perspective.sources),
+                    ),
+                )
             )
-            turn = Turn(
-                id=session.next_turn_id(),
-                agent_iid=iid,
-                agent_label=agent.label,
-                role="other",
-                kind=TurnKind.answer,
-                text=reply.text,
-                citations=self._canonical_citations(
-                    state,
-                    reply.citations,
-                    set(perspective.sources),
-                ),
-            )
-            deliberation.chat.append(turn)
 
         return self._save_state(state)
 

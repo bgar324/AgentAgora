@@ -41,6 +41,7 @@ from agora.focused.models import (
     RecommendedQuestion,
     ReflectionDraft,
     RoundResolution,
+    SharedGroundAssentDraft,
     Statement,
     SuggestedQuery,
     SupportPassage,
@@ -517,8 +518,6 @@ async def expand_question_search(
     )
 
 
-
-
 CORPUS_EXPAND_SYSTEM = """\
 You expand an underfilled scientific-paper corpus for clustering.
 Write complementary Semantic Scholar queries that cover populations, methods,
@@ -940,19 +939,31 @@ async def open_statement(
     *,
     provider: FocusedProvider | None = None,
     round_turns: list[str] | None = None,
+    moderator_feedback: str | None = None,
 ) -> Statement:
     evidence = perspective.facets.get(facet)
     value = evidence.text if evidence else "not established"
+    continuing = bool(round_turns)
     context = ""
     if round_turns:
-        context = "\n\n## RECENT ROUND CONTEXT\n" + "\n".join(round_turns[-6:])
+        context += "\n\n## PRIOR EXCHANGES\n" + "\n".join(round_turns[-12:])
+    if moderator_feedback:
+        context += "\n\n## MODERATOR'S LAST CHECK\n" + moderator_feedback
+    instruction = (
+        "Respond as the lead research perspective in a continuing focused "
+        "deliberation. Address the panel's qualifications and objections, refine "
+        "your position where the evidence supports it, and state the narrowest "
+        "shared-ground claim the panel could accept. "
+        if continuing
+        else "You are the lead research perspective in a focused deliberation. "
+        "Open only on the selected facet, using your own abstract-grounded facet "
+        "and papers. State a clear interpretation and its boundary. "
+    )
     parsed = await _structured(
         provider,
-        "You are the lead research perspective in a focused deliberation. "
-        "Open only on the selected facet, using your own abstract-grounded "
-        "facet and papers. State a clear interpretation and its boundary in "
-        "one to three sentences. Cite supporting paper IDs. Do not manufacture "
-        "opposition.",
+        instruction
+        + "Use one to three sentences, cite supporting paper IDs, and do not "
+        "manufacture agreement or opposition.",
         f"## YOUR FACETS\n{_facets_block(perspective)}\n\n"
         f"## ACTIVE FACET\n{facet}: {value}{context}",
         Statement,
@@ -977,18 +988,26 @@ async def answer_statement(
     lead_text: str,
     *,
     provider: FocusedProvider | None = None,
+    round_turns: list[str] | None = None,
+    moderator_feedback: str | None = None,
 ) -> Statement:
     evidence = perspective.facets.get(facet)
     value = evidence.text if evidence else "not established"
+    context = ""
+    if round_turns:
+        context += "\n\n## PRIOR EXCHANGES\n" + "\n".join(round_turns[-12:])
+    if moderator_feedback:
+        context += "\n\n## MODERATOR'S LAST CHECK\n" + moderator_feedback
     parsed = await _structured(
         provider,
-        "Answer a lead perspective using only your own abstract-grounded "
-        "evidence for the selected facet. Identify whether your evidence "
-        "supports, qualifies, or genuinely conflicts with the lead. Difference "
-        "alone is not disagreement. Use one to three sentences and cite paper IDs.",
+        "Answer the lead using only your own abstract-grounded evidence for the "
+        "selected facet. Respond to the prior discussion when present. State "
+        "whether you accept, qualify, or conflict with the lead's current claim. "
+        "Difference alone is not disagreement. Use one to three sentences and "
+        "cite paper IDs.",
         f"## YOUR FACETS\n{_facets_block(perspective)}\n\n"
         f"## ACTIVE FACET\n{facet}: {value}\n\n"
-        f"## LEAD\n{lead_label}: {lead_text}",
+        f"## LEAD\n{lead_label}: {lead_text}{context}",
         Statement,
         task=FocusedTask.answer_statement,
     )
@@ -1129,10 +1148,13 @@ async def judge_facet(
             "a shared answer. DISAGREEMENT requires genuinely incompatible "
             "claims or decisions; different emphases are not enough. UNSETTLED "
             "means evidence, boundaries, or a causal question remain open without "
-            "clear opposition. Never force disagreement. Return one verdict.",
+            "clear opposition. Never force disagreement. Also propose the narrowest "
+            "concrete, evidence-supported shared-ground statement the entire panel "
+            "could accept. Leave proposed_shared_ground empty when no substantive "
+            "shared claim is defensible. Return one verdict.",
             f"## LEAD\n{lead.name}: {lead_text}\n\n## OTHER FACETS\n"
             + "\n".join(f"- {item.name}: {_facet_text(item, facet)}" for item in others)
-            + "\n\n## DISCUSSION\n"
+            + "\n\n## LABELED DISCUSSION\n"
             + "\n".join(turns_for_facet),
             FacetVerdicts,
             task=FocusedTask.judge_facet,
@@ -1157,8 +1179,9 @@ async def judge_facet(
             facet=facet,
             status="consensus",
             summary=f"The panel established shared {facet} ground.",
+            proposed_shared_ground=shared_ground,
             consensus=shared_ground,
-            supporting=[item.name for item in others],
+            supporting=[lead.name, *(item.name for item in others)],
         )
 
     other_values = [_facet_text(item, facet) for item in others]
@@ -1175,8 +1198,9 @@ async def judge_facet(
             facet=facet,
             status="consensus",
             summary=f"The panel shares the same {facet} account.",
+            proposed_shared_ground=lead_text,
             consensus=lead_text,
-            supporting=[item.name for item in others],
+            supporting=[lead.name, *(item.name for item in others)],
         )
     if explicit_conflict:
         return FacetVerdict(
@@ -1197,6 +1221,46 @@ async def judge_facet(
             f"How the {facet} boundaries represented by the panel fit together "
             "remains unestablished."
         ),
+    )
+
+
+async def assent_to_shared_ground(
+    perspective: Perspective,
+    facet: Facet,
+    proposed_shared_ground: str,
+    turns_for_facet: list[str],
+    *,
+    provider: FocusedProvider | None = None,
+    demo: bool = False,
+) -> SharedGroundAssentDraft:
+    if not proposed_shared_ground.strip():
+        return SharedGroundAssentDraft(
+            decision="reject",
+            reason="The moderator did not identify substantive shared ground.",
+        )
+    if demo:
+        return SharedGroundAssentDraft(
+            decision="accept",
+            reason="Demo Perspectives accept the configured shared ground.",
+        )
+    parsed = await _structured(
+        provider,
+        "Assess one proposed shared-ground statement as this research Perspective. "
+        "ACCEPT only when the exact statement is supported without changes. QUALIFY "
+        "when a narrower or bounded version would be supportable. REJECT when it "
+        "conflicts with your evidence. Do not accept merely to end the discussion.",
+        f"## YOUR FACETS\n{_facets_block(perspective)}\n\n"
+        f"## ACTIVE FACET\n{facet}\n\n"
+        "## DISCUSSION\n"
+        + "\n".join(turns_for_facet[-12:])
+        + f"\n\n## PROPOSED SHARED GROUND\n{proposed_shared_ground}",
+        SharedGroundAssentDraft,
+        task=FocusedTask.assent_shared_ground,
+        temperature=0.1,
+    )
+    return parsed or SharedGroundAssentDraft(
+        decision="reject",
+        reason="No explicit assent was returned.",
     )
 
 
@@ -1282,16 +1346,14 @@ async def summarize_round(
     }
     parsed = await _structured(
         provider,
-        "Resolve a focused multi-perspective discussion. Begin with a 2-3 "
-        "sentence summary: first explain how the Perspectives compared, "
-        "challenged, or reinforced their positions and what evidence moved the "
-        "discussion; then state the conclusion. Separate consensus, genuine "
-        "disagreement, and unsettled evidence or boundaries. Never invent "
-        "conflict. If no disagreement exists, identify at least one open point "
-        "genuinely left unestablished so the investigation can continue.",
+        "Summarize a focused multi-perspective discussion in 2-3 sentences. "
+        "First explain how the Perspectives compared, challenged, or reinforced "
+        "their positions and what evidence moved the discussion; then state the "
+        "moderator's conclusion. The supplied verdicts are authoritative. Do not "
+        "reclassify them or invent conflict.",
         "## ACTIVE FACETS\n"
         + ", ".join(facets)
-        + "\n\n## MODERATOR VERDICTS\n"
+        + "\n\n## AUTHORITATIVE MODERATOR VERDICTS\n"
         + "\n".join(
             f"- {verdict.facet} [{verdict.status}]: {verdict.summary}"
             + (
@@ -1302,52 +1364,12 @@ async def summarize_round(
             )
             for verdict in verdicts
         )
-        + "\n\n## DIALOGUE\n"
+        + "\n\n## LABELED DIALOGUE\n"
         + "\n".join(turns),
         RoundResolution,
         task=FocusedTask.summarize_round,
         temperature=0.1,
     )
-    if parsed and parsed.summary:
-        parsed.summary = _normalize_round_summary(
-            parsed.summary,
-            facets,
-            turns,
-            verdicts,
-        )
-        active = set(facets)
-        parsed.consensus_points = [
-            point for point in parsed.consensus_points if point.facet in active
-        ]
-        parsed.disagreement_points = [
-            point for point in parsed.disagreement_points if point.facet in active
-        ]
-        parsed.unsettled_points = [
-            point for point in parsed.unsettled_points if point.facet in active
-        ]
-        all_points = [
-            *parsed.consensus_points,
-            *parsed.disagreement_points,
-            *parsed.unsettled_points,
-        ]
-        for point in all_points:
-            point.citations = list(evidence_by_facet.get(point.facet, []))
-        if not parsed.disagreement_points and not parsed.unsettled_points:
-            facet = facets[0]
-            parsed.unsettled_points.append(
-                DeliberationPoint(
-                    facet=facet,
-                    text=(
-                        f"The dialogue did not establish how far its shared "
-                        f"{facet} account generalizes."
-                    ),
-                    rationale="Consensus did not resolve its evidentiary boundary.",
-                )
-            )
-        for point in parsed.unsettled_points:
-            point.citations = list(evidence_by_facet.get(point.facet, []))
-        return parsed
-
     consensus = [
         _point_from_verdict(verdict, kind="consensus")
         for verdict in verdicts
@@ -1376,14 +1398,13 @@ async def summarize_round(
                 citations=list(evidence_by_facet.get(facet, [])),
             )
         )
-    conclusion = " ".join(verdict.summary for verdict in verdicts).strip()
+    summary = (
+        parsed.summary
+        if parsed and parsed.summary
+        else " ".join(verdict.summary for verdict in verdicts).strip()
+    )
     return RoundResolution(
-        summary=_normalize_round_summary(
-            conclusion,
-            facets,
-            turns,
-            verdicts,
-        ),
+        summary=_normalize_round_summary(summary, facets, turns, verdicts),
         consensus_points=consensus,
         disagreement_points=disagreements,
         unsettled_points=unsettled,
@@ -1679,17 +1700,27 @@ async def reply_to_user(
     history: list[str],
     *,
     active_facets: list[Facet] | None = None,
+    round_context: str = "",
+    working_hypothesis: HypothesisDev | None = None,
     provider: FocusedProvider | None = None,
 ) -> Statement:
     facets = active_facets or FACETS
+    hypothesis_context = (
+        working_hypothesis.model_dump_json(indent=2)
+        if working_hypothesis is not None
+        else "No working hypothesis is available."
+    )
     parsed = await _structured(
         provider,
         "Answer the researcher's question as one evidence-grounded perspective. "
-        "Stay within the active facet context when supplied, distinguish a "
-        "qualification from disagreement, and cite supporting paper IDs.",
+        "Use the supplied round record when present, stay within the active facet, "
+        "distinguish a qualification from disagreement, and cite paper IDs. Explain "
+        "the recorded discussion; do not claim that this answer changes panel state.",
         f"## YOUR FACETS\n{_facets_block(perspective)}\n\n"
         f"## ACTIVE FACETS\n{', '.join(facets)}\n\n"
-        f"## RECENT EXCHANGE\n"
+        f"## LATEST COMPLETED ROUND\n{round_context or 'No completed round yet.'}\n\n"
+        f"## WORKING HYPOTHESIS\n{hypothesis_context}\n\n"
+        "## RECENT FOLLOW-UP CONVERSATION\n"
         + "\n".join(history[-8:])
         + f"\n\n## RESEARCHER QUESTION\n{question}",
         ChatReply,

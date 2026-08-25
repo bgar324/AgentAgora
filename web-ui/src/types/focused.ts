@@ -96,12 +96,14 @@ export interface Turn {
   facet: Facet | null
   text: string
   citations: string[]
+  exchange_n: number | null
 }
 
 export interface FacetVerdict {
   facet: Facet
   status: "consensus" | "disagreement" | "unsettled"
   summary: string
+  proposed_shared_ground: string
   consensus: string
   disagreement: string
   unsettled: string
@@ -109,6 +111,21 @@ export interface FacetVerdict {
   contested_by: string[]
   positions: Record<string, string>
   evidence: Record<string, string[]>
+}
+
+export interface SharedGroundAssent {
+  agent_iid: number
+  agent_label: string
+  decision: "accept" | "qualify" | "reject"
+  reason: string
+}
+
+export interface ModeratorCheck {
+  exchange_n: number
+  proposed_shared_ground: string
+  verdict: FacetVerdict
+  assents: SharedGroundAssent[]
+  unanimous: boolean
 }
 
 export interface DeliberationPoint {
@@ -200,6 +217,8 @@ export interface DeliberationRound {
   hypothesis_before: HypothesisDev | null
   hypothesis_proposal: HypothesisDev | null
   hypothesis_decision: HypothesisDecision | null
+  moderator_checks: ModeratorCheck[]
+  stop_reason: "unanimous" | "exchange_limit" | null
 }
 
 export type QuestionStatus =
@@ -270,6 +289,7 @@ export type SearchProgressKind =
   | "clustering_completed"
   | "round_stage"
   | "round_turn"
+  | "round_check"
 
 export interface SearchProgressItem {
   stage?: string
@@ -277,6 +297,10 @@ export interface SearchProgressItem {
   total_steps?: number
   agent_label?: string
   text?: string
+  exchange_n?: number | null
+  max_exchanges?: number | null
+  proposed_shared_ground?: string | null
+  unanimous?: boolean | null
   generation: number
   sequence: number
   kind: SearchProgressKind
