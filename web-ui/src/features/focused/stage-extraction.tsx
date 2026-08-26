@@ -729,7 +729,7 @@ export function StageExtraction() {
 
         {/* the clusters */}
         <div
-          className="flex h-full flex-col gap-3"
+          className="flex h-full flex-col gap-2.5"
           data-testid="cluster-results-surface"
         >
           {!session.searched ? (
@@ -959,7 +959,7 @@ function UnassignedPapers() {
     .filter(Boolean)
 
   return (
-    <div className="ep-card-enter panel mb-2.5 px-4 py-3.5">
+    <div className="ep-card-enter panel px-4 py-3.5">
       <button
         type="button"
         className="flex w-full items-baseline gap-2.5 text-left"
@@ -1067,7 +1067,7 @@ function ClusterRow({ cluster, index }: { cluster: ClusterCard; index: number })
 
   return (
     <div
-      className="ep-card-enter ep-interactive-card panel mb-2.5 px-4 py-3.5"
+      className="ep-card-enter ep-interactive-card panel px-4 py-3.5"
       style={{ animationDelay: `${index * 42}ms` }}
     >
       <div
