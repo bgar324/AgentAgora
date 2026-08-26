@@ -511,7 +511,7 @@ function RestoreErrorScreen({
   return (
     <div className="flex min-h-screen items-center justify-center px-6">
       <div className="panel w-full max-w-[420px] p-5">
-        <h1 className="text-[16px] font-semibold tracking-[-0.01em]">
+        <h1 className="text-[16px] font-semibold">
           Couldn’t open this workspace
         </h1>
         <p
@@ -601,7 +601,7 @@ function StartScreen() {
     <div className="flex min-h-screen items-center justify-center px-6">
       <div className="ep-enter w-full max-w-[440px]">
         <div className="mb-8">
-          <h1 className="text-[22px] font-semibold tracking-[-0.02em]">
+          <h1 className="text-[22px] font-semibold">
             Hypothesis Studio
           </h1>
           <p className="mt-1.5 text-[13px] leading-relaxed text-[var(--ink-2)]">

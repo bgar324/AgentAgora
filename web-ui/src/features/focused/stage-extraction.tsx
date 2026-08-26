@@ -802,7 +802,7 @@ export function StageExtraction() {
         <div className="ep-enter border-t border-[var(--line)] px-4 py-5 lg:px-6">
         <div className="mb-4">
           <div>
-            <h2 className="text-[14px] font-semibold tracking-[-0.01em]">
+            <h2 className="text-[14px] font-semibold">
               Perspective matrix ({session.perspectives.length})
             </h2>
           </div>
@@ -1075,7 +1075,7 @@ function ClusterRow({ cluster, index }: { cluster: ClusterCard; index: number })
         onClick={() => openClusterSet(open ? null : cluster.id)}
       >
         <div className="flex items-baseline gap-2.5">
-          <h3 className="text-[13px] font-semibold tracking-[-0.01em]">
+          <h3 className="text-[13px] font-semibold">
             {cluster.name}
           </h3>
           <span className="ml-auto shrink-0 text-[12px] font-medium text-[var(--mute)]">

@@ -1084,7 +1084,7 @@ function PanelDrawer({
               data-testid="deliberation-document"
             >
               <SectionLabel>Final document</SectionLabel>
-              <h2 className="mt-1 text-[14px] font-semibold tracking-[-0.01em] text-[var(--ink)]">
+              <h2 className="mt-1 text-[14px] font-semibold text-[var(--ink)]">
                 {active.document.title}
               </h2>
               <div className="mt-3">
@@ -1292,7 +1292,7 @@ function PanelDrawer({
             active.baseline_hypothesis === null && (
               <section className="ep-card-enter rounded-xl border border-[var(--line)] bg-[var(--bg)] p-4">
                 <SectionLabel>Set up the panel</SectionLabel>
-                <h2 className="text-[15px] font-semibold tracking-[-0.01em]">
+                <h2 className="text-[15px] font-semibold">
                   Choose the lead Perspective
                 </h2>
                 <p className="mt-1 text-[12px] leading-relaxed text-[var(--mute)]">
@@ -1364,7 +1364,7 @@ function PanelDrawer({
               >
                 {active.rounds.length === 0 && (
                   <div className="mb-4 border-b border-[var(--line)] pb-4">
-                    <h2 className="text-[15px] font-semibold tracking-[-0.01em]">
+                    <h2 className="text-[15px] font-semibold">
                       How this panel works
                     </h2>
                     <p className="mt-1 max-w-[68ch] text-[12px] leading-relaxed text-[var(--ink-2)]">
@@ -1386,7 +1386,7 @@ function PanelDrawer({
                 <div className="flex items-start justify-between gap-4">
                   <div>
                     <SectionLabel>Thread {active.rounds.length + 1}</SectionLabel>
-                    <h2 className="text-[15px] font-semibold tracking-[-0.01em]">
+                    <h2 className="text-[15px] font-semibold">
                       Choose a Thread
                     </h2>
                     <p className="mt-1 max-w-[62ch] text-[12px] leading-relaxed text-[var(--mute)]">
@@ -1745,7 +1745,7 @@ function LeadPerspectiveRail({
             }`
           : ""}
       </SectionLabel>
-      <h2 className="mt-1 text-[13px] font-semibold tracking-[-0.01em] text-[var(--ink)]">
+      <h2 className="mt-1 text-[13px] font-semibold text-[var(--ink)]">
         {perspective.name}
       </h2>
       {framing && (

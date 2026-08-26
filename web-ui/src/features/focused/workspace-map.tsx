@@ -172,7 +172,7 @@ export function WorkspaceMap() {
       <section className="relative min-h-[620px] border-b border-[var(--line)] xl:border-b-0 xl:border-r">
         <div className="pointer-events-none absolute left-5 top-5 z-10 max-w-[420px] rounded-xl border border-[var(--line)] bg-[var(--panel)]/95 px-4 py-3 shadow-sm backdrop-blur-sm">
           <SectionLabel>Investigation map</SectionLabel>
-          <h1 className="mt-1 text-[17px] font-semibold tracking-[-0.02em]">
+          <h1 className="mt-1 text-[17px] font-semibold">
             Follow questions without flattening the research
           </h1>
           <p className="mt-1 text-[11.5px] leading-relaxed text-[var(--mute)]">
@@ -205,7 +205,7 @@ export function WorkspaceMap() {
         <div className="flex items-start justify-between gap-3">
           <div>
             <SectionLabel>Hypothesis lineage</SectionLabel>
-            <h2 className="mt-1 text-[15px] font-semibold tracking-[-0.01em]">
+            <h2 className="mt-1 text-[15px] font-semibold">
               {visibleVersions.length
                 ? `${visibleVersions.length} saved checkpoint${visibleVersions.length === 1 ? "" : "s"}`
                 : "No applied checkpoint yet"}
