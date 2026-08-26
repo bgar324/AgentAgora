@@ -175,6 +175,36 @@ class DeliberationRatingRequest(BaseModel):
     note: str = Field(default="", max_length=1000)
 
 
+class DialogueStartRequest(BaseModel):
+    progress_generation: int | None = Field(default=None, ge=1)
+
+
+class DialogueSelectionRequest(BaseModel):
+    proposal_ids: list[str] = Field(min_length=1, max_length=12)
+    progress_generation: int | None = Field(default=None, ge=1)
+
+
+class DialogueThreadRequest(BaseModel):
+    thread_id: str = Field(min_length=1, max_length=200)
+    progress_generation: int | None = Field(default=None, ge=1)
+
+
+class DialogueMessageRequest(BaseModel):
+    thread_id: str = Field(min_length=1, max_length=200)
+    message: str = Field(min_length=1, max_length=4000)
+    reply_to: str | None = Field(default=None, max_length=200)
+    progress_generation: int | None = Field(default=None, ge=1)
+
+
+class DialogueDecisionRequest(BaseModel):
+    resolution_id: str = Field(min_length=1, max_length=200)
+    action: Literal["close", "edit_close", "keep_open", "request_evidence"]
+    consensus: str | None = Field(default=None, max_length=4000)
+    disagreement: str | None = Field(default=None, max_length=4000)
+    open_question: str | None = Field(default=None, max_length=4000)
+    progress_generation: int | None = Field(default=None, ge=1)
+
+
 # --- stage ① perspective construction ---------------------------------------
 
 
@@ -494,6 +524,99 @@ async def run_round(
             progress_generation=request.progress_generation,
         ),
     )
+
+
+@focused_router.post("/sessions/{session_id}/dialogue/start")
+async def start_dialogue(
+    session_id: str,
+    request: DialogueStartRequest,
+    service: Service,
+) -> WorkspaceView:
+    return await _acall_view(
+        service,
+        service.start_dialogue(
+            session_id,
+            progress_generation=request.progress_generation,
+        ),
+    )
+
+
+@focused_router.post("/sessions/{session_id}/dialogue/selection")
+async def select_dialogue_directions(
+    session_id: str,
+    request: DialogueSelectionRequest,
+    service: Service,
+) -> WorkspaceView:
+    return await _acall_view(
+        service,
+        service.select_dialogue_directions(
+            session_id,
+            proposal_ids=request.proposal_ids,
+            progress_generation=request.progress_generation,
+        ),
+    )
+
+
+@focused_router.post("/sessions/{session_id}/dialogue/threads/open")
+async def open_dialogue_thread(
+    session_id: str,
+    request: DialogueThreadRequest,
+    service: Service,
+) -> WorkspaceView:
+    return await _acall_view(
+        service,
+        service.open_dialogue_thread(
+            session_id,
+            thread_id=request.thread_id,
+            progress_generation=request.progress_generation,
+        ),
+    )
+
+
+@focused_router.post("/sessions/{session_id}/dialogue/messages")
+async def message_dialogue_thread(
+    session_id: str,
+    request: DialogueMessageRequest,
+    service: Service,
+) -> WorkspaceView:
+    return await _acall_view(
+        service,
+        service.message_dialogue_thread(
+            session_id,
+            thread_id=request.thread_id,
+            message=request.message,
+            reply_to=request.reply_to,
+            progress_generation=request.progress_generation,
+        ),
+    )
+
+
+@focused_router.post("/sessions/{session_id}/dialogue/decisions")
+async def decide_dialogue_thread(
+    session_id: str,
+    request: DialogueDecisionRequest,
+    service: Service,
+) -> WorkspaceView:
+    return await _acall_view(
+        service,
+        service.decide_dialogue_thread(
+            session_id,
+            resolution_id=request.resolution_id,
+            action=request.action,
+            consensus=request.consensus,
+            disagreement=request.disagreement,
+            open_question=request.open_question,
+            progress_generation=request.progress_generation,
+        ),
+    )
+
+
+@focused_router.get("/sessions/{session_id}/dialogue/report")
+async def dialogue_report(
+    session_id: str,
+    service: Service,
+) -> dict[str, str]:
+    return _guard(lambda: {"report": service.dialogue_report(session_id)})
 
 
 @focused_router.put(

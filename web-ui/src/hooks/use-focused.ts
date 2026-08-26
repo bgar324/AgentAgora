@@ -729,6 +729,128 @@ export function useFocusedPanel() {
     [sessionId],
   )
 
+  const dialogueCommand = useCallback(
+    async (label: string, path: string, body: Record<string, unknown>) =>
+      exclusive(label, async () => {
+        const started = await api<{ generation: number }>(
+          `sessions/${sessionId}/search-progress`,
+          { method: "POST" },
+        )
+        const generation = started.generation
+        searchProgressCleared()
+        let polling = true
+        let cursor = 0
+        const collect = async () => {
+          const progress = await api<SearchProgressResponse>(
+            `sessions/${sessionId}/search-progress?generation=${generation}&after=${cursor}`,
+          )
+          progress.items.forEach(searchProgressAdded)
+          cursor = progress.next
+        }
+        const poll = async () => {
+          while (polling) {
+            try {
+              await collect()
+            } catch {
+              // Progress is advisory; the command request reports failures.
+            }
+            if (polling) {
+              const { promise, resolve } = Promise.withResolvers<void>()
+              window.setTimeout(resolve, 500)
+              await promise
+            }
+          }
+        }
+        const progress = poll()
+        let view: WorkspaceView
+        try {
+          view = await requestView(
+            `sessions/${sessionId}/${path}`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                ...body,
+                progress_generation: generation,
+              }),
+            },
+            () => undefined,
+          )
+        } finally {
+          polling = false
+          await progress
+          try {
+            await collect()
+          } catch {
+            // The final command response remains authoritative.
+          }
+        }
+        workspaceViewSet(view)
+        return view.active
+      }),
+    [
+      exclusive,
+      requestView,
+      searchProgressAdded,
+      searchProgressCleared,
+      sessionId,
+      workspaceViewSet,
+    ],
+  )
+
+  const startDialogue = useCallback(
+    () => dialogueCommand("Starting deliberation", "dialogue/start", {}),
+    [dialogueCommand],
+  )
+
+  const selectDialogueDirections = useCallback(
+    (proposalIds: string[]) =>
+      dialogueCommand("Creating Working Document", "dialogue/selection", {
+        proposal_ids: proposalIds,
+      }),
+    [dialogueCommand],
+  )
+
+  const openDialogueThread = useCallback(
+    (threadId: string) =>
+      dialogueCommand("Discussing Thread", "dialogue/threads/open", {
+        thread_id: threadId,
+      }),
+    [dialogueCommand],
+  )
+
+  const messageDialogueThread = useCallback(
+    (threadId: string, message: string, replyTo?: string) =>
+      dialogueCommand("Sending message", "dialogue/messages", {
+        thread_id: threadId,
+        message,
+        reply_to: replyTo ?? null,
+      }),
+    [dialogueCommand],
+  )
+
+  const decideDialogueThread = useCallback(
+    (
+      resolutionId: string,
+      action: "close" | "edit_close" | "keep_open" | "request_evidence",
+      edits?: {
+        consensus?: string
+        disagreement?: string
+        open_question?: string
+      },
+    ) =>
+      dialogueCommand("Reviewing resolution", "dialogue/decisions", {
+        resolution_id: resolutionId,
+        action,
+        ...edits,
+      }),
+    [dialogueCommand],
+  )
+
+  const fetchDialogueReport = useCallback(
+    () => api<{ report: string }>(`sessions/${sessionId}/dialogue/report`),
+    [sessionId],
+  )
+
   return {
     loadWorkspace,
     deleteWorkspace,
@@ -757,6 +879,12 @@ export function useFocusedPanel() {
     restoreHypothesis,
     sendChat,
     fetchPaper,
+    startDialogue,
+    selectDialogueDirections,
+    openDialogueThread,
+    messageDialogueThread,
+    decideDialogueThread,
+    fetchDialogueReport,
   }
 }
 

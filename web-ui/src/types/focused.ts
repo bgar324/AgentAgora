@@ -407,6 +407,229 @@ export interface ClusteringDiagnostics {
   retrieval_tier_counts: Partial<Record<RetrievalTier, number>>
 }
 
+export type EvidenceRelation = "support" | "qualify"
+
+export interface CanonObservation {
+  id: string
+  text: string
+  source_id: string
+  location: string | null
+}
+
+export interface CanonPerspectiveInfo {
+  framing: string
+  position: string
+}
+
+export interface CanonPerspectiveFacets {
+  scope: string | null
+  explanation: string | null
+  approach: string | null
+  significance: string | null
+}
+
+export interface CanonResearcherProfile {
+  name?: string
+  focus: string
+  facets: CanonPerspectiveFacets
+  perspective: CanonPerspectiveInfo
+}
+
+export interface CanonPerspectiveState {
+  id: string
+  version: number
+  profile: CanonResearcherProfile
+  observations: CanonObservation[]
+  source_ids: string[]
+  label: string
+  subthemes: string[]
+}
+
+export interface CanonEvidence {
+  observation_id: string
+  relation: EvidenceRelation
+}
+
+export interface CanonProposal {
+  id: string
+  version: number
+  perspective_id: string
+  perspective_version: number
+  claim: { id: string; text: string }
+  argument: {
+    id: string
+    claim_id: string
+    reasoning: string
+    evidence: CanonEvidence[]
+  }
+}
+
+export interface CanonPanelReview {
+  id: string
+  proposal_id: string
+  proposal_version: number
+  reviewer_id: string
+  response: string
+  question: string | null
+  observation_ids: string[]
+}
+
+export interface CanonFacetRevision {
+  facet: Facet
+  text: string
+}
+
+export interface CanonRefinement {
+  id: string
+  proposal_id: string
+  from_version: number
+  origin_ids: string[]
+  decision: "unchanged" | "revise"
+  reason: string
+  open_question: string | null
+  facet_revisions: CanonFacetRevision[]
+  profile: CanonResearcherProfile
+  proposal: CanonProposal
+}
+
+export interface CanonReflection {
+  id: string
+  thread_id: string
+  perspective_id: string
+  from_version: number
+  perspective_version: number
+  decision: "unchanged" | "revise"
+  reason: string
+  open_question: string | null
+  facet_revisions: CanonFacetRevision[]
+  profile: CanonResearcherProfile
+}
+
+export interface CanonObjective {
+  id: string
+  text: string
+  proposal_ids: string[]
+}
+
+export interface CanonDocumentSection {
+  id: string
+  version: number
+  title: string
+  text: string
+}
+
+export interface CanonWorkingDocument {
+  id: string
+  version: number
+  investigation_id: string
+  title: string
+  objectives: CanonObjective[]
+  sections: CanonDocumentSection[]
+  references: string[]
+}
+
+export interface CanonThreadAssignment {
+  perspective_id: string
+  question: string
+}
+
+export type CanonThreadStatus = "suggested" | "open" | "closed"
+
+export interface CanonThread {
+  id: string
+  version: number
+  status: CanonThreadStatus
+  title: string
+  question: string
+  context: string
+  origin_ids: string[]
+  assignments: CanonThreadAssignment[]
+  section_id: string | null
+  resolution_id: string | null
+  created_by: string
+  created_at: string
+}
+
+export type ContributionKind = "answer" | "reply" | "support" | "challenge"
+
+export interface CanonContribution {
+  id: string
+  thread_id: string
+  author_id: string
+  kind: ContributionKind
+  text: string
+  observation_ids: string[]
+  evidence_requests: { need: string; query: string }[]
+  reply_to: string | null
+  created_at: string
+}
+
+export type CanonResolutionStatus = "pending" | "accepted" | "rejected"
+
+export interface CanonResolution {
+  id: string
+  version: number
+  status: CanonResolutionStatus
+  thread_id: string
+  consensus: string | null
+  disagreement: string | null
+  open_question: string | null
+  contribution_ids: string[]
+  observation_ids: string[]
+}
+
+export interface CanonSuggestion {
+  id: string
+  version: number
+  status: "pending" | "accepted" | "edited" | "rejected"
+  author_id: string
+  thread_id: string
+  resolution_id: string
+  section_id: string
+  section_version: number
+  current_text: string
+  proposed_text: string
+  reason: string
+  observation_ids: string[]
+}
+
+export interface CanonRevision {
+  id: string
+  document_id: string
+  previous_document_version: number
+  document_version: number
+  section_id: string
+  previous_text: string
+  proposed_text: string
+  accepted_text: string
+  suggestion_id: string
+  decision_id: string
+  created_at: string
+}
+
+export type DialogueStage = "opening" | "selection" | "deliberation"
+export type DialogueWaiting = "proposal_selection" | "resolution_decision"
+
+export interface DialogueState {
+  id: string
+  stage: DialogueStage
+  waiting_for: DialogueWaiting | null
+  active_thread_id: string | null
+  perspective_states: CanonPerspectiveState[]
+  observations: CanonObservation[]
+  proposals: CanonProposal[]
+  reviews: CanonPanelReview[]
+  refinements: CanonRefinement[]
+  selected_proposal_ids: string[]
+  document: CanonWorkingDocument | null
+  threads: CanonThread[]
+  contributions: CanonContribution[]
+  resolutions: CanonResolution[]
+  suggestions: CanonSuggestion[]
+  revisions: CanonRevision[]
+  reflections: CanonReflection[]
+}
+
 export interface SessionState {
   id: string
   workspace_id: string
@@ -429,6 +652,7 @@ export interface SessionState {
   perspectives: Perspective[]
   agents: AgentState[]
   deliberations: DeliberationState[]
+  dialogue: DialogueState | null
   searched: boolean
   clustering: ClusteringDiagnostics | null
 }

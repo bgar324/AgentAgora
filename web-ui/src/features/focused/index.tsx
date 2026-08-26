@@ -14,6 +14,7 @@ import type { PaperDetail, Perspective } from "@/types/focused"
 
 import { StageExtraction } from "./stage-extraction"
 import { StageDeliberation } from "./stage-deliberation"
+import { StageDialogue } from "./stage-dialogue"
 import { WorkspaceMap } from "./workspace-map"
 import {
   Button,
@@ -123,10 +124,16 @@ export function FocusedWorkspace() {
   const hasInvestigationBranches = investigations.length > 1
   const activeScreen = hasInvestigationBranches ? workspaceScreen : "detail"
 
+  const usesDialogue = session.deliberations.length === 0
+
   const toggleStage = () => {
     setActionError(null)
     if (stage === "deliberation") {
       stageSet("extraction")
+      return
+    }
+    if (usesDialogue && !isResearchBranch) {
+      stageSet("deliberation")
       return
     }
     if (session.parent_investigation_id && session.origin_question_id) {
@@ -319,6 +326,8 @@ export function FocusedWorkspace() {
         <WorkspaceMap />
       ) : stage === "extraction" ? (
         <StageExtraction />
+      ) : usesDialogue ? (
+        <StageDialogue />
       ) : (
         <StageDeliberation />
       )}

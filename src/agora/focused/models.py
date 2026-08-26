@@ -6,6 +6,41 @@ from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from agora.schemas.deliberation import (
+    Contribution as CanonContribution,
+)
+from agora.schemas.deliberation import (
+    PanelReview as CanonPanelReview,
+)
+from agora.schemas.deliberation import (
+    PerspectiveState as CanonPerspectiveState,
+)
+from agora.schemas.deliberation import (
+    Proposal as CanonProposal,
+)
+from agora.schemas.deliberation import (
+    Refinement as CanonRefinement,
+)
+from agora.schemas.deliberation import (
+    Reflection as CanonReflection,
+)
+from agora.schemas.deliberation import (
+    Resolution as CanonResolution,
+)
+from agora.schemas.deliberation import (
+    Revision as CanonRevision,
+)
+from agora.schemas.deliberation import (
+    Suggestion as CanonSuggestion,
+)
+from agora.schemas.deliberation import (
+    Thread as CanonThread,
+)
+from agora.schemas.deliberation import (
+    WorkingDocument as CanonWorkingDocument,
+)
+from agora.schemas.panel import Observation as CanonObservation
+
 Facet = Literal["scope", "explanation", "approach", "significance"]
 ResearchQuestion = Annotated[str, Field(min_length=1, max_length=4000)]
 RetrievalTier = Literal["answer", "problem", "candidate"]
@@ -521,6 +556,56 @@ class QuestionReach(BaseModel):
     reached: bool = False
 
 
+DialogueStage = Literal["opening", "selection", "deliberation"]
+DialogueWaiting = Literal["proposal_selection", "resolution_decision"]
+
+
+class DialogueState(BaseModel):
+    """Canonical Perspectra-style deliberation state for one Investigation.
+
+    Every collection holds objects from ``agora.schemas.deliberation``
+    verbatim, so the engine, the wire format, and persistence share one
+    contract. Versioned objects are append-only: the latest version of an
+    id wins, and history stays readable.
+    """
+
+    id: str
+    stage: DialogueStage = "opening"
+    waiting_for: DialogueWaiting | None = None
+    active_thread_id: str | None = None
+    perspective_states: list[CanonPerspectiveState] = Field(default_factory=list)
+    observations: list[CanonObservation] = Field(default_factory=list)
+    proposals: list[CanonProposal] = Field(default_factory=list)
+    reviews: list[CanonPanelReview] = Field(default_factory=list)
+    refinements: list[CanonRefinement] = Field(default_factory=list)
+    selected_proposal_ids: list[str] = Field(default_factory=list)
+    document: CanonWorkingDocument | None = None
+    threads: list[CanonThread] = Field(default_factory=list)
+    contributions: list[CanonContribution] = Field(default_factory=list)
+    resolutions: list[CanonResolution] = Field(default_factory=list)
+    suggestions: list[CanonSuggestion] = Field(default_factory=list)
+    revisions: list[CanonRevision] = Field(default_factory=list)
+    reflections: list[CanonReflection] = Field(default_factory=list)
+
+    def latest_thread(self, thread_id: str) -> CanonThread | None:
+        for thread in reversed(self.threads):
+            if thread.id == thread_id:
+                return thread
+        return None
+
+    def latest_resolution(self, resolution_id: str) -> CanonResolution | None:
+        for resolution in reversed(self.resolutions):
+            if resolution.id == resolution_id:
+                return resolution
+        return None
+
+    def current_threads(self) -> list[CanonThread]:
+        latest: dict[str, CanonThread] = {}
+        for thread in self.threads:
+            latest[thread.id] = thread
+        return list(latest.values())
+
+
 class SessionState(BaseModel):
     """Full wire state for one focused-panel Investigation."""
 
@@ -545,6 +630,7 @@ class SessionState(BaseModel):
     perspectives: list[Perspective] = Field(default_factory=list)
     agents: list[AgentState] = Field(default_factory=list)
     deliberations: list[DeliberationState] = Field(default_factory=list)
+    dialogue: DialogueState | None = None
     searched: bool = False
     clustering: ClusteringDiagnostics | None = None
 

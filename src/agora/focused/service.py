@@ -3939,6 +3939,199 @@ class FocusedPanelService:
             workspace.promoted_hypothesis_version_id = version.id
         return self._save_state(session.state)
 
+    # ------------------------------------------------------------------
+    # Thread-centered dialogue (canonical deliberation engine)
+    # ------------------------------------------------------------------
+
+    def _dialogue_engine(self, session: _Session):
+        from agora.focused import dialogue as dialogue_module
+
+        if self._demo(session):
+            return dialogue_module.DemoDialogueEngine()
+        from agora.config.settings import load_settings
+
+        models = load_settings().models
+        return dialogue_module.LiveDialogueEngine(
+            panel=models.panel,
+            deliberation=models.deliberation,
+        )
+
+    def _dialogue_reporter(self, session_id: str):
+        service = self
+
+        class _Reporter:
+            def stage(self, stage: str, message: str) -> None:
+                service._publish_search_progress(
+                    session_id, "round_stage", message, stage=stage
+                )
+
+            def turn(self, author: str, text: str) -> None:
+                service._publish_search_progress(
+                    session_id, "round_turn", text, author=author
+                )
+
+        return _Reporter()
+
+    def _begin_dialogue_progress(
+        self, session_id: str, progress_generation: int | None
+    ) -> None:
+        if progress_generation is None:
+            self.start_search_progress(session_id)
+        elif self._search_progress_generation.get(session_id) != (
+            progress_generation
+        ):
+            raise SessionError("Dialogue progress generation is stale.", status=409)
+        self._search_progress_active_generation[session_id] = (
+            self._search_progress_generation[session_id]
+        )
+
+    @_serialized_session_mutation
+    async def start_dialogue(
+        self,
+        session_id: str,
+        *,
+        progress_generation: int | None = None,
+    ) -> SessionState:
+        """Run the opening phase: proposals, peer review, refinement."""
+        from agora.focused import dialogue as dialogue_module
+
+        session = self._require(session_id)
+        state = session.state
+        self._begin_dialogue_progress(session_id, progress_generation)
+        if state.dialogue is not None and state.dialogue.stage != "opening":
+            raise SessionError("The deliberation has already started.")
+        try:
+            await dialogue_module.start_dialogue(
+                state,
+                engine=self._dialogue_engine(session),
+                reporter=self._dialogue_reporter(session_id),
+            )
+        except dialogue_module.DialogueError as error:
+            raise SessionError(str(error)) from error
+        return self._save_state(state)
+
+    @_serialized_session_mutation
+    async def select_dialogue_directions(
+        self,
+        session_id: str,
+        *,
+        proposal_ids: list[str],
+        progress_generation: int | None = None,
+    ) -> SessionState:
+        """Create the Working Document from the selected refinements."""
+        from agora.focused import dialogue as dialogue_module
+
+        session = self._require(session_id)
+        state = session.state
+        self._begin_dialogue_progress(session_id, progress_generation)
+        try:
+            await dialogue_module.select_directions(
+                state,
+                engine=self._dialogue_engine(session),
+                reporter=self._dialogue_reporter(session_id),
+                proposal_ids=proposal_ids,
+            )
+        except dialogue_module.DialogueError as error:
+            raise SessionError(str(error)) from error
+        return self._save_state(state)
+
+    @_serialized_session_mutation
+    async def open_dialogue_thread(
+        self,
+        session_id: str,
+        *,
+        thread_id: str,
+        progress_generation: int | None = None,
+    ) -> SessionState:
+        """Open a suggested Thread and run its discussion cascade."""
+        from agora.focused import dialogue as dialogue_module
+
+        session = self._require(session_id)
+        state = session.state
+        self._begin_dialogue_progress(session_id, progress_generation)
+        try:
+            await dialogue_module.open_dialogue_thread(
+                state,
+                engine=self._dialogue_engine(session),
+                reporter=self._dialogue_reporter(session_id),
+                thread_id=thread_id,
+            )
+        except dialogue_module.DialogueError as error:
+            raise SessionError(str(error)) from error
+        return self._save_state(state)
+
+    @_serialized_session_mutation
+    async def message_dialogue_thread(
+        self,
+        session_id: str,
+        *,
+        thread_id: str,
+        message: str,
+        reply_to: str | None = None,
+        progress_generation: int | None = None,
+    ) -> SessionState:
+        """Record a researcher challenge and run the reply cascade."""
+        from agora.focused import dialogue as dialogue_module
+
+        session = self._require(session_id)
+        state = session.state
+        self._begin_dialogue_progress(session_id, progress_generation)
+        try:
+            await dialogue_module.message_thread(
+                state,
+                engine=self._dialogue_engine(session),
+                reporter=self._dialogue_reporter(session_id),
+                thread_id=thread_id,
+                message=message,
+                reply_to=reply_to,
+            )
+        except dialogue_module.DialogueError as error:
+            raise SessionError(str(error)) from error
+        return self._save_state(state)
+
+    @_serialized_session_mutation
+    async def decide_dialogue_thread(
+        self,
+        session_id: str,
+        *,
+        resolution_id: str,
+        action: str,
+        consensus: str | None = None,
+        disagreement: str | None = None,
+        open_question: str | None = None,
+        progress_generation: int | None = None,
+    ) -> SessionState:
+        """Apply the researcher's decision on a pending Resolution."""
+        from agora.focused import dialogue as dialogue_module
+
+        session = self._require(session_id)
+        state = session.state
+        self._begin_dialogue_progress(session_id, progress_generation)
+        try:
+            await dialogue_module.decide_dialogue_thread(
+                state,
+                engine=self._dialogue_engine(session),
+                reporter=self._dialogue_reporter(session_id),
+                resolution_id=resolution_id,
+                action=action,
+                consensus=consensus,
+                disagreement=disagreement,
+                open_question=open_question,
+            )
+        except (dialogue_module.DialogueError, ValueError) as error:
+            raise SessionError(str(error)) from error
+        return self._save_state(state)
+
+    def dialogue_report(self, session_id: str) -> str:
+        """Synthesize the final Document from resolved Threads."""
+        from agora.focused import dialogue as dialogue_module
+
+        session = self._require(session_id)
+        try:
+            return dialogue_module.synthesize_report(session.state)
+        except dialogue_module.DialogueError as error:
+            raise SessionError(str(error)) from error
+
     @_serialized_session_mutation
     async def chat(
         self,
