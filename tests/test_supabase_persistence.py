@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from postgrest.exceptions import APIError
 
 from agora.config.settings import load_settings
 from agora.core.errors import ConfigurationError
@@ -213,6 +214,65 @@ def test_supabase_load_archives_and_migrates_v5_hypotheses(
         assert archived["payload"] == legacy_payload
 
         FocusedPanelService(persistence=persistence(client))
+        assert len(client.rows[ARCHIVE_TABLE]) == 1
+
+    asyncio.run(go())
+
+
+def test_missing_archive_table_skips_row_without_mutation(
+    legacy_v5_deliberation,
+) -> None:
+    async def go() -> None:
+        client = FakeSupabaseClient()
+        service = FocusedPanelService(persistence=persistence(client))
+        root = service.create_workspace(
+            problem="A legacy workspace",
+            research_questions=[],
+            demo=True,
+        ).active
+        snapshot = client.rows[SNAPSHOT_TABLE][root.workspace_id]
+        legacy_payload = deepcopy(snapshot["payload"])
+        legacy_payload["workspace"]["schema_version"] = 5
+        legacy_payload["investigations"][0]["deliberations"] = [
+            legacy_v5_deliberation("persp-legacy")
+        ]
+        snapshot["payload"] = deepcopy(legacy_payload)
+
+        class MissingArchiveClient:
+            """The archives DDL has not been applied to the project."""
+
+            def table(self, name: str) -> Any:
+                if name == ARCHIVE_TABLE:
+                    raise_query = FakeQuery(client, name)
+                    raise_query.execute = lambda: (_ for _ in ()).throw(
+                        APIError(
+                            {
+                                "code": "PGRST205",
+                                "message": (
+                                    "Could not find the table "
+                                    "'public.focused_workspace_archives'"
+                                ),
+                            }
+                        )
+                    )
+                    return raise_query
+                return client.table(name)
+
+        degraded = SupabaseFocusedPersistence(client=MissingArchiveClient())
+        workspaces, investigations = degraded.load()
+        # The legacy workspace is hidden this boot, never crashed on,
+        # never quarantined, and its stored snapshot is untouched.
+        assert workspaces == []
+        assert investigations == []
+        assert client.rows[QUARANTINE_TABLE] == {}
+        assert client.rows[SNAPSHOT_TABLE][root.workspace_id]["payload"] == (
+            legacy_payload
+        )
+
+        # Once the DDL exists, the same stored row migrates normally.
+        restored = FocusedPanelService(persistence=persistence(client))
+        view = restored.workspace_view(root.workspace_id)
+        assert view.workspace.schema_version == 6
         assert len(client.rows[ARCHIVE_TABLE]) == 1
 
     asyncio.run(go())

@@ -13,7 +13,7 @@ import type { PaperDetail, Perspective } from "@/types/focused"
 
 import { StageExtraction } from "./stage-extraction"
 import { StageDeliberation } from "./stage-deliberation"
-import { StageDialogue } from "./stage-dialogue"
+import { PanelIntroDialog, StageDialogue } from "./stage-dialogue"
 import { WorkspaceMap } from "./workspace-map"
 import {
   Button,
@@ -46,6 +46,7 @@ export function FocusedWorkspace() {
   )
   const [integrationInvited, setIntegrationInvited] = useState<string[]>([])
   const [integrationError, setIntegrationError] = useState<string | null>(null)
+  const [panelIntroOpen, setPanelIntroOpen] = useState(false)
   const focused = useFocusedPanel()
   const loadWorkspace = focused.loadWorkspace
   useEffect(() => {
@@ -132,7 +133,11 @@ export function FocusedWorkspace() {
       return
     }
     if (usesDialogue && !isResearchBranch) {
-      stageSet("deliberation")
+      if (session.dialogue !== null) {
+        stageSet("deliberation")
+        return
+      }
+      setPanelIntroOpen(true)
       return
     }
     if (session.parent_investigation_id && session.origin_question_id) {
@@ -332,6 +337,15 @@ export function FocusedWorkspace() {
       )}
 
       <PaperModal />
+      {panelIntroOpen && (
+        <PanelIntroDialog
+          onClose={() => setPanelIntroOpen(false)}
+          onStarted={() => {
+            setPanelIntroOpen(false)
+            stageSet("deliberation")
+          }}
+        />
+      )}
       {integrationOptions && (
         <InvitePerspectivesDialog
           perspectives={integrationOptions}

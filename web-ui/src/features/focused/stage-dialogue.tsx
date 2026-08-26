@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import Markdown from "react-markdown"
 
 import { useFocusedPanel } from "@/hooks/use-focused"
@@ -13,13 +13,17 @@ import type {
   DialogueState,
   SessionState,
 } from "@/types/focused"
-import {
-  Button,
-  EmptyLine,
-  ModalShell,
-  SectionLabel,
-  Spinner,
-} from "./ui"
+import { Button, EmptyLine, ModalShell, SectionLabel, Spinner } from "./ui"
+
+// Busy labels owned by use-focused.ts; a button spins only for its own
+// command, everything else just disables. One spinner per surface.
+const BUSY = {
+  start: "Starting deliberation",
+  select: "Creating Working Document",
+  open: "Discussing Thread",
+  message: "Sending message",
+  decide: "Reviewing resolution",
+} as const
 
 const KIND_LABELS: Record<CanonContribution["kind"], string> = {
   answer: "Answers the question",
@@ -27,9 +31,6 @@ const KIND_LABELS: Record<CanonContribution["kind"], string> = {
   support: "Cites evidence",
   challenge: "Challenge",
 }
-
-const DECISION_HINT =
-  "Accept the resolution to close this Thread, edit its wording first, or keep the discussion open."
 
 function latestThreads(dialogue: DialogueState): CanonThread[] {
   const latest = new Map<string, CanonThread>()
@@ -85,66 +86,101 @@ function useNames(session: SessionState, dialogue: DialogueState) {
   }, [session.perspectives, dialogue.perspective_states])
 }
 
+function PerspectiveDot({ color }: { color?: string }) {
+  return (
+    <span
+      aria-hidden
+      className="size-1.5 shrink-0 rounded-full"
+      style={{ background: color ?? "var(--ink-2)" }}
+    />
+  )
+}
+
+function ErrorLine({ children }: { children: string }) {
+  return (
+    <p role="alert" className="mt-2 text-[12px] text-[var(--red)]">
+      {children}
+    </p>
+  )
+}
+
 function ProgressTrail() {
   const busy = useFocusedStore((s) => s.busy)
   const items = useFocusedStore((s) => s.searchProgress)
-  if (!busy) return null
+  if (!busy || items.length === 0) return null
   const recent = items.slice(-6)
   return (
-    <div className="mt-3 space-y-1 border-t border-[var(--line)] pt-3">
+    <div
+      data-testid="dialogue-progress"
+      role="status"
+      aria-live="polite"
+      className="mt-3 space-y-1 border-t border-[var(--line)] pt-3"
+    >
       {recent.map((item) => (
         <p
           key={item.sequence}
-          className="truncate text-[11.5px] leading-relaxed text-[var(--mute)]"
+          className="truncate text-[11px] leading-relaxed text-[var(--mute)]"
         >
           {"author" in item && item.author ? `${item.author}: ` : ""}
           {item.message}
         </p>
       ))}
-      <p className="flex items-center gap-2 text-[11.5px] text-[var(--mute)]">
-        <Spinner /> {busy}
-      </p>
     </div>
   )
 }
 
-function DialogueOpening() {
+export function PanelIntroDialog({
+  onClose,
+  onStarted,
+}: {
+  onClose: () => void
+  onStarted: () => void
+}) {
   const focused = useFocusedPanel()
   const busy = useFocusedStore((s) => s.busy)
   const [error, setError] = useState<string | null>(null)
+  const starting = busy === BUSY.start
+  const start = () => {
+    setError(null)
+    focused
+      .startDialogue()
+      .then(onStarted)
+      .catch((cause) =>
+        setError(
+          cause instanceof Error
+            ? cause.message
+            : "Could not start the deliberation",
+        ),
+      )
+  }
   return (
-    <section className="mx-auto mt-6 w-full max-w-[560px] rounded-lg border border-[var(--line)] bg-[var(--panel)] p-5">
-      <SectionLabel>Set up the panel</SectionLabel>
-      <p className="mt-2 text-[13px] leading-relaxed text-[var(--ink-2)]">
+    <ModalShell title="Set up the panel" onClose={onClose}>
+      <p className="text-[12px] leading-relaxed text-[var(--ink-2)]">
         Each Perspective proposes a scientific claim from its literature,
         reviews a peer&apos;s proposal, and refines its own. You then choose
         which refined directions the Working Document should organize.
       </p>
-      <div className="mt-4 flex items-center gap-2">
+      {error && <ErrorLine>{error}</ErrorLine>}
+      <ProgressTrail />
+      <div className="mt-4 flex justify-end gap-2">
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={busy !== null}
+          onClick={onClose}
+        >
+          Cancel
+        </Button>
         <Button
           variant="primary"
+          size="sm"
           disabled={busy !== null}
-          onClick={() => {
-            setError(null)
-            focused
-              .startDialogue()
-              .catch((cause) =>
-                setError(
-                  cause instanceof Error
-                    ? cause.message
-                    : "Could not start the deliberation",
-                ),
-              )
-          }}
+          onClick={start}
         >
-          {busy ? <Spinner /> : null} Start deliberation
+          {starting ? <Spinner /> : null} Start deliberation
         </Button>
       </div>
-      {error && (
-        <p className="mt-3 text-[12px] text-[var(--red)]">{error}</p>
-      )}
-      <ProgressTrail />
-    </section>
+    </ModalShell>
   )
 }
 
@@ -164,27 +200,24 @@ function RefinementCard({
   onToggle: () => void
 }) {
   return (
-    <label className="block cursor-pointer rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4 transition-colors hover:border-[var(--line-strong)]">
+    <label className="ep-card-enter ep-interactive-card panel block cursor-pointer px-4 py-3.5">
       <div className="flex items-start justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <span
-            aria-hidden
-            className="size-2 rounded-full"
-            style={{ background: color ?? "var(--ink-2)" }}
-          />
-          <span className="text-[12px] font-semibold">{name}</span>
-        </div>
+        <span className="flex items-center gap-1.5 text-[12px] font-semibold">
+          <PerspectiveDot color={color} />
+          {name}
+        </span>
         <input
           type="checkbox"
           checked={checked}
           onChange={onToggle}
-          className="mt-0.5 accent-[var(--ink)]"
+          aria-label={`Include ${name}`}
+          className="mt-0.5 size-3.5 accent-[var(--node)]"
         />
       </div>
-      <p className="mt-2 text-[13.5px] font-medium leading-snug">
+      <p className="mt-2 text-[13px] font-medium leading-snug">
         {refinement.proposal.claim.text}
       </p>
-      <p className="mt-1.5 text-[12.5px] leading-relaxed text-[var(--ink-2)]">
+      <p className="mt-1.5 text-[12px] leading-relaxed text-[var(--ink-2)]">
         {refinement.proposal.argument.reasoning}
       </p>
       {review && (
@@ -192,11 +225,11 @@ function RefinementCard({
           <p className="text-[11px] font-medium text-[var(--mute)]">
             Peer review
           </p>
-          <p className="mt-1 text-[12.5px] leading-relaxed text-[var(--ink-2)]">
+          <p className="mt-1 text-[12px] leading-relaxed text-[var(--ink-2)]">
             {review.response}
           </p>
           {review.question && (
-            <p className="mt-1 text-[12.5px] italic text-[var(--ink-2)]">
+            <p className="mt-1 text-[12px] italic leading-relaxed text-[var(--ink-2)]">
               {review.question}
             </p>
           )}
@@ -204,13 +237,14 @@ function RefinementCard({
       )}
       <div className="mt-3 border-t border-[var(--line)] pt-2.5">
         <p className="text-[11px] font-medium text-[var(--mute)]">
-          Refinement · {refinement.decision === "revise" ? "Revised" : "Unchanged"}
+          Refinement ·{" "}
+          {refinement.decision === "revise" ? "Revised" : "Unchanged"}
         </p>
-        <p className="mt-1 text-[12.5px] leading-relaxed text-[var(--ink-2)]">
+        <p className="mt-1 text-[12px] leading-relaxed text-[var(--ink-2)]">
           {refinement.reason}
         </p>
         {refinement.open_question && (
-          <p className="mt-1 text-[12.5px] text-[var(--ink-2)]">
+          <p className="mt-1 text-[12px] leading-relaxed text-[var(--mute)]">
             Open question: {refinement.open_question}
           </p>
         )}
@@ -229,12 +263,16 @@ function DialogueSelection({
   const focused = useFocusedPanel()
   const busy = useFocusedStore((s) => s.busy)
   const names = useNames(session, dialogue)
-  const [picked, setPicked] = useState<string[]>(() =>
-    [...new Set(dialogue.refinements.map((r) => r.proposal_id))],
-  )
+  const [picked, setPicked] = useState<string[]>(() => [
+    ...new Set(dialogue.refinements.map((r) => r.proposal_id)),
+  ])
   const [error, setError] = useState<string | null>(null)
+  const creating = busy === BUSY.select
   const reviewByProposal = useMemo(() => {
-    const map = new Map<string, { response: string; question: string | null }>()
+    const map = new Map<
+      string,
+      { response: string; question: string | null }
+    >()
     for (const review of dialogue.reviews) {
       map.set(review.proposal_id, {
         response: review.response,
@@ -245,13 +283,16 @@ function DialogueSelection({
   }, [dialogue.reviews])
 
   return (
-    <section className="mx-auto mt-6 w-full max-w-[880px]">
+    <section
+      aria-label="Choose the directions"
+      className="ep-enter mx-auto mt-6 w-full max-w-[880px]"
+    >
       <SectionLabel>Choose the directions</SectionLabel>
-      <p className="mt-1.5 text-[13px] leading-relaxed text-[var(--ink-2)]">
+      <p className="mt-1 text-[12px] leading-relaxed text-[var(--ink-2)]">
         The selected refinements become the objectives of the shared Working
         Document.
       </p>
-      <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="mt-4 grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
         {dialogue.refinements.map((refinement) => {
           const who = names.get(refinement.proposal.perspective_id)
           return (
@@ -276,6 +317,7 @@ function DialogueSelection({
       <div className="mt-4 flex items-center gap-3">
         <Button
           variant="primary"
+          size="sm"
           disabled={busy !== null || picked.length === 0}
           onClick={() => {
             setError(null)
@@ -290,13 +332,13 @@ function DialogueSelection({
               )
           }}
         >
-          {busy ? <Spinner /> : null} Create Working Document
+          {creating ? <Spinner /> : null} Create Working Document
         </Button>
-        <span className="text-[12px] text-[var(--mute)]">
+        <span className="text-[11px] text-[var(--mute)]">
           {picked.length} of {dialogue.refinements.length} selected
         </span>
       </div>
-      {error && <p className="mt-2 text-[12px] text-[var(--red)]">{error}</p>}
+      {error && <ErrorLine>{error}</ErrorLine>}
       <ProgressTrail />
     </section>
   )
@@ -312,7 +354,11 @@ function DocumentPanel({
   const document = dialogue.document
   if (!document) return null
   return (
-    <aside className="shrink-0 border-b border-[var(--line)] bg-[var(--panel)] px-4 py-4 lg:w-[300px] lg:overflow-y-auto lg:border-b-0 lg:border-r">
+    <aside
+      data-testid="dialogue-document-panel"
+      aria-label="Working Document"
+      className="shrink-0 border-b border-[var(--line)] bg-[var(--panel)] px-4 py-4 lg:w-[300px] lg:overflow-y-auto lg:border-b-0 lg:border-r"
+    >
       <SectionLabel>Working Document · v{document.version}</SectionLabel>
       <h2 className="mt-1 text-[13px] font-semibold leading-snug">
         {document.title}
@@ -325,7 +371,7 @@ function DocumentPanel({
           {document.objectives.map((objective) => (
             <li
               key={objective.id}
-              className="text-[12.5px] leading-relaxed text-[var(--ink-2)]"
+              className="text-[12px] leading-relaxed text-[var(--ink-2)]"
             >
               {objective.text}
             </li>
@@ -334,12 +380,9 @@ function DocumentPanel({
       </div>
       <div className="mt-3 space-y-3">
         {document.sections.map((section) => (
-          <div
-            key={section.id}
-            className="border-t border-[var(--line)] pt-2.5"
-          >
+          <div key={section.id} className="border-t border-[var(--line)] pt-2.5">
             <p className="text-[12px] font-semibold">{section.title}</p>
-            <p className="mt-1 whitespace-pre-wrap text-[12.5px] leading-relaxed text-[var(--ink-2)]">
+            <p className="mt-1 whitespace-pre-wrap text-[12px] leading-relaxed text-[var(--ink-2)]">
               {section.text || "Opens with its Thread's discussion."}
             </p>
           </div>
@@ -354,7 +397,7 @@ function DocumentPanel({
             {document.references.map((reference, index) => (
               <li
                 key={`${reference}-${index}`}
-                className="break-all text-[11.5px] text-[var(--mute)]"
+                className="break-all text-[11px] text-[var(--mute)]"
               >
                 {reference}
               </li>
@@ -383,55 +426,68 @@ function ThreadPicker({
   const focused = useFocusedPanel()
   const busy = useFocusedStore((s) => s.busy)
   const [error, setError] = useState<string | null>(null)
+  const [openingId, setOpeningId] = useState<string | null>(null)
   const threads = latestThreads(dialogue)
   const suggested = threads.filter((thread) => thread.status === "suggested")
   const closed = threads.filter((thread) => thread.status === "closed")
   return (
-    <div className="mx-auto w-full max-w-[640px] py-6">
+    <div className="ep-enter mx-auto w-full max-w-[640px] py-6">
       <SectionLabel>Threads</SectionLabel>
-      <p className="mt-1.5 text-[13px] leading-relaxed text-[var(--ink-2)]">
-        Each Thread is one scientific issue. Opening a Thread runs the
-        discussion: every Perspective answers, the panel challenges and
-        replies, and the moderator records where it ended for your review.
+      <p className="mt-1 text-[12px] leading-relaxed text-[var(--ink-2)]">
+        Each Thread is one scientific issue. Opening it runs the discussion
+        and ends with a resolution for your review.
       </p>
       <div className="mt-4 space-y-2.5">
-        {suggested.map((thread) => (
-          <div
-            key={thread.id}
-            className="rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4"
-          >
-            <p className="text-[13px] font-semibold">{thread.title}</p>
-            <p className="mt-1 text-[12.5px] leading-relaxed text-[var(--ink-2)]">
-              {thread.question}
-            </p>
-            {thread.context && (
-              <p className="mt-1 text-[12px] leading-relaxed text-[var(--mute)]">
-                {thread.context}
+        {suggested.map((thread, index) => {
+          const opening = busy === BUSY.open && openingId === thread.id
+          return (
+            <div
+              key={thread.id}
+              data-testid="dialogue-thread-card"
+              className="ep-card-enter panel px-4 py-3.5"
+              style={{ animationDelay: `${index * 42}ms` }}
+            >
+              <p className="text-[13px] font-semibold">{thread.title}</p>
+              <p className="mt-1 text-[12px] leading-relaxed text-[var(--ink-2)]">
+                {thread.question}
               </p>
-            )}
-            <div className="mt-3">
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={busy !== null}
-                onClick={() => {
-                  setError(null)
-                  focused
-                    .openDialogueThread(thread.id)
-                    .catch((cause) =>
-                      setError(
-                        cause instanceof Error
-                          ? cause.message
-                          : "Could not open the Thread",
-                      ),
-                    )
-                }}
-              >
-                Open Thread
-              </Button>
+              {thread.context && (
+                <p className="mt-1 text-[12px] leading-relaxed text-[var(--mute)]">
+                  {thread.context}
+                </p>
+              )}
+              <div className="mt-3">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={busy !== null}
+                  onClick={() => {
+                    setError(null)
+                    setOpeningId(thread.id)
+                    focused
+                      .openDialogueThread(thread.id)
+                      .catch((cause) =>
+                        setError(
+                          cause instanceof Error
+                            ? cause.message
+                            : "Could not open the Thread",
+                        ),
+                      )
+                      .finally(() => setOpeningId(null))
+                  }}
+                >
+                  {opening ? (
+                    <>
+                      <Spinner /> Opening…
+                    </>
+                  ) : (
+                    "Open Thread"
+                  )}
+                </Button>
+              </div>
             </div>
-          </div>
-        ))}
+          )
+        })}
         {suggested.length === 0 && (
           <EmptyLine>
             No suggested Threads remain. Review the final report from the
@@ -449,18 +505,15 @@ function ThreadPicker({
                 thread.resolution_id,
               )
               return (
-                <div
-                  key={thread.id}
-                  className="rounded-lg border border-[var(--line)] p-3.5"
-                >
-                  <p className="text-[12.5px] font-semibold">{thread.title}</p>
+                <div key={thread.id} className="panel px-4 py-3">
+                  <p className="text-[12px] font-semibold">{thread.title}</p>
                   {resolution?.consensus && (
                     <p className="mt-1 text-[12px] leading-relaxed text-[var(--ink-2)]">
                       {resolution.consensus}
                     </p>
                   )}
                   {resolution?.open_question && (
-                    <p className="mt-1 text-[12px] text-[var(--mute)]">
+                    <p className="mt-1 text-[12px] leading-relaxed text-[var(--mute)]">
                       Open question: {resolution.open_question}
                     </p>
                   )}
@@ -470,7 +523,7 @@ function ThreadPicker({
           </div>
         </div>
       )}
-      {error && <p className="mt-3 text-[12px] text-[var(--red)]">{error}</p>}
+      {error && <ErrorLine>{error}</ErrorLine>}
       <ProgressTrail />
     </div>
   )
@@ -489,31 +542,25 @@ function TurnBubble({
 }) {
   const isResearcher = turn.author_id === "researcher"
   return (
-    <div className={isResearcher ? "flex justify-end" : ""}>
+    <div className={isResearcher ? "flex justify-end" : undefined}>
       <div
-        className={`${
+        className={
           isResearcher
             ? "w-fit max-w-[78%] rounded-xl border border-[var(--line)] bg-[color-mix(in_srgb,var(--node)_6%,var(--panel))] px-3 py-2.5"
             : "rounded-xl border border-[var(--line)] bg-[var(--panel)] px-3 py-2.5"
-        }`}
+        }
       >
         <div className="mb-1 flex items-baseline justify-between gap-3">
           <span className="flex items-center gap-1.5 text-[11px] font-semibold">
-            {!isResearcher && (
-              <span
-                aria-hidden
-                className="size-1.5 rounded-full"
-                style={{ background: color ?? "var(--ink-2)" }}
-              />
-            )}
+            {!isResearcher && <PerspectiveDot color={color} />}
             {name}
           </span>
-          <span className="text-[10.5px] text-[var(--mute)]">
+          <span className="shrink-0 text-[10.5px] text-[var(--mute)]">
             {KIND_LABELS[turn.kind]}
             {replyName ? ` · to ${replyName}` : ""}
           </span>
         </div>
-        <p className="whitespace-pre-wrap text-[12.5px] leading-relaxed text-[var(--ink)]">
+        <p className="whitespace-pre-wrap text-[12.5px] leading-relaxed">
           {turn.text}
         </p>
         {turn.observation_ids.length > 0 && (
@@ -541,27 +588,36 @@ function ResolutionCard({
 }) {
   const [editing, setEditing] = useState(false)
   const [text, setText] = useState(resolution.consensus ?? "")
+  const [chosen, setChosen] = useState<string | null>(null)
+  const deciding = busy === BUSY.decide
+  const decide = (
+    action: "close" | "edit_close" | "keep_open",
+    consensus?: string,
+  ) => {
+    setChosen(action)
+    onDecide(action, consensus)
+  }
   return (
-    <div className="rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
+    <div
+      data-testid="dialogue-resolution-card"
+      className="ep-card-enter panel px-4 py-3.5"
+    >
       <SectionLabel>Thread resolution · your review</SectionLabel>
-      <p className="mt-1.5 text-[12px] leading-relaxed text-[var(--mute)]">
-        {DECISION_HINT}
-      </p>
-      <div className="mt-2.5 space-y-2">
+      <div className="mt-2 space-y-2">
         {resolution.consensus && (
-          <p className="text-[13px] leading-relaxed">
+          <p className="text-[12.5px] leading-relaxed">
             <span className="font-semibold">Consensus.</span>{" "}
             {resolution.consensus}
           </p>
         )}
         {resolution.disagreement && (
-          <p className="text-[13px] leading-relaxed">
+          <p className="text-[12.5px] leading-relaxed">
             <span className="font-semibold">Disagreement.</span>{" "}
             {resolution.disagreement}
           </p>
         )}
         {resolution.open_question && (
-          <p className="text-[13px] leading-relaxed">
+          <p className="text-[12.5px] leading-relaxed">
             <span className="font-semibold">Open question.</span>{" "}
             {resolution.open_question}
           </p>
@@ -572,7 +628,9 @@ function ResolutionCard({
           value={text}
           onChange={(event) => setText(event.target.value)}
           rows={3}
-          className="mt-3 w-full resize-none rounded-lg border border-[var(--line)] bg-transparent px-3 py-2 text-[13px] leading-relaxed outline-none focus:border-[var(--line-strong)]"
+          disabled={busy !== null}
+          aria-label="Edited consensus"
+          className="field mt-3 w-full resize-none px-3 py-2 text-[12.5px] leading-relaxed"
           placeholder="Rewrite the consensus in your own words"
         />
       )}
@@ -583,9 +641,10 @@ function ResolutionCard({
               variant="primary"
               size="sm"
               disabled={busy !== null}
-              onClick={() => onDecide("close")}
+              onClick={() => decide("close")}
             >
-              Accept &amp; close
+              {deciding && chosen === "close" ? <Spinner /> : null} Accept
+              &amp; close
             </Button>
             <Button
               variant="outline"
@@ -599,9 +658,10 @@ function ResolutionCard({
               variant="ghost"
               size="sm"
               disabled={busy !== null}
-              onClick={() => onDecide("keep_open")}
+              onClick={() => decide("keep_open")}
             >
-              Keep open
+              {deciding && chosen === "keep_open" ? <Spinner /> : null} Keep
+              open
             </Button>
           </>
         ) : (
@@ -610,9 +670,10 @@ function ResolutionCard({
               variant="primary"
               size="sm"
               disabled={busy !== null || !text.trim()}
-              onClick={() => onDecide("edit_close", text.trim())}
+              onClick={() => decide("edit_close", text.trim())}
             >
-              Close with this wording
+              {deciding && chosen === "edit_close" ? <Spinner /> : null} Close
+              with this wording
             </Button>
             <Button
               variant="ghost"
@@ -643,6 +704,7 @@ function Conversation({
   const names = useNames(session, dialogue)
   const [message, setMessage] = useState("")
   const [error, setError] = useState<string | null>(null)
+  const sending = busy === BUSY.message
   const turns = dialogue.contributions.filter(
     (turn) => turn.thread_id === thread.id,
   )
@@ -664,13 +726,16 @@ function Conversation({
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-[640px] flex-col gap-3 py-6">
+    <div
+      data-testid="dialogue-conversation"
+      className="ep-enter mx-auto flex w-full max-w-[640px] flex-col gap-3 py-6"
+    >
       <div>
         <SectionLabel>Thread</SectionLabel>
-        <h2 className="mt-1 text-[14px] font-semibold leading-snug">
+        <h2 className="mt-1 text-[13px] font-semibold leading-snug">
           {thread.title}
         </h2>
-        <p className="mt-0.5 text-[12.5px] leading-relaxed text-[var(--ink-2)]">
+        <p className="mt-0.5 text-[12px] leading-relaxed text-[var(--ink-2)]">
           {thread.question}
         </p>
         {thread.context && (
@@ -731,8 +796,10 @@ function Conversation({
             }
           }}
           rows={2}
+          disabled={busy !== null}
+          aria-label="Message the panel"
           placeholder="Challenge the panel: why do you hold that position?"
-          className="min-h-9 w-full flex-1 resize-none rounded-lg border border-[var(--line)] bg-transparent px-3 py-2 text-[13px] leading-snug outline-none focus:border-[var(--line-strong)]"
+          className="field min-h-9 w-full flex-1 resize-none px-3 py-2 text-[12.5px] leading-snug placeholder:text-[var(--mute)]"
         />
         <Button
           variant="primary"
@@ -740,10 +807,10 @@ function Conversation({
           disabled={busy !== null || !message.trim()}
           onClick={send}
         >
-          Send
+          {sending ? <Spinner /> : null} Send
         </Button>
       </div>
-      {error && <p className="text-[12px] text-[var(--red)]">{error}</p>}
+      {error && <ErrorLine>{error}</ErrorLine>}
     </div>
   )
 }
@@ -769,7 +836,10 @@ function PerspectivesRail({
     return map
   }, [dialogue.reflections])
   return (
-    <aside className="shrink-0 border-t border-[var(--line)] bg-[var(--panel)] px-4 py-4 lg:w-[280px] lg:overflow-y-auto lg:border-l lg:border-t-0">
+    <aside
+      aria-label="Perspectives"
+      className="shrink-0 border-t border-[var(--line)] bg-[var(--panel)] px-4 py-4 lg:w-[280px] lg:overflow-y-auto lg:border-l lg:border-t-0"
+    >
       <SectionLabel>Perspectives</SectionLabel>
       <div className="mt-2 space-y-3">
         {dialogue.perspective_states.map((state) => {
@@ -780,18 +850,14 @@ function PerspectivesRail({
               key={state.id}
               className="border-b border-[var(--line)] pb-3 last:border-b-0 last:pb-0"
             >
-              <p className="flex items-center gap-1.5 text-[12px] font-semibold">
-                <span
-                  aria-hidden
-                  className="size-1.5 rounded-full"
-                  style={{ background: who?.color ?? "var(--ink-2)" }}
-                />
+              <p className="flex items-baseline gap-1.5 text-[12px] font-semibold">
+                <PerspectiveDot color={who?.color} />
                 {who?.label ?? state.profile.focus}
-                <span className="font-normal text-[var(--mute)]">
-                  {revisions > 0
-                    ? ` · ${revisions} revision${revisions === 1 ? "" : "s"}`
-                    : ""}
-                </span>
+                {revisions > 0 && (
+                  <span className="font-normal text-[var(--mute)]">
+                    · {revisions} revision{revisions === 1 ? "" : "s"}
+                  </span>
+                )}
               </p>
               <p className="mt-1 text-[12px] leading-relaxed text-[var(--ink-2)]">
                 {state.profile.perspective.position}
@@ -808,27 +874,34 @@ function ReportModal({ onClose }: { onClose: () => void }) {
   const focused = useFocusedPanel()
   const [report, setReport] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  useMemo(() => {
+  useEffect(() => {
+    let cancelled = false
     focused
       .fetchDialogueReport()
-      .then((response) => setReport(response.report))
-      .catch((cause) =>
-        setError(
-          cause instanceof Error ? cause.message : "Could not load report",
-        ),
-      )
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+      .then((response) => {
+        if (!cancelled) setReport(response.report)
+      })
+      .catch((cause) => {
+        if (!cancelled) {
+          setError(
+            cause instanceof Error ? cause.message : "Could not load report",
+          )
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [focused])
   return (
     <ModalShell title="Final report" onClose={onClose}>
-      {error && <p className="text-[12px] text-[var(--red)]">{error}</p>}
+      {error && <ErrorLine>{error}</ErrorLine>}
       {!report && !error && (
-        <p className="flex items-center gap-2 text-[12.5px] text-[var(--mute)]">
-          <Spinner /> Synthesizing…
+        <p className="flex items-center gap-2 text-[12px] text-[var(--mute)]">
+          <Spinner /> Synthesizing
         </p>
       )}
       {report && (
-        <article className="[&_h1]:text-[16px] [&_h1]:font-semibold [&_h2]:mt-4 [&_h2]:text-[13px] [&_h2]:font-semibold [&_h3]:mt-3 [&_h3]:text-[12.5px] [&_h3]:font-semibold [&_li]:my-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:mt-2 [&_p]:text-[12.5px] [&_p]:leading-relaxed">
+        <article className="[&_h1]:text-[15px] [&_h1]:font-semibold [&_h2]:mt-4 [&_h2]:text-[13px] [&_h2]:font-semibold [&_h3]:mt-3 [&_h3]:text-[12.5px] [&_h3]:font-semibold [&_li]:my-1 [&_li]:text-[12.5px] [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:mt-2 [&_p]:text-[12.5px] [&_p]:leading-relaxed">
           <Markdown>{report}</Markdown>
         </article>
       )}
@@ -842,12 +915,11 @@ export function StageDialogue() {
   if (!session) return null
   const dialogue = session.dialogue
 
+  // The panel stage is only entered after the opening phase completes;
+  // index.tsx owns the intro dialog. A transient render without dialogue
+  // state shows nothing rather than a duplicate dialog.
   if (!dialogue || dialogue.stage === "opening") {
-    return (
-      <main className="flex-1 px-4 pb-10">
-        <DialogueOpening />
-      </main>
-    )
+    return <main aria-label="Panel setup" className="flex-1" />
   }
 
   if (dialogue.stage === "selection") {
@@ -878,11 +950,7 @@ export function StageDialogue() {
       />
       <div className="min-w-0 flex-1 overflow-y-auto px-4">
         {active ? (
-          <Conversation
-            session={session}
-            dialogue={dialogue}
-            thread={active}
-          />
+          <Conversation session={session} dialogue={dialogue} thread={active} />
         ) : (
           <ThreadPicker session={session} dialogue={dialogue} />
         )}

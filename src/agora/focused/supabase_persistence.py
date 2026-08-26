@@ -9,6 +9,7 @@ from threading import Lock
 from typing import Any
 
 from postgrest import ReturnMethod
+from postgrest.exceptions import APIError
 from pydantic import ValidationError
 
 from agora.focused.migrations import LEGACY_SCHEMA_VERSION, migrate_v5_payloads
@@ -195,6 +196,20 @@ class SupabaseFocusedPersistence:
             for row in rows:
                 try:
                     row = self._migrate_legacy_row(row)
+                except APIError as error:
+                    # DDL for the archive table has not been applied to this
+                    # Supabase project. Leave the stored snapshot untouched
+                    # and keep the service up; the workspace returns after
+                    # the migration below runs and the service restarts.
+                    logger.error(
+                        "schema migration blocked for workspace %s: %s — "
+                        "apply supabase/migrations/"
+                        "20260825220000_focused_workspace_archives.sql "
+                        "and restart",
+                        row.get("workspace_id"),
+                        error,
+                    )
+                    continue
                 except (ValueError, TypeError, PersistenceConflict) as error:
                     self._quarantine(row, error)
                     continue
