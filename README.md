@@ -1,9 +1,9 @@
-# Hypothesis Studio
+# AgentAgora
 
-A standalone FastAPI and Next.js application for literature-grounded
-Perspective panels and four-step scientific hypothesis development. It includes
-demo fixtures, tests, local startup configuration, and Vercel, Railway, and
-Supabase deployment support.
+AgentAgora is a multi-agent research panel that deliberates literature-grounded
+Perspectives to develop, refine, and version scientific hypotheses. It is a
+standalone FastAPI and Next.js application with demo fixtures, tests, local
+startup configuration, and Vercel, Railway, and Supabase deployment support.
 
 ## Focused study flow
 
@@ -13,12 +13,11 @@ literature clusters and are included in workspace exports.
 Perspectives contain four abstract-grounded areas: Scope, Explanation,
 Approach, and Significance. Before round 1, the researcher chooses one lead
 Perspective and generates its baseline hypothesis. The same lead opens every
-round, and each round examines exactly one area. The panel must complete at
-least one round for each area before it can end.
+round of panel deliberation.
 
 The drawer reports round progress and shows agent turns as they arrive. The
 moderator summary follows the conversation. Each proposal shows Before and
-Proposed values for changed hypothesis parts. The researcher can accept, edit,
+Proposed values for the changed hypothesis. The researcher can accept, edit,
 or reject the proposal. Questions can be submitted before or between rounds. A
 question submitted during a round waits until the round finishes.
 
@@ -38,14 +37,13 @@ their literature search and feed the continued panel. The earlier panel,
 Hypothesis, and Research Problem outputs remain visible as the prior checkpoint.
 
 Hypothesis checkpoints form an immutable version graph. Researchers can promote
-a branch, preserve alternatives, merge selected Problem / Previous work /
-Reasoning / Hypothesis steps with per-step provenance, archive a superseded
-checkpoint, and restore it later. A panel requires at least two Perspectives but
-has no product-level maximum. Every matrix Perspective automatically becomes an
-agent on the canvas. The Canvas Add Perspective action appends another
-literature-grounded agent to the same open deliberation; prior rounds, questions,
-and hypothesis checkpoints remain unchanged. Open questions move through Open,
-Investigating, Addressed, and Archived states.
+a branch, preserve alternatives, merge checkpoints with provenance, archive a
+superseded checkpoint, and restore it later. A panel requires at least two
+Perspectives but has no product-level maximum. Every matrix Perspective
+automatically becomes an agent on the canvas. The Canvas Add Perspective action
+appends another literature-grounded agent to the same open deliberation; prior
+rounds, questions, and hypothesis checkpoints remain unchanged. Open questions
+move through Open, Investigating, Addressed, and Archived states.
 
 Focused workspaces use revision-checked aggregate snapshots in local SQLite or
 production Supabase. Concurrent stale writers receive a conflict instead of
@@ -67,7 +65,7 @@ Copy the template and fill the keys:
 cp .env.example .env
 ```
 
-- `OPENAI_API_KEY`: `text-embedding-3-small` embeddings and Agent Agora's evidence index.
+- `OPENAI_API_KEY`: `text-embedding-3-small` embeddings and AgentAgora's evidence index.
 - `OPENROUTER_API_KEY`: structured model calls for live extraction and panel responses.
 - `SEMANTIC_SCHOLAR_API_KEY`: optional, but recommended for paper-search throughput.
 
@@ -96,8 +94,7 @@ pnpm dev
 
 Open:
 
-- Benjamin’s focused Hypothesis Studio: <http://localhost:3000> (redirects to
-  `/focused`)
+- AgentAgora: <http://localhost:3000> (redirects to `/focused`)
 - API health: <http://localhost:8000/api/v1/focused/health>
 
 The frontend route `/api/focused/*` forwards requests to
@@ -204,8 +201,8 @@ Supabase restores the workspace and final canvas nodes.
 ## Verification
 
 ```bash
-.venv/bin/pytest -q
-.venv/bin/ruff check src tests
+.venv/bin/python -m pytest -q
+.venv/bin/python -m ruff check src tests
 cd web-ui
 pnpm lint
 pnpm build
