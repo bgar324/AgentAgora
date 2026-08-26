@@ -936,20 +936,26 @@ def _facet_text(perspective: Perspective, facet: Facet) -> str:
     return evidence.text if evidence and evidence.text.strip() else "not established"
 
 
+def _sentence(value: str) -> str:
+    """A facet's evidence as a standalone sentence."""
+    text = " ".join((value or "").split())
+    if not text:
+        return ""
+    text = text[0].upper() + text[1:]
+    return text if text.endswith((".", "?", "!")) else f"{text}."
+
+
 def _fallback_framing(perspective: Perspective) -> FramingPosition:
-    scope = _display(_facet_text(perspective, "scope"))
-    explanation = _display(_facet_text(perspective, "explanation"))
-    approach = _display(_facet_text(perspective, "approach"))
-    significance = _display(_facet_text(perspective, "significance"))
+    # Facet evidence is already whole sentences, so state them as prose.
+    # Embedding them in subordinate clauses ("...through A birth cohort
+    # links...") reads as a broken template wherever this path runs.
+    scope = _sentence(_facet_text(perspective, "scope"))
+    explanation = _sentence(_facet_text(perspective, "explanation"))
+    approach = _sentence(_facet_text(perspective, "approach"))
+    significance = _sentence(_facet_text(perspective, "significance"))
     return FramingPosition(
-        framing=(
-            f"This perspective frames the question within {scope} and explains "
-            f"the phenomenon through {explanation}."
-        ),
-        position=(
-            f"It would establish the claim through {approach}; the result matters "
-            f"because {significance}."
-        ),
+        framing=" ".join(part for part in (scope, explanation) if part),
+        position=" ".join(part for part in (approach, significance) if part),
     )
 
 

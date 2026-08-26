@@ -680,13 +680,6 @@ export function StageExtraction() {
                     </span>
                     <span className="min-w-0 leading-snug text-[var(--ink-2)]">
                       <span className="block">{s.query}</span>
-                      {s.kind === "question" &&
-                        s.question_index !== null &&
-                        session.research_questions[s.question_index] && (
-                          <span className="mt-0.5 block text-[11px] font-medium text-[var(--ink-2)]">
-                            For: {session.research_questions[s.question_index]}
-                          </span>
-                        )}
                       <span className="mt-0.5 block text-[11px] text-[var(--mute)]">
                         {s.rationale}
                       </span>

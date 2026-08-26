@@ -766,8 +766,15 @@ function PaperModal() {
       {paper && detail && (
         <>
           <div className="mb-1 text-[12px] text-[var(--mute)]">
-            {[paper.venue, paper.year].filter(Boolean).join(" · ") ||
-              "no venue recorded"}
+            {[
+              paper.authors.length > 3
+                ? `${paper.authors.slice(0, 3).join(", ")} et al.`
+                : paper.authors.join(", "),
+              paper.venue,
+              paper.year,
+            ]
+              .filter(Boolean)
+              .join(" · ") || "no venue recorded"}
           </div>
           <p className="mb-6 text-[13px] leading-[1.7] text-[var(--ink-2)]">
             {paper.abstract ?? "No abstract available."}
