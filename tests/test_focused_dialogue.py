@@ -286,6 +286,71 @@ def test_report_synthesizes_hypotheses_and_open_questions() -> None:
     asyncio.run(go())
 
 
+def test_final_open_question_can_continue_as_a_new_thread() -> None:
+    async def go() -> None:
+        service, session_id = await _dialogue_panel()
+        await _to_deliberation(service, session_id)
+
+        while True:
+            dialogue = service.get(session_id).dialogue
+            suggested = [
+                thread
+                for thread in dialogue.current_threads()
+                if thread.status == "suggested"
+            ]
+            if not suggested:
+                break
+            await service.open_dialogue_thread(
+                session_id,
+                thread_id=suggested[0].id,
+            )
+            await service.decide_dialogue_thread(
+                session_id,
+                resolution_id=_pending_resolution_id(service, session_id),
+                action="close",
+            )
+
+        dialogue = service.get(session_id).dialogue
+        current = dialogue.current_threads()
+        assert current and all(thread.status == "closed" for thread in current)
+        continued_origins = {
+            origin_id for thread in current for origin_id in thread.origin_ids
+        }
+        existing_questions = {thread.question.strip().casefold() for thread in current}
+        latest = {}
+        for resolution in dialogue.resolutions:
+            latest[resolution.id] = resolution
+        source = next(
+            resolution
+            for resolution in reversed(list(latest.values()))
+            if resolution.status == "accepted"
+            and resolution.open_question
+            and resolution.id not in continued_origins
+            and resolution.open_question.strip().casefold() not in existing_questions
+        )
+
+        await service.continue_dialogue_from_resolution(
+            session_id,
+            resolution_id=source.id,
+        )
+
+        dialogue = service.get(session_id).dialogue
+        continued = next(
+            thread
+            for thread in dialogue.current_threads()
+            if source.id in thread.origin_ids
+        )
+        assert continued.status == "suggested"
+        assert continued.question == source.open_question
+        assert continued.created_by == "researcher"
+        assert not any(
+            contribution.thread_id == continued.id
+            for contribution in dialogue.contributions
+        )
+
+    asyncio.run(go())
+
+
 def test_dialogue_state_survives_snapshot_round_trip() -> None:
     async def go() -> None:
         service, session_id = await _dialogue_panel()
