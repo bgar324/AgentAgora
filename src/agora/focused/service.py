@@ -793,13 +793,19 @@ class FocusedPanelService:
         clean_problem = problem.strip()
         if len(clean_problem) < 3:
             raise SessionError("Problem must be at least three characters.")
+        clean_questions = [q.strip() for q in research_questions if q.strip()]
+        if demo and not clean_questions:
+            # The demo fixture owns its research questions; seeding them
+            # here keeps the frontend free of a hand-duplicated copy and
+            # keeps suggestion/question pairing intact.
+            clean_questions = list(DEMO_RESEARCH_QUESTIONS)
         workspace_id = uuid.uuid4().hex
         investigation_id = uuid.uuid4().hex
         state = SessionState(
             id=investigation_id,
             workspace_id=workspace_id,
             problem=clean_problem,
-            research_questions=[q.strip() for q in research_questions if q.strip()],
+            research_questions=clean_questions,
             demo=demo or self._provider is None,
         )
         workspace = WorkspaceState(
@@ -3984,9 +3990,7 @@ class FocusedPanelService:
     ) -> None:
         if progress_generation is None:
             self.start_search_progress(session_id)
-        elif self._search_progress_generation.get(session_id) != (
-            progress_generation
-        ):
+        elif self._search_progress_generation.get(session_id) != (progress_generation):
             raise SessionError("Dialogue progress generation is stale.", status=409)
         self._search_progress_active_generation[session_id] = (
             self._search_progress_generation[session_id]

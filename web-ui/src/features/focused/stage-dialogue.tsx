@@ -107,42 +107,6 @@ function ErrorLine({ children }: { children: string }) {
   )
 }
 
-function ProgressTrail() {
-  const busy = useFocusedStore((s) => s.busy)
-  const items = useFocusedStore((s) => s.searchProgress)
-  // Loading feedback belongs to the triggering button. The trail only
-  // appears for genuinely long cascades, so fast (demo) commands finish
-  // without a flash of streamed text shifting the layout.
-  const [revealed, setRevealed] = useState(false)
-  useEffect(() => {
-    if (busy === null) {
-      setRevealed(false)
-      return
-    }
-    const timer = window.setTimeout(() => setRevealed(true), 800)
-    return () => window.clearTimeout(timer)
-  }, [busy])
-  if (!revealed || !busy || items.length === 0) return null
-  const recent = items.slice(-6)
-  return (
-    <div
-      data-testid="dialogue-progress"
-      role="status"
-      aria-live="polite"
-      className="mt-3 space-y-1 border-t border-[var(--line)] pt-3"
-    >
-      {recent.map((item) => (
-        <p
-          key={item.sequence}
-          className="truncate text-[11px] leading-relaxed text-[var(--mute)]"
-        >
-          {"author" in item && item.author ? `${item.author}: ` : ""}
-          {item.message}
-        </p>
-      ))}
-    </div>
-  )
-}
 
 export function PanelIntroDialog({
   onClose,
@@ -176,7 +140,6 @@ export function PanelIntroDialog({
         which refined directions the Working Document should organize.
       </p>
       {error && <ErrorLine>{error}</ErrorLine>}
-      <ProgressTrail />
       <div className="mt-4 flex justify-end gap-2">
         <Button
           variant="ghost"
@@ -354,7 +317,6 @@ function DialogueSelection({
         </span>
       </div>
       {error && <ErrorLine>{error}</ErrorLine>}
-      <ProgressTrail />
     </section>
   )
 }
@@ -580,7 +542,6 @@ function ThreadPicker({
       </div>
       <ResolvedList dialogue={dialogue} closed={closed} />
       {error && <ErrorLine>{error}</ErrorLine>}
-      <ProgressTrail />
     </div>
   )
 }
@@ -865,7 +826,6 @@ function Conversation({
           )
         })}
       </div>
-      <ProgressTrail />
       {pending && (
         <ResolutionCard
           resolution={pending}

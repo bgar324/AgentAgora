@@ -606,11 +606,6 @@ function ResetDialog({
 
 const DEMO_PROBLEM =
   "Should antibiotics be prescribed broadly? I suspect the faster cure trades off against resistance and gut-flora harm."
-const DEMO_QUESTIONS = [
-  "Does broad-spectrum use raise resistance enough to matter at population level?",
-  "Does it harm the patient's own flora in ways that outlast the infection?",
-  "When does speed to cure outweigh both?",
-]
 
 function StartScreen() {
   const [problem, setProblem] = useState(DEMO_PROBLEM)
@@ -623,11 +618,7 @@ function StartScreen() {
     setStarting(true)
     setError(null)
     try {
-      await createWorkspace(
-        problem.trim(),
-        demo ? DEMO_QUESTIONS : [],
-        demo,
-      )
+      await createWorkspace(problem.trim(), [], demo)
     } catch (err) {
       setError(err instanceof Error ? err.message : "failed to start")
     } finally {
