@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react"
 import Markdown from "react-markdown"
+import { ArrowUp } from "lucide-react"
 
 import { useFocusedPanel } from "@/hooks/use-focused"
 import { useFocusedStore } from "@/store/focused"
@@ -107,7 +108,19 @@ function ErrorLine({ children }: { children: string }) {
 function ProgressTrail() {
   const busy = useFocusedStore((s) => s.busy)
   const items = useFocusedStore((s) => s.searchProgress)
-  if (!busy || items.length === 0) return null
+  // Loading feedback belongs to the triggering button. The trail only
+  // appears for genuinely long cascades, so fast (demo) commands finish
+  // without a flash of streamed text shifting the layout.
+  const [revealed, setRevealed] = useState(false)
+  useEffect(() => {
+    if (busy === null) {
+      setRevealed(false)
+      return
+    }
+    const timer = window.setTimeout(() => setRevealed(true), 800)
+    return () => window.clearTimeout(timer)
+  }, [busy])
+  if (!revealed || !busy || items.length === 0) return null
   const recent = items.slice(-6)
   return (
     <div
@@ -785,7 +798,7 @@ function Conversation({
           }}
         />
       )}
-      <div className="flex items-end gap-2">
+      <div className="relative">
         <textarea
           value={message}
           onChange={(event) => setMessage(event.target.value)}
@@ -799,16 +812,21 @@ function Conversation({
           disabled={busy !== null}
           aria-label="Message the panel"
           placeholder="Challenge the panel: why do you hold that position?"
-          className="field min-h-9 w-full flex-1 resize-none px-3 py-2 text-[12.5px] leading-snug placeholder:text-[var(--mute)]"
+          className="field min-h-9 w-full resize-none py-2 pl-3 pr-12 text-[12.5px] leading-snug placeholder:text-[var(--mute)]"
         />
-        <Button
-          variant="primary"
-          size="sm"
+        <button
+          type="button"
+          aria-label="Send"
           disabled={busy !== null || !message.trim()}
           onClick={send}
+          className="absolute bottom-2 right-2 grid size-7 place-items-center rounded-full bg-[var(--node)] text-white transition-opacity hover:opacity-90 disabled:opacity-35"
         >
-          {sending ? <Spinner /> : null} Send
-        </Button>
+          {sending ? (
+            <Spinner className="size-3.5" />
+          ) : (
+            <ArrowUp size={14} strokeWidth={2.2} aria-hidden />
+          )}
+        </button>
       </div>
       {error && <ErrorLine>{error}</ErrorLine>}
     </div>
