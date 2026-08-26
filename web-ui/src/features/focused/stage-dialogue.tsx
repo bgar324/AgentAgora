@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react"
 import Markdown from "react-markdown"
-import { ArrowUp } from "lucide-react"
+import { ArrowUp, CircleCheck, UserRound } from "lucide-react"
 
 import { useFocusedPanel } from "@/hooks/use-focused"
 import { useFocusedStore } from "@/store/focused"
@@ -89,10 +89,12 @@ function useNames(session: SessionState, dialogue: DialogueState) {
 
 function PerspectiveDot({ color }: { color?: string }) {
   return (
-    <span
+    <UserRound
       aria-hidden
-      className="size-1.5 shrink-0 rounded-full"
-      style={{ background: color ?? "var(--ink-2)" }}
+      size={13}
+      strokeWidth={2.2}
+      className="shrink-0"
+      style={{ color: color ?? "var(--ink-2)" }}
     />
   )
 }
@@ -421,7 +423,7 @@ function DocumentPanel({
       {onReport && (
         <div className="mt-4 border-t border-[var(--line)] pt-3">
           <Button variant="outline" size="sm" onClick={onReport}>
-            Final report
+            Draft report
           </Button>
         </div>
       )}
@@ -429,12 +431,49 @@ function DocumentPanel({
   )
 }
 
+function ResolvedList({
+  dialogue,
+  closed,
+}: {
+  dialogue: DialogueState
+  closed: CanonThread[]
+}) {
+  if (closed.length === 0) return null
+  return (
+    <div className="mt-6">
+      <SectionLabel>Resolved</SectionLabel>
+      <div className="mt-2 space-y-2">
+        {closed.map((thread) => {
+          const resolution = latestResolution(dialogue, thread.resolution_id)
+          return (
+            <div key={thread.id} className="panel px-4 py-3">
+              <p className="text-[12px] font-semibold">{thread.title}</p>
+              {resolution?.consensus && (
+                <p className="mt-1 text-[12px] leading-relaxed text-[var(--ink-2)]">
+                  {resolution.consensus}
+                </p>
+              )}
+              {resolution?.open_question && (
+                <p className="mt-1 text-[12px] leading-relaxed text-[var(--mute)]">
+                  Open question: {resolution.open_question}
+                </p>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 function ThreadPicker({
   session,
   dialogue,
+  onReport,
 }: {
   session: SessionState
   dialogue: DialogueState
+  onReport: () => void
 }) {
   const focused = useFocusedPanel()
   const busy = useFocusedStore((s) => s.busy)
@@ -443,6 +482,43 @@ function ThreadPicker({
   const threads = latestThreads(dialogue)
   const suggested = threads.filter((thread) => thread.status === "suggested")
   const closed = threads.filter((thread) => thread.status === "closed")
+  const allResolved = suggested.length === 0 && closed.length > 0
+
+  if (allResolved) {
+    return (
+      <div className="ep-enter mx-auto w-full max-w-[640px] py-6">
+        <section
+          aria-label="Deliberation complete"
+          className="ep-card-enter panel flex flex-col items-center px-6 py-8 text-center"
+        >
+          <CircleCheck
+            aria-hidden
+            size={22}
+            strokeWidth={1.8}
+            className="text-[var(--green)]"
+          />
+          <h2 className="mt-2.5 text-[13px] font-semibold">
+            All Threads resolved
+          </h2>
+          <p className="mt-1 max-w-[42ch] text-[12px] leading-relaxed text-[var(--ink-2)]">
+            Every scientific issue this panel raised has a recorded
+            resolution. The moderator has synthesized them into the final
+            report.
+          </p>
+          <Button
+            variant="primary"
+            size="sm"
+            className="mt-4"
+            onClick={onReport}
+          >
+            Review the final report
+          </Button>
+        </section>
+        <ResolvedList dialogue={dialogue} closed={closed} />
+      </div>
+    )
+  }
+
   return (
     <div className="ep-enter mx-auto w-full max-w-[640px] py-6">
       <SectionLabel>Threads</SectionLabel>
@@ -501,41 +577,8 @@ function ThreadPicker({
             </div>
           )
         })}
-        {suggested.length === 0 && (
-          <EmptyLine>
-            No suggested Threads remain. Review the final report from the
-            Working Document panel.
-          </EmptyLine>
-        )}
       </div>
-      {closed.length > 0 && (
-        <div className="mt-6">
-          <SectionLabel>Resolved</SectionLabel>
-          <div className="mt-2 space-y-2">
-            {closed.map((thread) => {
-              const resolution = latestResolution(
-                dialogue,
-                thread.resolution_id,
-              )
-              return (
-                <div key={thread.id} className="panel px-4 py-3">
-                  <p className="text-[12px] font-semibold">{thread.title}</p>
-                  {resolution?.consensus && (
-                    <p className="mt-1 text-[12px] leading-relaxed text-[var(--ink-2)]">
-                      {resolution.consensus}
-                    </p>
-                  )}
-                  {resolution?.open_question && (
-                    <p className="mt-1 text-[12px] leading-relaxed text-[var(--mute)]">
-                      Open question: {resolution.open_question}
-                    </p>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      )}
+      <ResolvedList dialogue={dialogue} closed={closed} />
       {error && <ErrorLine>{error}</ErrorLine>}
       <ProgressTrail />
     </div>
@@ -587,6 +630,18 @@ function TurnBubble({
   )
 }
 
+type ResolutionEdits = {
+  consensus?: string
+  disagreement?: string
+  open_question?: string
+}
+
+const RESOLUTION_PARTS = [
+  ["consensus", "Consensus"],
+  ["disagreement", "Disagreement"],
+  ["open_question", "Open question"],
+] as const
+
 function ResolutionCard({
   resolution,
   onDecide,
@@ -595,20 +650,48 @@ function ResolutionCard({
   resolution: CanonResolution
   onDecide: (
     action: "close" | "edit_close" | "keep_open",
-    consensus?: string,
+    edits?: ResolutionEdits,
   ) => void
   busy: string | null
 }) {
   const [editing, setEditing] = useState(false)
-  const [text, setText] = useState(resolution.consensus ?? "")
+  const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [chosen, setChosen] = useState<string | null>(null)
   const deciding = busy === BUSY.decide
   const decide = (
     action: "close" | "edit_close" | "keep_open",
-    consensus?: string,
+    edits?: ResolutionEdits,
   ) => {
     setChosen(action)
-    onDecide(action, consensus)
+    onDecide(action, edits)
+  }
+  const beginEdit = () => {
+    setDrafts({
+      consensus: resolution.consensus ?? "",
+      disagreement: resolution.disagreement ?? "",
+      open_question: resolution.open_question ?? "",
+    })
+    setEditing(true)
+  }
+  // A field is submitted only when it differs from the recorded value;
+  // an emptied field clears that part. At least one part must remain.
+  const edits: ResolutionEdits = {}
+  for (const [key] of RESOLUTION_PARTS) {
+    const draft = (drafts[key] ?? "").trim()
+    if (draft !== ((resolution[key] ?? "") as string).trim()) {
+      edits[key] = draft
+    }
+  }
+  const changed = Object.keys(edits).length > 0
+  const anyRemaining = RESOLUTION_PARTS.some(
+    ([key]) => (drafts[key] ?? "").trim().length > 0,
+  )
+  const submitEdit = () => {
+    if (!changed) {
+      decide("close")
+      return
+    }
+    decide("edit_close", edits)
   }
   return (
     <div
@@ -616,36 +699,48 @@ function ResolutionCard({
       className="ep-card-enter panel px-4 py-3.5"
     >
       <SectionLabel>Thread resolution · your review</SectionLabel>
-      <div className="mt-2 space-y-2">
-        {resolution.consensus && (
-          <p className="text-[12.5px] leading-relaxed">
-            <span className="font-semibold">Consensus.</span>{" "}
-            {resolution.consensus}
-          </p>
-        )}
-        {resolution.disagreement && (
-          <p className="text-[12.5px] leading-relaxed">
-            <span className="font-semibold">Disagreement.</span>{" "}
-            {resolution.disagreement}
-          </p>
-        )}
-        {resolution.open_question && (
-          <p className="text-[12.5px] leading-relaxed">
-            <span className="font-semibold">Open question.</span>{" "}
-            {resolution.open_question}
-          </p>
-        )}
-      </div>
-      {editing && (
-        <textarea
-          value={text}
-          onChange={(event) => setText(event.target.value)}
-          rows={3}
-          disabled={busy !== null}
-          aria-label="Edited consensus"
-          className="field mt-3 w-full resize-none px-3 py-2 text-[12.5px] leading-relaxed"
-          placeholder="Rewrite the consensus in your own words"
-        />
+      {!editing ? (
+        <div className="mt-2 space-y-2">
+          {RESOLUTION_PARTS.map(([key, label]) =>
+            resolution[key] ? (
+              <p key={key} className="text-[12.5px] leading-relaxed">
+                <span className="font-semibold">{label}.</span>{" "}
+                {resolution[key]}
+              </p>
+            ) : null,
+          )}
+        </div>
+      ) : (
+        <div className="mt-2 space-y-2.5">
+          {RESOLUTION_PARTS.map(([key, label]) => (
+            <div key={key}>
+              <label
+                htmlFor={`resolution-${key}`}
+                className="text-[11px] font-medium text-[var(--mute)]"
+              >
+                {label}
+              </label>
+              <textarea
+                id={`resolution-${key}`}
+                value={drafts[key] ?? ""}
+                onChange={(event) =>
+                  setDrafts((current) => ({
+                    ...current,
+                    [key]: event.target.value,
+                  }))
+                }
+                rows={2}
+                disabled={busy !== null}
+                className="field mt-1 w-full resize-none px-3 py-2 text-[12.5px] leading-relaxed placeholder:text-[var(--mute)]"
+                placeholder={
+                  key === "open_question"
+                    ? "What remains unresolved? Leave empty to record none."
+                    : `Rewrite the ${label.toLowerCase()}, or leave empty to record none.`
+                }
+              />
+            </div>
+          ))}
+        </div>
       )}
       <div className="mt-3 flex flex-wrap items-center gap-2">
         {!editing ? (
@@ -663,7 +758,7 @@ function ResolutionCard({
               variant="outline"
               size="sm"
               disabled={busy !== null}
-              onClick={() => setEditing(true)}
+              onClick={beginEdit}
             >
               Edit &amp; close
             </Button>
@@ -682,8 +777,8 @@ function ResolutionCard({
             <Button
               variant="primary"
               size="sm"
-              disabled={busy !== null || !text.trim()}
-              onClick={() => decide("edit_close", text.trim())}
+              disabled={busy !== null || !anyRemaining}
+              onClick={submitEdit}
             >
               {deciding && chosen === "edit_close" ? <Spinner /> : null} Close
               with this wording
@@ -741,7 +836,7 @@ function Conversation({
   return (
     <div
       data-testid="dialogue-conversation"
-      className="ep-enter mx-auto flex w-full max-w-[640px] flex-col gap-3 py-6"
+      className="ep-enter mx-auto flex min-h-full w-full max-w-[640px] flex-1 flex-col gap-3 pt-6"
     >
       <div>
         <SectionLabel>Thread</SectionLabel>
@@ -751,11 +846,6 @@ function Conversation({
         <p className="mt-0.5 text-[12px] leading-relaxed text-[var(--ink-2)]">
           {thread.question}
         </p>
-        {thread.context && (
-          <p className="mt-1 text-[12px] leading-relaxed text-[var(--mute)]">
-            {thread.context}
-          </p>
-        )}
       </div>
       <div className="space-y-2.5">
         {turns.map((turn) => {
@@ -780,14 +870,10 @@ function Conversation({
         <ResolutionCard
           resolution={pending}
           busy={busy}
-          onDecide={(action, consensus) => {
+          onDecide={(action, edits) => {
             setError(null)
             focused
-              .decideDialogueThread(
-                pending.id,
-                action,
-                action === "edit_close" ? { consensus } : undefined,
-              )
+              .decideDialogueThread(pending.id, action, edits)
               .catch((cause) =>
                 setError(
                   cause instanceof Error
@@ -798,37 +884,39 @@ function Conversation({
           }}
         />
       )}
-      <div className="relative">
-        <textarea
-          value={message}
-          onChange={(event) => setMessage(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault()
-              send()
-            }
-          }}
-          rows={2}
-          disabled={busy !== null}
-          aria-label="Message the panel"
-          placeholder="Challenge the panel: why do you hold that position?"
-          className="field min-h-9 w-full resize-none py-2 pl-3 pr-12 text-[12.5px] leading-snug placeholder:text-[var(--mute)]"
-        />
-        <button
-          type="button"
-          aria-label="Send"
-          disabled={busy !== null || !message.trim()}
-          onClick={send}
-          className="absolute bottom-2 right-2 grid size-7 place-items-center rounded-full bg-[var(--node)] text-white transition-opacity hover:opacity-90 disabled:opacity-35"
-        >
-          {sending ? (
-            <Spinner className="size-3.5" />
-          ) : (
-            <ArrowUp size={14} strokeWidth={2.2} aria-hidden />
-          )}
-        </button>
+      <div className="sticky bottom-0 mt-auto bg-[var(--bg)] pb-5 pt-2">
+        <div className="relative">
+          <textarea
+            value={message}
+            onChange={(event) => setMessage(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault()
+                send()
+              }
+            }}
+            rows={2}
+            disabled={busy !== null}
+            aria-label="Message the panel"
+            placeholder="Challenge the panel: why do you hold that position?"
+            className="field min-h-9 w-full resize-none py-2 pl-3 pr-12 text-[12.5px] leading-snug placeholder:text-[var(--mute)]"
+          />
+          <button
+            type="button"
+            aria-label="Send"
+            disabled={busy !== null || !message.trim()}
+            onClick={send}
+            className="absolute bottom-2 right-2 grid size-7 place-items-center rounded-full bg-[var(--node)] text-white transition-opacity hover:opacity-90 disabled:opacity-35"
+          >
+            {sending ? (
+              <Spinner className="size-3.5" />
+            ) : (
+              <ArrowUp size={14} strokeWidth={2.2} aria-hidden />
+            )}
+          </button>
+        </div>
+        {error && <ErrorLine>{error}</ErrorLine>}
       </div>
-      {error && <ErrorLine>{error}</ErrorLine>}
     </div>
   )
 }
@@ -888,7 +976,13 @@ function PerspectivesRail({
   )
 }
 
-function ReportModal({ onClose }: { onClose: () => void }) {
+function ReportModal({
+  final,
+  onClose,
+}: {
+  final: boolean
+  onClose: () => void
+}) {
   const focused = useFocusedPanel()
   const [report, setReport] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -911,7 +1005,7 @@ function ReportModal({ onClose }: { onClose: () => void }) {
     }
   }, [focused])
   return (
-    <ModalShell title="Final report" onClose={onClose}>
+    <ModalShell title={final ? "Final report" : "Draft report"} onClose={onClose}>
       {error && <ErrorLine>{error}</ErrorLine>}
       {!report && !error && (
         <p className="flex items-center gap-2 text-[12px] text-[var(--mute)]">
@@ -959,22 +1053,37 @@ export function StageDialogue() {
         ) ?? null)
       : null)
   const hasClosed = threads.some((thread) => thread.status === "closed")
+  const allResolved =
+    !active &&
+    hasClosed &&
+    !threads.some((thread) => thread.status === "suggested")
 
   return (
-    <main className="flex min-h-0 flex-1 flex-col lg:flex-row">
+    <main className="flex min-h-0 flex-1 flex-col lg:max-h-[calc(100dvh-48px)] lg:flex-row lg:overflow-hidden">
       <DocumentPanel
         dialogue={dialogue}
-        onReport={hasClosed ? () => setReportOpen(true) : null}
+        onReport={
+          hasClosed && !allResolved ? () => setReportOpen(true) : null
+        }
       />
-      <div className="min-w-0 flex-1 overflow-y-auto px-4">
+      <div className="flex min-w-0 flex-1 flex-col overflow-y-auto px-4">
         {active ? (
           <Conversation session={session} dialogue={dialogue} thread={active} />
         ) : (
-          <ThreadPicker session={session} dialogue={dialogue} />
+          <ThreadPicker
+            session={session}
+            dialogue={dialogue}
+            onReport={() => setReportOpen(true)}
+          />
         )}
       </div>
       <PerspectivesRail session={session} dialogue={dialogue} />
-      {reportOpen && <ReportModal onClose={() => setReportOpen(false)} />}
+      {reportOpen && (
+        <ReportModal
+          final={allResolved}
+          onClose={() => setReportOpen(false)}
+        />
+      )}
     </main>
   )
 }

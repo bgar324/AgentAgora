@@ -1,7 +1,7 @@
 "use client"
 
 
-import { X } from "lucide-react"
+import { Check, X } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 
 import {
@@ -197,49 +197,72 @@ export function FocusedWorkspace() {
           </div>
         )}
         {activeScreen === "detail" && (
-          <div className="hidden items-center gap-3 lg:flex" aria-label="Progress">
-          {(
-            [
-              ["Search", stage === "extraction" && !session.searched],
-              ["Perspectives", stage === "extraction" && session.searched],
-              ["Panel", stage === "deliberation"],
-            ] as const
-          ).map(([name, active], i) => {
-            const done =
-              (i === 0 && session.searched) ||
-              (i === 1 && stage === "deliberation")
-            return (
-              <span
-                key={name}
-                className="flex items-center gap-1.5"
-                style={{
-                  color: active
-                    ? "var(--ink)"
-                    : done
-                      ? "var(--ink-2)"
-                      : "var(--mute)",
-                }}
-              >
-                <span
-                  className="size-1.5 rounded-full"
-                  style={{
-                    background: active
-                      ? "var(--ink)"
-                      : done
-                        ? "var(--ink-2)"
-                        : "var(--line-strong)",
-                  }}
-                />
-                <span
-                  className="text-[11px]"
-                  style={{ fontWeight: active ? 500 : 400 }}
-                >
-                  {name}
-                </span>
-              </span>
-            )
-          })}
-          </div>
+          <ol className="hidden items-center lg:flex" aria-label="Progress">
+            {(
+              [
+                ["Search", stage === "extraction" && !session.searched],
+                ["Perspectives", stage === "extraction" && session.searched],
+                ["Panel", stage === "deliberation"],
+              ] as const
+            ).map(([name, active], i) => {
+              const done =
+                (i === 0 && session.searched) ||
+                (i === 1 && stage === "deliberation")
+              return (
+                <li key={name} className="flex items-center">
+                  {i > 0 && (
+                    <span
+                      aria-hidden
+                      className="mx-2.5 h-px w-5"
+                      style={{
+                        background: done || active
+                          ? "var(--line-strong)"
+                          : "var(--line)",
+                      }}
+                    />
+                  )}
+                  <span
+                    className="flex items-center gap-1.5"
+                    aria-current={active ? "step" : undefined}
+                  >
+                    <span
+                      className="grid size-4 shrink-0 place-items-center rounded-full text-[9.5px] font-semibold tabular-nums"
+                      style={
+                        done || active
+                          ? {
+                              background: "var(--node)",
+                              color: "var(--on-node, #fff)",
+                            }
+                          : {
+                              border: "1px solid var(--line-strong)",
+                              color: "var(--mute)",
+                            }
+                      }
+                    >
+                      {done ? (
+                        <Check size={9} strokeWidth={2.6} aria-hidden />
+                      ) : (
+                        i + 1
+                      )}
+                    </span>
+                    <span
+                      className="text-[11px]"
+                      style={{
+                        color: active
+                          ? "var(--ink)"
+                          : done
+                            ? "var(--ink-2)"
+                            : "var(--mute)",
+                        fontWeight: active ? 600 : 450,
+                      }}
+                    >
+                      {name}
+                    </span>
+                  </span>
+                </li>
+              )
+            })}
+          </ol>
         )}
         {session.demo && (
           <span className="hidden rounded-full border border-[var(--line)] px-1.5 py-px text-[11px] text-[var(--mute)] sm:inline">
@@ -561,8 +584,8 @@ function ResetDialog({
   return (
     <ModalShell title="Start over?" onClose={onClose}>
       <p className="mb-5 text-[13px] leading-relaxed text-[var(--ink-2)]">
-        This discards the workspace — every Investigation, paper set, panel,
-        and hypothesis branch.
+        Deletes the whole workspace: every Investigation, paper, panel, and
+        saved hypothesis.
       </p>
       {error && (
         <p role="alert" className="mb-3 text-[12px] text-[var(--red)]">

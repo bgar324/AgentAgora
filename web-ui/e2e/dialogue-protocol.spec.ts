@@ -127,9 +127,9 @@ test("runs the thread dialogue protocol end to end", async ({ page }) => {
   expect(remaining).toBeGreaterThanOrEqual(3)
   await expect(page.getByText(/Working Document · v[2-9]/)).toBeVisible()
 
-  // The moderator's final Document.
-  await page.getByRole("button", { name: "Final report" }).click()
-  const report = page.getByRole("dialog", { name: "Final report" })
+  // Mid-deliberation the Document panel offers the draft report.
+  await page.getByRole("button", { name: "Draft report" }).click()
+  const report = page.getByRole("dialog", { name: "Draft report" })
   await expect(report).toBeVisible()
   await expect(report.getByText("Hypotheses")).toBeVisible({
     timeout: 15_000,
@@ -194,11 +194,35 @@ test("keep open continues the discussion before closing", async ({
   await expect(page.getByTestId("dialogue-resolution-card")).toBeVisible({
     timeout: 30_000,
   })
-  await page
-    .getByTestId("dialogue-resolution-card")
-    .getByRole("button", { name: "Accept & close" })
+  // Close by editing the resolution: all three parts are editable;
+  // the researcher's wording lands verbatim on the accepted record.
+  const review = page.getByTestId("dialogue-resolution-card")
+  await review.getByRole("button", { name: "Edit & close" }).click()
+  await review
+    .getByRole("textbox", { name: "Consensus" })
+    .fill("Researcher wording: the claim holds only inside the boundary.")
+  await review
+    .getByRole("textbox", { name: "Open question" })
+    .fill("Which measurement settles the boundary?")
+  await review.getByRole("textbox", { name: "Disagreement" }).fill("")
+  await review
+    .getByRole("button", { name: "Close with this wording" })
     .click()
   await expect(page.getByText("Resolved", { exact: true })).toBeVisible({
     timeout: 30_000,
   })
+  // The wording also folds into the Document, so match the Resolved
+  // card's exact standalone paragraphs.
+  await expect(
+    page.getByText(
+      "Researcher wording: the claim holds only inside the boundary.",
+      { exact: true },
+    ),
+  ).toBeVisible()
+  await expect(
+    page.getByText(
+      "Open question: Which measurement settles the boundary?",
+      { exact: true },
+    ),
+  ).toBeVisible()
 })
