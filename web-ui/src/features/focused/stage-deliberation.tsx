@@ -1671,7 +1671,14 @@ function LeadPerspectiveRail({
       data-testid="lead-perspective-rail"
       className="shrink-0 border-b border-[var(--line)] bg-[var(--bg)] px-4 py-4 lg:w-[250px] lg:overflow-y-auto lg:border-b-0 lg:border-r"
     >
-      <SectionLabel>Lead Perspective · v{agent.facet_version}</SectionLabel>
+      <SectionLabel>
+        Lead Perspective
+        {agent.facet_version > 1
+          ? ` · ${agent.facet_version - 1} revision${
+              agent.facet_version > 2 ? "s" : ""
+            }`
+          : ""}
+      </SectionLabel>
       <h2 className="mt-1 text-[13px] font-semibold tracking-[-0.01em] text-[var(--ink)]">
         {perspective.name}
       </h2>
