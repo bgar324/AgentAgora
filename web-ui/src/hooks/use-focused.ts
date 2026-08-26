@@ -762,6 +762,16 @@ export function useFocusedPanel() {
     [dialogueCommand],
   )
 
+  const continueDialogueFromResolution = useCallback(
+    (resolutionId: string) =>
+      dialogueCommand(
+        "Continuing deliberation",
+        "dialogue/threads/continue",
+        { resolution_id: resolutionId },
+      ),
+    [dialogueCommand],
+  )
+
   const fetchDialogueReport = useCallback(
     () => api<{ report: string }>(`sessions/${sessionId}/dialogue/report`),
     [sessionId],
@@ -800,6 +810,7 @@ export function useFocusedPanel() {
     openDialogueThread,
     messageDialogueThread,
     decideDialogueThread,
+    continueDialogueFromResolution,
     fetchDialogueReport,
   }
 }

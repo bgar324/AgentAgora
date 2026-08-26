@@ -205,6 +205,10 @@ class DialogueDecisionRequest(BaseModel):
     progress_generation: int | None = Field(default=None, ge=1)
 
 
+class DialogueContinuationRequest(BaseModel):
+    resolution_id: str = Field(min_length=1, max_length=200)
+
+
 # --- stage ① perspective construction ---------------------------------------
 
 
@@ -607,6 +611,21 @@ async def decide_dialogue_thread(
             disagreement=request.disagreement,
             open_question=request.open_question,
             progress_generation=request.progress_generation,
+        ),
+    )
+
+
+@focused_router.post("/sessions/{session_id}/dialogue/threads/continue")
+async def continue_dialogue_from_resolution(
+    session_id: str,
+    request: DialogueContinuationRequest,
+    service: Service,
+) -> WorkspaceView:
+    return await _acall_view(
+        service,
+        service.continue_dialogue_from_resolution(
+            session_id,
+            resolution_id=request.resolution_id,
         ),
     )
 

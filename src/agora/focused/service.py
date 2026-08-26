@@ -4133,6 +4133,27 @@ class FocusedPanelService:
             raise SessionError(str(error)) from error
         return self._save_state(state)
 
+    @_serialized_session_mutation
+    async def continue_dialogue_from_resolution(
+        self,
+        session_id: str,
+        *,
+        resolution_id: str,
+    ) -> SessionState:
+        """Continue a finished dialogue from an accepted open question."""
+
+        from agora.focused import dialogue as dialogue_module
+
+        session = self._require(session_id)
+        try:
+            dialogue_module.continue_from_open_question(
+                session.state,
+                resolution_id=resolution_id,
+            )
+        except dialogue_module.DialogueError as error:
+            raise SessionError(str(error)) from error
+        return self._save_state(session.state)
+
     def dialogue_report(self, session_id: str) -> str:
         """Synthesize the final Document from resolved Threads."""
         from agora.focused import dialogue as dialogue_module

@@ -24,6 +24,7 @@ const BUSY = {
   open: "Discussing Thread",
   message: "Sending message",
   decide: "Reviewing resolution",
+  continue: "Continuing deliberation",
 } as const
 
 const KIND_LABELS: Record<CanonContribution["kind"], string> = {
@@ -64,6 +65,32 @@ function pendingResolution(
     if (resolution.status === "pending") return resolution
   }
   return null
+}
+
+function continuableResolutions(dialogue: DialogueState): CanonResolution[] {
+  const threads = latestThreads(dialogue)
+  const represented = new Set([
+    ...threads.flatMap((thread) => thread.origin_ids),
+    ...threads.map((thread) => thread.question.trim().toLowerCase()),
+  ])
+  const latest = new Map(
+    dialogue.resolutions.map((resolution) => [resolution.id, resolution]),
+  )
+  const seen = new Set<string>()
+  return [...latest.values()].filter((resolution) => {
+    const question = resolution.open_question?.trim().toLowerCase()
+    if (
+      resolution.status !== "accepted" ||
+      !question ||
+      represented.has(resolution.id) ||
+      represented.has(question) ||
+      seen.has(question)
+    ) {
+      return false
+    }
+    seen.add(question)
+    return true
+  })
 }
 
 function useNames(session: SessionState, dialogue: DialogueState) {
@@ -441,16 +468,22 @@ function ThreadPicker({
   const busy = useFocusedStore((s) => s.busy)
   const [error, setError] = useState<string | null>(null)
   const [openingId, setOpeningId] = useState<string | null>(null)
+  const [continuingId, setContinuingId] = useState<string | null>(null)
   const threads = latestThreads(dialogue)
   const suggested = threads.filter((thread) => thread.status === "suggested")
   const closed = threads.filter((thread) => thread.status === "closed")
+  const openQuestions = continuableResolutions(dialogue)
   const allResolved = suggested.length === 0 && closed.length > 0
 
   if (allResolved) {
     return (
       <div className="ep-enter mx-auto w-full max-w-[640px] py-6">
         <section
-          aria-label="Deliberation complete"
+          aria-label={
+            openQuestions.length > 0
+              ? "Continue deliberation"
+              : "Deliberation complete"
+          }
           className="ep-card-enter panel flex flex-col items-center px-6 py-8 text-center"
         >
           <CircleCheck
@@ -460,21 +493,69 @@ function ThreadPicker({
             className="text-[var(--green)]"
           />
           <h2 className="mt-2.5 text-[13px] font-semibold">
-            All Threads resolved
+            {openQuestions.length > 0
+              ? "Current Threads resolved"
+              : "All Threads resolved"}
           </h2>
-          <p className="mt-1 max-w-[42ch] text-[12px] leading-relaxed text-[var(--ink-2)]">
-            Every scientific issue this panel raised has a recorded
-            resolution. The moderator has synthesized them into the final
-            report.
+          <p className="mt-1 max-w-[48ch] text-[12px] leading-relaxed text-[var(--ink-2)]">
+            {openQuestions.length > 0
+              ? "The current Threads are resolved. Continue from an open question, or review the report as it stands."
+              : "Every scientific issue this panel raised has a recorded resolution. The moderator has synthesized them into the final report."}
           </p>
+          {openQuestions.length > 0 && (
+            <div className="mt-4 w-full space-y-2 text-left">
+              <SectionLabel>Open questions</SectionLabel>
+              {openQuestions.map((resolution) => (
+                <div
+                  key={resolution.id}
+                  data-testid="dialogue-open-question"
+                  className="rounded-lg border border-[var(--line)] bg-[var(--bg)] px-3 py-3"
+                >
+                  <p className="text-[12px] leading-relaxed text-[var(--ink-2)]">
+                    {resolution.open_question}
+                  </p>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    className="mt-2"
+                    disabled={busy !== null}
+                    onClick={() => {
+                      setError(null)
+                      setContinuingId(resolution.id)
+                      focused
+                        .continueDialogueFromResolution(resolution.id)
+                        .catch((cause) =>
+                          setError(
+                            cause instanceof Error
+                              ? cause.message
+                              : "Could not continue from this question",
+                          ),
+                        )
+                        .finally(() => setContinuingId(null))
+                    }}
+                  >
+                    {busy === BUSY.continue &&
+                    continuingId === resolution.id ? (
+                      <>
+                        <Spinner /> Continuing…
+                      </>
+                    ) : (
+                      "Explore as next Thread"
+                    )}
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
           <Button
-            variant="primary"
+            variant={openQuestions.length > 0 ? "ghost" : "primary"}
             size="sm"
             className="mt-4"
             onClick={onReport}
           >
             Review the final report
           </Button>
+          {error && <ErrorLine>{error}</ErrorLine>}
         </section>
         <ResolvedList dialogue={dialogue} closed={closed} />
       </div>

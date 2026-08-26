@@ -157,6 +157,85 @@ test("runs the thread dialogue protocol end to end", async ({ page }) => {
   ).toBeTruthy()
 })
 
+test("continues a finished dialogue from an open question", async ({ page }) => {
+  const { workspaceId, rootId } = await dialogueWorkspace(page)
+  let state = await requestJson(
+    page.request,
+    `/api/focused/sessions/${rootId}/dialogue/start`,
+    "post",
+    {},
+  )
+  const proposalIds = [
+    ...new Set(
+      state.dialogue.proposals.map((proposal: { id: string }) => proposal.id),
+    ),
+  ]
+  state = await requestJson(
+    page.request,
+    `/api/focused/sessions/${rootId}/dialogue/selection`,
+    "post",
+    { proposal_ids: proposalIds.slice(0, 2) },
+  )
+
+  for (let count = 0; count < 10; count += 1) {
+    const threads = new Map<
+      string,
+      { id: string; status: string; question: string }
+    >()
+    state.dialogue.threads.forEach(
+      (thread: { id: string; status: string; question: string }) =>
+        threads.set(thread.id, thread),
+    )
+    const suggested = [...threads.values()].find(
+      (thread) => thread.status === "suggested",
+    )
+    if (!suggested) break
+
+    state = await requestJson(
+      page.request,
+      `/api/focused/sessions/${rootId}/dialogue/threads/open`,
+      "post",
+      { thread_id: suggested.id },
+    )
+    const resolutions = new Map<
+      string,
+      { id: string; status: string; open_question: string | null }
+    >()
+    state.dialogue.resolutions.forEach(
+      (resolution: {
+        id: string
+        status: string
+        open_question: string | null
+      }) => resolutions.set(resolution.id, resolution),
+    )
+    const pending = [...resolutions.values()].find(
+      (resolution) => resolution.status === "pending",
+    )
+    if (!pending) throw new Error("Expected a pending Resolution.")
+    state = await requestJson(
+      page.request,
+      `/api/focused/sessions/${rootId}/dialogue/decisions`,
+      "post",
+      { resolution_id: pending.id, action: "close" },
+    )
+  }
+
+  await page.goto(`/focused?workspace=${workspaceId}`)
+  await expect(
+    page.getByRole("heading", { name: "Current Threads resolved" }),
+  ).toBeVisible()
+  const question = page.getByTestId("dialogue-open-question").first()
+  await expect(question).toBeVisible()
+  await question
+    .getByRole("button", { name: "Explore as next Thread" })
+    .click()
+
+  const nextThread = page.getByTestId("dialogue-thread-card")
+  await expect(nextThread).toHaveCount(1)
+  await expect(nextThread.getByRole("button", { name: "Open Thread" })).toBeVisible()
+})
+
+
 test("keep open continues the discussion before closing", async ({
   page,
 }) => {

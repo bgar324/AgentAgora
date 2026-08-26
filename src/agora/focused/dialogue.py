@@ -1573,6 +1573,52 @@ async def _suggest_next_threads(
         )
 
 
+def continue_from_open_question(
+    state: SessionState,
+    *,
+    resolution_id: str,
+) -> None:
+    """Turn one uncontinued accepted open question into a suggested Thread."""
+
+    dialogue = _require_dialogue(state)
+    if dialogue.stage != "deliberation" or dialogue.document is None:
+        raise DialogueError("The Working Document has not been created.")
+    if dialogue.waiting_for is not None:
+        raise DialogueError("Review the pending Resolution first.")
+
+    current = dialogue.current_threads()
+    if any(thread.status in {"open", "suggested"} for thread in current):
+        raise DialogueError("Resolve the available Threads before continuing.")
+
+    resolution = dialogue.latest_resolution(resolution_id)
+    question = (resolution.open_question or "").strip() if resolution else ""
+    if resolution is None or resolution.status != "accepted" or not question:
+        raise DialogueError("Choose an open question from an accepted Resolution.")
+
+    identity = " ".join(question.casefold().split())
+    if any(
+        resolution.id in thread.origin_ids
+        or " ".join(thread.question.casefold().split()) == identity
+        for thread in current
+    ):
+        raise DialogueError("This open question already has a Thread.")
+
+    index = len({thread.id for thread in dialogue.threads}) + 1
+    dialogue.threads.append(
+        Thread(
+            id=f"{dialogue.id}:thread:{index}",
+            version=1,
+            status="suggested",
+            title=_clip(question.rstrip("?"), 6),
+            question=question,
+            context="Continued from an accepted Resolution's open question.",
+            origin_ids=[resolution.id],
+            created_by="researcher",
+            created_at=utcnow(),
+        )
+    )
+
+
 def synthesize_report(state: SessionState) -> str:
     """Kat's final Document: hypotheses from closed Threads, open questions."""
     dialogue = _require_dialogue(state)
