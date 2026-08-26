@@ -14,6 +14,7 @@ from agora.focused.models import (
     FACETS,
     ClusterNaming,
     ClusterNamings,
+    DerivedQuestions,
     ExpPaper,
     FacetCandidate,
     FacetEvidence,
@@ -119,6 +120,10 @@ class HermeticProvider:
                         for index in range(1, 4)
                     ]
                 )
+        elif schema is DerivedQuestions:
+            parsed = DerivedQuestions(
+                questions=["When do draft suggestions reduce output diversity?"]
+            )
         elif schema is QuestionPlan:
             if "withdrawn" in user:
                 parsed = QuestionPlan(
@@ -292,21 +297,17 @@ def test_question_search_records_reach_and_miss() -> None:
             state.id,
             generation=generation,
         )
-        assert {
-            update["message"] for update in progress["items"]
-        } >= {"Searched ai suggestion homogenization...retrieved 1 papers"}
+        assert {update["message"] for update in progress["items"]} >= {
+            "Searched ai suggestion homogenization...retrieved 1 papers"
+        }
         assert [item["sequence"] for item in progress["items"]] == list(
             range(1, progress["next"] + 1)
         )
         items = progress["items"]
         started_by_sequence = {
-            item["sequence"]: item
-            for item in items
-            if item["kind"] == "query_started"
+            item["sequence"]: item for item in items if item["kind"] == "query_started"
         }
-        completed = [
-            item for item in items if item["kind"] == "query_completed"
-        ]
+        completed = [item for item in items if item["kind"] == "query_completed"]
         failed = [item for item in items if item["kind"] == "query_failed"]
         terminal = [*completed, *failed]
         assert completed
@@ -332,14 +333,11 @@ def test_question_search_records_reach_and_miss() -> None:
         assert items[-1]["clusters"] == len(state.clusters)
         assert items[-1]["unassigned"] == len(state.unassigned_paper_ids)
 
-
         assert "underfilled corpus expansion" in retrieval.calls
         assert "underfilled corpus expansion" in state.searched_queries
         assert "ai suggestion homogenization" in retrieval.calls
         assert "withdrawn tool capability" in retrieval.calls
-        assert state.question_reach[0].queries_r2 == [
-            "ai suggestion homogenization"
-        ]
+        assert state.question_reach[0].queries_r2 == ["ai suggestion homogenization"]
         assert state.question_reach[0].reached
         assert {evidence.paper_id for evidence in state.question_reach[0].selected} == {
             "q-answer",
@@ -415,6 +413,37 @@ def test_live_retrieval_surfaces_provider_failure() -> None:
             await service.run_search(state.id, selected)
         assert error.value.status == 503
         assert not service.get(state.id).searched
+
+    asyncio.run(go())
+
+
+def test_questionless_live_start_derives_research_questions() -> None:
+    async def go() -> None:
+        retrieval = HermeticRetrieval()
+        provider = HermeticProvider(retrieval)
+        service = FocusedPanelService(provider=provider, s2=retrieval)
+        state = service.create_workspace(
+            problem="How do AI writing tools affect knowledge work?",
+            research_questions=[],
+            demo=False,
+        ).active
+        state = await service.suggest_queries(state.id)
+        assert "DerivedQuestions" in provider.schemas
+        assert state.research_questions == [
+            "When do draft suggestions reduce output diversity?"
+        ]
+        assert [reach.question for reach in state.question_reach] == (
+            state.research_questions
+        )
+        assert any(
+            suggestion.kind == "question" for suggestion in state.suggested_queries
+        )
+        searched = await service.run_search(
+            state.id,
+            [suggestion.query for suggestion in state.suggested_queries],
+        )
+        assert searched.searched
+        assert searched.question_reach[0].reached
 
     asyncio.run(go())
 
@@ -564,8 +593,6 @@ def test_facet_extraction_schema_excludes_server_owned_provenance() -> None:
     assert "sentence" not in properties
 
 
-
-
 def test_focused_retrieval_uses_one_full_paper_search() -> None:
     class FullPaperClient:
         def __init__(self) -> None:
@@ -604,9 +631,7 @@ def test_focused_retrieval_uses_one_full_paper_search() -> None:
 
 
 def test_corpus_budget_prioritizes_question_answers() -> None:
-    answering = {
-        "q-answer": ExpPaper(id="q-answer", title="Answering paper")
-    }
+    answering = {"q-answer": ExpPaper(id="q-answer", title="Answering paper")}
     angle = {
         f"angle-{index}": ExpPaper(id=f"angle-{index}", title=f"Angle {index}")
         for index in range(250)
@@ -719,6 +744,7 @@ def test_live_queries_overlap_without_reordering_results() -> None:
 
     asyncio.run(go())
 
+
 def test_rate_limited_query_does_not_cancel_successful_siblings() -> None:
     async def go() -> None:
         class PartialRetrieval:
@@ -760,7 +786,6 @@ def test_rate_limited_query_does_not_cancel_successful_siblings() -> None:
         assert failed["reason"] == "rate_limited"
 
     asyncio.run(go())
-
 
 
 def test_all_rate_limited_queries_keep_retry_guidance() -> None:

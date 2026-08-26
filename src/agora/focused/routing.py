@@ -12,6 +12,7 @@ class FocusedModelRole(StrEnum):
 
 class FocusedTask(StrEnum):
     suggest_queries = "suggest_queries"
+    derive_research_questions = "derive_research_questions"
     plan_question_search = "plan_question_search"
     expand_question_search = "expand_question_search"
     assess_question_papers = "assess_question_papers"
@@ -37,6 +38,7 @@ class FocusedTask(StrEnum):
 TASK_ROLES: Final = MappingProxyType(
     {
         FocusedTask.suggest_queries: FocusedModelRole.query,
+        FocusedTask.derive_research_questions: FocusedModelRole.query,
         FocusedTask.plan_question_search: FocusedModelRole.query,
         FocusedTask.expand_question_search: FocusedModelRole.query,
         FocusedTask.assess_question_papers: FocusedModelRole.corpus,

@@ -1328,6 +1328,13 @@ class FocusedPanelService:
                 for index, question in enumerate(state.research_questions)
             ]
         else:
+            if not state.research_questions:
+                # Users never type research questions (Kat's protocol); derive
+                # them so answer-tier retrieval and coverage ranking still run.
+                state.research_questions = await agents.derive_research_questions(
+                    state.problem,
+                    provider=self._provider_for(session),
+                )
             problem_suggestions = [
                 suggestion.model_copy(
                     update={"kind": "problem", "question_index": None, "round": 1}

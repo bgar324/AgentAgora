@@ -740,6 +740,13 @@ class QuerySuggestions(BaseModel):
     )
 
 
+class DerivedQuestions(BaseModel):
+    questions: list[str] = Field(
+        description="Two or three answerable research questions, each probing "
+        "a distinct empirical uncertainty inside the research problem."
+    )
+
+
 class QuestionPlan(BaseModel):
     form: str = ""
     candidates: list[str] = Field(default_factory=list)

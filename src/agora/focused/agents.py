@@ -26,6 +26,7 @@ from agora.focused.models import (
     DeliberationThread,
     DeliberationThreadDraft,
     DeliberationThreads,
+    DerivedQuestions,
     DocumentDraft,
     DocumentSection,
     ExpPaper,
@@ -269,6 +270,41 @@ async def suggest_queries(
             for query in parsed.queries[:count]
         ]
     return _fallback_queries(problem, questions, count)
+
+
+async def derive_research_questions(
+    problem: str,
+    *,
+    provider: FocusedProvider | None = None,
+    count: int = 3,
+) -> list[str]:
+    """Derive the research questions a user no longer types.
+
+    The questions power answer-tier retrieval (question planning, paper
+    assessment, coverage ranking). Returns [] when the model yields
+    nothing usable, which degrades retrieval to problem-angle queries.
+    """
+    parsed = await _structured(
+        provider,
+        "You turn one research problem into the questions a literature "
+        "search must answer. Write two or three answerable research "
+        "questions, each probing a DIFFERENT empirical uncertainty already "
+        "present in the problem statement. Preserve the problem's own "
+        "concepts; do not introduce neighboring topics. One sentence each, "
+        f"ending in a question mark. Return at most {count} questions.",
+        f"## RESEARCH PROBLEM\n{problem}",
+        DerivedQuestions,
+        task=FocusedTask.derive_research_questions,
+        temperature=0.3,
+    )
+    if parsed is None:
+        return []
+    questions = []
+    for question in parsed.questions:
+        text = " ".join(question.split()).strip()
+        if len(text) > 11 and text not in questions:
+            questions.append(text)
+    return questions[:count]
 
 
 # ---------------------------------------------------------------------------
