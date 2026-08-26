@@ -8,6 +8,7 @@ import {
   useState,
   type CSSProperties,
 } from "react"
+import { Crown } from "lucide-react"
 import Markdown from "react-markdown"
 import {
   Background,
@@ -1021,7 +1022,13 @@ function PanelDrawer({
                     onClick={() => onOpenAgent(agent)}
                   />
                   {agent.iid === openerIid && (
-                    <span className="text-[9.5px] font-semibold text-[var(--green)]">
+                    <span className="inline-flex items-center gap-1 rounded-full border border-[color-mix(in_srgb,var(--green)_35%,var(--line))] bg-[color-mix(in_srgb,var(--green)_8%,var(--panel))] px-2 py-0.5 text-[9.5px] font-semibold text-[var(--green)]">
+                      <Crown
+                        size={10}
+                        strokeWidth={2}
+                        className="-rotate-12"
+                        aria-hidden="true"
+                      />
                       Lead
                     </span>
                   )}
@@ -1471,9 +1478,9 @@ function PanelDrawer({
                           {thread.hypothesis_fragments.map((fragment) => (
                             <blockquote
                               key={fragment}
-                              className="mt-2 border-l-2 border-[var(--amber)] pl-2 text-[10px] leading-relaxed text-[var(--mute)]"
+                              className="mt-2 rounded-lg border border-[var(--line)] bg-[var(--bg)] px-2.5 py-2 text-[11.5px] leading-relaxed text-[var(--ink-2)]"
                             >
-                              Hypothesis: {fragment}
+                              {fragment}
                             </blockquote>
                           ))}
                           <div className="mt-2 flex flex-wrap gap-1">
@@ -1670,7 +1677,7 @@ function LeadPerspectiveRail({
       className="shrink-0 border-b border-[var(--line)] bg-[var(--bg)] px-4 py-4 lg:w-[250px] lg:overflow-y-auto lg:border-b-0 lg:border-r"
     >
       <SectionLabel>Lead Perspective · v{agent.facet_version}</SectionLabel>
-      <h2 className="mt-1 text-[13px] font-semibold text-[var(--ink)]">
+      <h2 className="mt-1 text-[13px] font-semibold tracking-[-0.01em] text-[var(--ink)]">
         {perspective.name}
       </h2>
       {framing && (
@@ -3008,9 +3015,9 @@ function TurnBubble({
             {turn.hypothesis_fragments.map((fragment) => (
               <blockquote
                 key={fragment}
-                className="border-l-2 border-[var(--amber)] pl-2 text-[10px] leading-relaxed text-[var(--mute)]"
+                className="rounded-lg border border-[var(--line)] bg-[var(--bg)] px-2.5 py-2 text-[11.5px] leading-relaxed text-[var(--ink-2)]"
               >
-                Hypothesis: {fragment}
+                {fragment}
               </blockquote>
             ))}
           </div>

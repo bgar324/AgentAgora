@@ -502,7 +502,7 @@ function RestoreErrorScreen({
   return (
     <div className="flex min-h-screen items-center justify-center px-6">
       <div className="panel w-full max-w-[420px] p-5">
-        <h1 className="text-[16px] font-semibold">
+        <h1 className="text-[16px] font-semibold tracking-[-0.01em]">
           Couldn’t open this workspace
         </h1>
         <p
