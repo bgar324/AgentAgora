@@ -60,21 +60,23 @@ async function addPerspective(page: Page, name: string) {
 }
 
 
-async function applyHypothesisChanges(
-  page: Page,
-  triggerName: "Apply shared ground" | "Apply edits",
-) {
-  await page.getByRole("button", { name: triggerName }).click()
+async function applyEdits(page: Page) {
+  // Researcher-authored edits apply directly; no confirmation dialog.
+  await page.getByRole("button", { name: "Apply edits" }).click()
+  await expect(page.getByRole("button", { name: "Apply edits" })).toHaveCount(0)
+}
+
+async function applySharedGround(page: Page) {
+  // Panel proposals confirm through the current/proposed comparison dialog.
+  await page.getByRole("button", { name: "Apply shared ground" }).click()
   const confirmation = page.getByRole("dialog", {
     name: "Apply hypothesis changes?",
   })
   await expect(confirmation).toBeVisible()
-  await confirmation.getByRole("button", { name: "Apply proposal" }).click()
+  await confirmation
+    .getByRole("button", { name: "Apply shared ground" })
+    .click()
   await expect(confirmation).toHaveCount(0)
-}
-
-async function applySharedGround(page: Page) {
-  await applyHypothesisChanges(page, "Apply shared ground")
 }
 const DEMO_QUERIES = [
   "broad-spectrum antibiotic use antimicrobial resistance population",
@@ -784,16 +786,16 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   await expect(firstRoundDiscussion).toContainText("Moderator check")
   await expect(firstRoundDiscussion).toContainText("Unanimous")
   await expect(firstRoundDiscussion).toContainText("Assumption:")
-  await expect(firstRoundDiscussion).toContainText("Responding to T")
-  await expect(firstRoundDiscussion.getByText("challenge", { exact: true })).toBeVisible()
+  await expect(firstRoundDiscussion).toContainText("Replying to T")
+  await expect(
+    firstRoundDiscussion.getByText(/Challenging T\d+/).first(),
+  ).toBeVisible()
   const agreementPrompt = page.getByRole("button", {
     name: "Why this agreement?",
   })
   await expect(agreementPrompt).toBeVisible()
   await agreementPrompt.click()
-  await expect(questionInput).toHaveValue(
-    "Why did the panel agree on this shared ground?",
-  )
+  await expect(questionInput).toHaveValue(/^Why did the panel agree/)
   await questionInput.fill("")
   const moderatorSummary = page.getByTestId("round-1-summary")
   await expect(
@@ -813,6 +815,13 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   await expect(
     page.getByRole("dialog", { name: "Rate this deliberation" }),
   ).toHaveCount(0)
+  const beforeApply = await requestJson(
+    page.request,
+    `/api/focused/sessions/${rootId}`,
+    "get",
+  )
+  // Panel proposals confirm through the comparison dialog; researcher
+  // edits (exercised later) apply directly.
   await page.getByRole("button", { name: "Apply shared ground" }).click()
   const applyConfirmation = page.getByRole("dialog", {
     name: "Apply hypothesis changes?",
@@ -821,12 +830,11 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   await expect(applyConfirmation).toContainText("Current hypothesis")
   await expect(applyConfirmation).toContainText("Proposed hypothesis")
   await expect(applyConfirmation.getByRole("checkbox")).toHaveCount(0)
-  const beforeApply = await requestJson(
-    page.request,
-    `/api/focused/sessions/${rootId}`,
-    "get",
-  )
-  await applyConfirmation.getByRole("button", { name: "Apply proposal" }).click()
+  await applyConfirmation
+    .getByRole("button", { name: "Apply shared ground" })
+    .click()
+  await expect(applyConfirmation).toHaveCount(0)
+  await expect(page.getByText("Applied, not saved", { exact: true })).toBeVisible()
   const afterApply = await requestJson(
     page.request,
     `/api/focused/sessions/${rootId}`,
@@ -1411,7 +1419,7 @@ test("edits an applied hypothesis without reusing pending-update semantics", asy
   await page
     .getByRole("textbox", { name: "Possible solution hypothesis step" })
     .fill("Researcher-edited solution candidate")
-  await applyHypothesisChanges(page, "Apply edits")
+  await applyEdits(page)
   await page.getByRole("button", { name: "Save hypothesis" }).click()
   await page.keyboard.press("Escape")
   const workspace = await page.request.get(

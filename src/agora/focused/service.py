@@ -101,12 +101,39 @@ SearchProgressKind = Literal[
 
 
 def _question_thread_title(question: str) -> str:
-    """Derive a concise Thread title from an open research question."""
-    words = question.strip().rstrip("?？").split()
+    """Derive a concise Thread title from an open research question.
+
+    Template questions name their substantive issue after a colon
+    ("What evidence would settle … : <issue>?"); title from that issue.
+    """
+    text = question.strip().rstrip("?？")
+    _, _, tail = text.rpartition(": ")
+    words = (tail or text).split()
     title = " ".join(words[:8])
     if not title:
         return "Open question"
     return (title[:1].upper() + title[1:])[:200]
+
+
+def _resolution_context(resolution: RoundResolution) -> str:
+    """Render one resolution as prose for chat context and demo replies."""
+    lines = [resolution.summary]
+    if resolution.consensus_points:
+        lines.append(
+            "Shared ground: "
+            + "; ".join(point.text for point in resolution.consensus_points)
+        )
+    if resolution.disagreement_points:
+        lines.append(
+            "Disagreement: "
+            + "; ".join(point.text for point in resolution.disagreement_points)
+        )
+    if resolution.unsettled_points:
+        lines.append(
+            "Still open: "
+            + "; ".join(point.text for point in resolution.unsettled_points)
+        )
+    return "\n".join(lines)
 
 
 @dataclass(frozen=True)
@@ -3967,13 +3994,22 @@ class FocusedPanelService:
                 )
                 + "\n\nFinal moderator check:\n"
                 + (
-                    final_check.model_dump_json(indent=2)
+                    (
+                        f"{'Unanimous' if final_check.unanimous else 'Not unanimous'}. "
+                        f"Proposed shared ground: "
+                        f"{final_check.proposed_shared_ground or 'none'}.\n"
+                        + "\n".join(
+                            f"- {assent.agent_label}: {assent.decision} — "
+                            f"{assent.reason}"
+                            for assent in final_check.assents
+                        )
+                    )
                     if final_check is not None
                     else "No moderator check recorded."
                 )
                 + "\n\nModerator resolution:\n"
                 + (
-                    latest_round.resolution.model_dump_json(indent=2)
+                    _resolution_context(latest_round.resolution)
                     if latest_round.resolution is not None
                     else "No resolution recorded."
                 )

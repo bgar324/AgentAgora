@@ -8,6 +8,7 @@ import {
   useState,
   type CSSProperties,
 } from "react"
+import { Crown, User } from "lucide-react"
 import Markdown from "react-markdown"
 import {
   Background,
@@ -86,6 +87,28 @@ const FACET_META: Record<
     color: "#a64d70",
     tint: "#fff0f5",
   },
+}
+
+const RELATION_LABELS: Record<
+  NonNullable<Turn["relation"]>,
+  string
+> = {
+  answer: "Answers the question",
+  reply: "Reply",
+  support: "Cites evidence",
+  challenge: "Challenge",
+}
+
+const ASSENT_LABELS: Record<"accept" | "qualify" | "reject", string> = {
+  accept: "accepted",
+  qualify: "wants justification",
+  reject: "rejected",
+}
+
+function promptTopic(value: string | undefined): string | null {
+  const segment = value?.split("; ")[0]?.trim().replace(/[.?!]+$/, "")
+  if (!segment || segment.length > 140) return null
+  return segment[0].toLowerCase() + segment.slice(1)
 }
 
 const VERDICT_META: Record<
@@ -749,7 +772,7 @@ function PanelDrawer({
   const drawerTitleId = useId()
   const drawerRef = useDialogSurface<HTMLElement>(onClose)
   const latestChatRef = useRef<HTMLDivElement>(null)
-  const chatInputRef = useRef<HTMLInputElement>(null)
+  const chatInputRef = useRef<HTMLTextAreaElement>(null)
   const flushingQueuedChatRef = useRef(false)
   const [hypothesisDraft, setHypothesisDraft] = useState<HypothesisDev | null>(
     () => {
@@ -929,6 +952,15 @@ function PanelDrawer({
   const completedRoundCount = active.rounds.filter(
     (round) => round.completed,
   ).length
+  const lastCompletedRound =
+    [...active.rounds].reverse().find((round) => round.completed) ?? null
+  const agreementTopic = promptTopic(
+    lastCompletedRound?.resolution?.consensus_points[0]?.text,
+  )
+  const unresolvedTopic = promptTopic(
+    lastCompletedRound?.resolution?.disagreement_points[0]?.text ??
+      lastCompletedRound?.resolution?.unsettled_points[0]?.text,
+  )
   const discussedThreadCount = new Set(
     active.rounds
       .filter((round) => round.completed && round.thread_id)
@@ -991,7 +1023,7 @@ function PanelDrawer({
             type="button"
             onClick={onClose}
             aria-label="Close panel"
-            className="text-[13px] text-[var(--mute)] hover:text-[var(--ink)]"
+            className="flex size-7 items-center justify-center rounded-lg text-[13px] text-[var(--mute)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--ink)]"
           >
             ×
           </button>
@@ -1005,10 +1037,10 @@ function PanelDrawer({
               deliberation={active}
             />
           )}
-          <div className="flex min-w-0 flex-1 flex-col lg:min-h-0">
+          <div className="relative flex min-w-0 flex-1 flex-col lg:min-h-0">
           <div
             data-testid="panel-conversation-scroll"
-            className="min-w-0 flex-1 px-5 py-4 lg:overflow-y-auto"
+            className="min-w-0 flex-1 px-5 py-4 pb-3 lg:overflow-y-auto"
           >
           <div className="flex flex-wrap items-center gap-2">
             {agents.map((agent) => {
@@ -1031,7 +1063,7 @@ function PanelDrawer({
 
           <div className="mt-4 min-w-0">
             <div className="min-w-0">
-              <div className="flex flex-col gap-5">
+              <div className="flex flex-col gap-5 [&>section+section]:border-t [&>section+section]:border-[var(--line)] [&>section+section]:pt-5">
             {active.rounds.map((round, index) => (
               <RoundRecord
                 key={round.n}
@@ -1039,21 +1071,10 @@ function PanelDrawer({
                 thread={active.threads.find(
                   (thread) => thread.id === round.thread_id,
                 )}
-                showPrompts={
-                  active.completed_at === null &&
-                  round.completed &&
-                  index === active.rounds.length - 1
-                }
                 reviewable={active.completed_at === null}
                 onDecide={(decision, summary, note) =>
                   decideRoundResolution(round.n, decision, summary, note)
                 }
-                onPrompt={(prompt) => {
-                  setMessage(prompt)
-                  window.requestAnimationFrame(() =>
-                    chatInputRef.current?.focus(),
-                  )
-                }}
               />
             ))}
           </div>
@@ -1546,6 +1567,50 @@ function PanelDrawer({
               {error}
             </div>
           )}
+          {active.completed_at === null &&
+            !runningRound &&
+            lastCompletedRound && (
+              <div className="pointer-events-none sticky bottom-0 z-10 mt-3 flex flex-wrap justify-center gap-2">
+                <button
+                  type="button"
+                  className="pointer-events-auto flex h-7 items-center whitespace-nowrap rounded-full border border-[var(--line)] bg-[var(--panel)] px-3 text-[12px] font-medium text-[var(--mute)] shadow-[0_2px_10px_rgba(16,24,40,0.07)] transition-colors hover:border-[var(--line-strong)] hover:text-[var(--ink)]"
+                  onClick={() => {
+                    setMessage(
+                      lastCompletedRound.stop_reason === "unanimous"
+                        ? `Why did the panel agree${
+                            agreementTopic
+                              ? ` that ${agreementTopic}`
+                              : " on this shared ground"
+                          }?`
+                        : `Which disagreements or uncertainties remain unresolved${
+                            unresolvedTopic ? ` about ${unresolvedTopic}` : ""
+                          }?`,
+                    )
+                    window.requestAnimationFrame(() =>
+                      chatInputRef.current?.focus(),
+                    )
+                  }}
+                >
+                  {lastCompletedRound.stop_reason === "unanimous"
+                    ? "Why this agreement?"
+                    : "What remains unresolved?"}
+                </button>
+                <button
+                  type="button"
+                  className="pointer-events-auto flex h-7 items-center whitespace-nowrap rounded-full border border-[var(--line)] bg-[var(--panel)] px-3 text-[12px] font-medium text-[var(--mute)] shadow-[0_2px_10px_rgba(16,24,40,0.07)] transition-colors hover:border-[var(--line-strong)] hover:text-[var(--ink)]"
+                  onClick={() => {
+                    setMessage(
+                      "Which part of the working hypothesis would you change, and why?",
+                    )
+                    window.requestAnimationFrame(() =>
+                      chatInputRef.current?.focus(),
+                    )
+                  }}
+                >
+                  What would you change?
+                </button>
+              </div>
+            )}
             </div>
           </div>
           </div>
@@ -1578,8 +1643,9 @@ function PanelDrawer({
                   </option>
                 ))}
               </select>
-              <input
+              <textarea
                 ref={chatInputRef}
+                rows={1}
                 value={message}
                 onChange={(event) => setMessage(event.target.value)}
                 onKeyDown={(event) => {
@@ -1588,7 +1654,7 @@ function PanelDrawer({
                     send()
                   }
                 }}
-                className="field h-9 min-w-0 flex-1 px-3 text-[13px]"
+                className="field max-h-32 min-h-9 min-w-0 flex-1 resize-none px-3 py-2 text-[13px] leading-snug [field-sizing:content]"
                 placeholder="Ask a question at any point…"
                 disabled={
                   pendingChat !== null ||
@@ -1739,7 +1805,7 @@ function LeadPerspectiveRail({
                 {reflection.revisions.map((revision) => (
                   <p
                     key={revision.facet}
-                    className="mt-0.5 text-[var(--ink-2)]"
+                    className="mt-0.5 text-[10px] leading-relaxed text-[var(--ink-2)]"
                   >
                     {FACET_META[revision.facet].label}: {revision.text}
                   </p>
@@ -1758,15 +1824,11 @@ function LeadPerspectiveRail({
 function RoundRecord({
   round,
   thread,
-  showPrompts = false,
-  onPrompt,
   reviewable = false,
   onDecide,
 }: {
   round: DeliberationRound
   thread?: DeliberationThread
-  showPrompts?: boolean
-  onPrompt?: (prompt: string) => void
   reviewable?: boolean
   onDecide?: (
     decision: "accept" | "edit" | "keep_open",
@@ -1851,7 +1913,7 @@ function RoundRecord({
                         className="flex items-start gap-2 text-[9.5px]"
                       >
                         <span className="shrink-0 rounded-full border border-[var(--line)] px-2 py-0.5 text-[var(--ink-2)]">
-                          {assent.agent_label}: {assent.decision}
+                          {assent.agent_label}: {ASSENT_LABELS[assent.decision]}
                         </span>
                         <span className="pt-0.5 leading-relaxed text-[var(--mute)]">
                           {assent.reason}
@@ -2011,7 +2073,7 @@ function RoundRecord({
                   {item.revisions.map((revision) => (
                     <p
                       key={revision.facet}
-                      className="mt-1 text-[var(--ink-2)]"
+                      className="mt-1 text-[11px] leading-relaxed text-[var(--ink-2)]"
                     >
                       <span className="font-semibold">
                         {FACET_META[revision.facet].label}:
@@ -2069,39 +2131,6 @@ function RoundRecord({
         </div>
       )}
 
-      {showPrompts && onPrompt && (
-        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-[var(--line)] pt-3">
-          <span className="text-[10.5px] text-[var(--mute)]">
-            Ask about this Thread:
-          </span>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() =>
-              onPrompt(
-                round.stop_reason === "unanimous"
-                  ? "Why did the panel agree on this shared ground?"
-                  : "Which disagreements or uncertainties remain unresolved?",
-              )
-            }
-          >
-            {round.stop_reason === "unanimous"
-              ? "Why this agreement?"
-              : "What remains unresolved?"}
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() =>
-              onPrompt(
-                "Which part of the working hypothesis would you change, and why?",
-              )
-            }
-          >
-            What would you change?
-          </Button>
-        </div>
-      )}
     </section>
   )
 }
@@ -2542,45 +2571,12 @@ function WorkingHypothesisPanel({
               candidate is ready to appear on the Canvas.
             </p>
           )}
-          <div className="flex gap-2">
-            {!completed && !editing && (
-              <Button
-                variant="outline"
-                size="sm"
-                className="flex-1"
-                onClick={() => setEditing(true)}
-                disabled={busy}
-              >
-                {pending ? "Edit update" : "Edit hypothesis"}
-              </Button>
-            )}
+          <div className="flex flex-col gap-2">
             {!completed && pending && !editing && (
               <Button
-                variant="ghost"
+                variant="primary"
                 size="sm"
-                className="flex-1"
-                onClick={() => void onReject()}
-                disabled={busy}
-              >
-                Reject update
-              </Button>
-            )}
-            {!completed && editing && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="flex-1"
-                onClick={cancelEditing}
-                disabled={busy}
-              >
-                Cancel editing
-              </Button>
-            )}
-            {!completed && (pending || editing) && (
-              <Button
-                variant={pending ? "primary" : "outline"}
-                size="sm"
-                className="flex-1"
+                className="w-full whitespace-nowrap"
                 onClick={() => setApplyConfirmationOpen(true)}
                 disabled={busy || changedParts.length === 0}
               >
@@ -2588,30 +2584,84 @@ function WorkingHypothesisPanel({
                   <>
                     <Spinner /> Applying…
                   </>
-                ) : pending ? (
+                ) : (
                   "Apply shared ground"
-                ) : (
-                  "Apply edits"
                 )}
               </Button>
             )}
-            {!completed && unsaved && !pending && !editing && (
-              <Button
-                variant="primary"
-                size="sm"
-                className="flex-1"
-                onClick={() => void onSave()}
-                disabled={busy}
-              >
-                {saving ? (
-                  <>
-                    <Spinner /> Saving…
-                  </>
-                ) : (
-                  "Save hypothesis"
-                )}
-              </Button>
-            )}
+            <div className="flex gap-2">
+              {!completed && !editing && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="flex-1 whitespace-nowrap"
+                  onClick={() => setEditing(true)}
+                  disabled={busy}
+                >
+                  {pending ? "Edit update" : "Edit hypothesis"}
+                </Button>
+              )}
+              {!completed && pending && !editing && (
+                <Button
+                  variant="danger"
+                  size="sm"
+                  className="flex-1 whitespace-nowrap"
+                  onClick={() => void onReject()}
+                  disabled={busy}
+                >
+                  Reject update
+                </Button>
+              )}
+              {!completed && editing && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="flex-1 whitespace-nowrap"
+                  onClick={cancelEditing}
+                  disabled={busy}
+                >
+                  Cancel editing
+                </Button>
+              )}
+              {!completed && editing && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="flex-1 whitespace-nowrap"
+                  onClick={() => {
+                    void onApply(current).then((applied) => {
+                      if (applied) setEditing(false)
+                    })
+                  }}
+                  disabled={busy || changedParts.length === 0}
+                >
+                  {applying ? (
+                    <>
+                      <Spinner /> Applying…
+                    </>
+                  ) : (
+                    "Apply edits"
+                  )}
+                </Button>
+              )}
+              {!completed && unsaved && !pending && !editing && (
+                <Button
+                  variant="primary"
+                  size="sm"
+                  className="flex-1 whitespace-nowrap"
+                  onClick={() => void onSave()}
+                  disabled={busy}
+                >
+                  {saving ? (
+                    <>
+                      <Spinner /> Saving…
+                    </>
+                  ) : (
+                    "Save hypothesis"
+                  )}
+                </Button>
+              )}
+            </div>
           </div>
         </div>
       ) : (
@@ -2924,7 +2974,7 @@ function WorkingHypothesisPanel({
                   <Spinner /> Applying…
                 </>
               ) : (
-                "Apply proposal"
+                "Apply shared ground"
               )}
             </Button>
           </div>
@@ -2960,36 +3010,56 @@ function TurnBubble({
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
       <div
-        className={`w-full rounded-xl border px-3 py-2.5 ${
+        className={`rounded-xl border px-3 py-2.5 ${
           isUser
-            ? "border-transparent bg-[var(--node)] text-white"
+            ? "w-fit max-w-[78%] border-[var(--line)] bg-[color-mix(in_srgb,var(--node)_6%,var(--panel))]"
             : isSupport
-              ? "border-[var(--line)] bg-[var(--bg)]"
-              : "border-[var(--line)] bg-[var(--panel)]"
+              ? "w-full border-[var(--line)] bg-[var(--bg)]"
+              : "w-full border-[var(--line)] bg-[var(--panel)]"
         }`}
       >
         <div className="mb-2 flex items-baseline justify-between gap-3">
           <span
-            className={`text-[11px] font-semibold ${
-              isUser ? "text-white" : ""
+            className={`inline-flex items-center gap-1 text-[11px] font-semibold ${
+              isUser ? "text-[var(--ink)]" : ""
             }`}
             style={isUser ? undefined : { color: identityColor }}
           >
-            {isUser ? "Researcher" : turn.agent_label || "Panel"}
-            {turn.role === "lead" && (
-              <span className="ml-1 text-[9.5px] text-[var(--green)]">
-                Lead
-              </span>
+            {turn.role === "lead" ? (
+              <Crown
+                size={12}
+                strokeWidth={2}
+                className="-rotate-12 shrink-0"
+                aria-label="Lead"
+              />
+            ) : (
+              <User
+                size={12}
+                strokeWidth={2}
+                className="shrink-0"
+                aria-hidden="true"
+              />
             )}
+            {isUser ? "Researcher" : turn.agent_label || "Panel"}
           </span>
           <div className="flex shrink-0 items-center gap-1.5 text-[9.5px] text-[var(--mute)]">
-            {turn.reply_to_turn_id !== null && (
+            {turn.relation === "challenge" ? (
+              <span className="font-semibold text-[var(--amber)]">
+                {turn.reply_to_turn_id !== null
+                  ? `Challenging T${turn.reply_to_turn_id}`
+                  : "Challenge"}
+              </span>
+            ) : turn.relation === "reply" ? (
+              <span>
+                {turn.reply_to_turn_id !== null
+                  ? `Replying to T${turn.reply_to_turn_id}`
+                  : "Reply"}
+              </span>
+            ) : turn.relation ? (
+              <span>{RELATION_LABELS[turn.relation]}</span>
+            ) : turn.reply_to_turn_id !== null ? (
               <span>Responding to T{turn.reply_to_turn_id}</span>
-            )}
-            {turn.relation && (
-              <span className="capitalize">{turn.relation}</span>
-            )}
-            {turn.facet && <span>{FACET_META[turn.facet].label}</span>}
+            ) : null}
           </div>
         </div>
         {thinking ? (
@@ -2998,11 +3068,11 @@ function TurnBubble({
             Thinking…
           </p>
         ) : isUser ? (
-          <p className="whitespace-pre-wrap text-[12.5px] leading-relaxed text-white">
+          <p className="whitespace-pre-wrap text-[12.5px] leading-relaxed text-[var(--ink)]">
             {turn.text}
           </p>
         ) : (
-          <div className="text-[12.5px] leading-relaxed text-[var(--ink)] [&_a]:underline [&_a]:underline-offset-2 [&_li]:my-1 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-0 [&_p+p]:mt-2 [&_strong]:font-semibold [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5">
+          <div className="text-[12.5px] leading-relaxed text-[var(--ink)] [&_a]:underline [&_a]:underline-offset-2 [&_li]:my-1 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-0 [&_p]:text-[12.5px] [&_p+p]:mt-2 [&_strong]:font-semibold [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5">
             <Markdown>{turn.text}</Markdown>
           </div>
         )}

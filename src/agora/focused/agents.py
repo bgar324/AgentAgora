@@ -1710,14 +1710,14 @@ async def reflect_on_round(
 
 
 def _fallback_hypothesis(perspective: Perspective) -> HypothesisDev:
-    scope = _display(_facet_text(perspective, "scope"))
+    scope = _facet_text(perspective, "scope").strip().rstrip(".")
+    approach = _facet_text(perspective, "approach").strip().rstrip(".")
     explanation = _display(_facet_text(perspective, "explanation"))
-    approach = _display(_facet_text(perspective, "approach"))
     significance = _display(_facet_text(perspective, "significance"))
     return HypothesisDev(
         hypothesis=(
-            f"Within {scope}, applying {approach} to address {explanation} "
-            f"should improve outcomes related to {significance}."
+            f"{scope}. {approach}. This should clarify whether "
+            f"{explanation}, because {significance}."
         )
     )
 

@@ -134,8 +134,9 @@ Every entry class resolves instantly under `prefers-reduced-motion`.
 
 ## Components (features/focused/ui.tsx)
 
-Button(variant primary|outline|ghost, size sm|md) — primary is --node
-fill; ghost transparent, hover --hover; outline hairline + hover bg.
+Button(variant primary|outline|ghost|danger, size sm|md) — primary is --node
+fill; ghost transparent, hover --hover; outline hairline + hover bg; danger
+red-tinted outline for destructive actions (reject/discard).
 Spinner. ModalShell(title, onClose): 640px/92vw, 48px minimum header,
 12px vertical padding, 16px 600 title. SectionLabel: 12px 500 mute.
 EmptyLine: 13px mute.

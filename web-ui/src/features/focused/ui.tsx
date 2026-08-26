@@ -26,7 +26,7 @@ export function Spinner({ className = "" }: { className?: string }) {
 }
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: "primary" | "outline" | "ghost"
+  variant?: "primary" | "outline" | "ghost" | "danger"
   size?: "sm" | "md"
 }
 
@@ -295,7 +295,7 @@ export function ModalShell({
             type="button"
             onClick={onClose}
             aria-label={`Close ${title}`}
-            className="shrink-0 text-[13px] text-[var(--mute)] hover:text-[var(--ink)]"
+            className="flex size-7 shrink-0 items-center justify-center rounded-lg text-[13px] text-[var(--mute)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--ink)]"
           >
             ✕
           </button>
