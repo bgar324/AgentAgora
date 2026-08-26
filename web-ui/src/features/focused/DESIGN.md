@@ -11,7 +11,9 @@ Persistent header: brand · step trail (Search, Perspectives, Panel) ·
 demo badge · Start over · one primary Continue or Add to panel action.
 
 Surfaces:
-- Start — centered 440px form (Problem, Research questions, Demo, Begin)
+- Start — centered 440px form (Problem, Demo, Begin). Research questions are
+  never typed by users; demo seeds its fixed set internally, live derives
+  queries from the problem alone.
 - Extraction — left rail (brief and question-linked queries), right clusters,
   matrix below.
   Every Perspective exposes Scope, Explanation, Approach, and Significance,

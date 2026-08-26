@@ -6,7 +6,6 @@ import { useEffect, useMemo, useState } from "react"
 
 import {
   ApiError,
-  parseResearchQuestions,
   useFocusedPanel,
 } from "@/hooks/use-focused"
 import { useFocusedStore } from "@/store/focused"
@@ -570,12 +569,14 @@ function ResetDialog({
 
 const DEMO_PROBLEM =
   "Should antibiotics be prescribed broadly? I suspect the faster cure trades off against resistance and gut-flora harm."
-const DEMO_QUESTIONS =
-  "Does broad-spectrum use raise resistance enough to matter at population level?\nDoes it harm the patient's own flora in ways that outlast the infection?\nWhen does speed to cure outweigh both?"
+const DEMO_QUESTIONS = [
+  "Does broad-spectrum use raise resistance enough to matter at population level?",
+  "Does it harm the patient's own flora in ways that outlast the infection?",
+  "When does speed to cure outweigh both?",
+]
 
 function StartScreen() {
   const [problem, setProblem] = useState(DEMO_PROBLEM)
-  const [questions, setQuestions] = useState(DEMO_QUESTIONS)
   const [demo, setDemo] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [starting, setStarting] = useState(false)
@@ -587,7 +588,7 @@ function StartScreen() {
     try {
       await createWorkspace(
         problem.trim(),
-        parseResearchQuestions(questions),
+        demo ? DEMO_QUESTIONS : [],
         demo,
       )
     } catch (err) {
@@ -622,20 +623,6 @@ function StartScreen() {
               placeholder="Jot down the question or hunch you're exploring."
             />
           </div>
-          <div>
-            <SectionLabel htmlFor="focused-questions">
-              Research questions
-            </SectionLabel>
-            <textarea
-              id="focused-questions"
-              value={questions}
-              onChange={(e) => setQuestions(e.target.value)}
-              disabled={demo}
-              rows={4}
-              className="field w-full resize-none px-3 py-2.5 text-[13px] leading-relaxed placeholder:text-[var(--mute)]"
-              placeholder="One per line."
-            />
-          </div>
           <label className="flex items-center gap-2 text-[13px] text-[var(--ink-2)]">
             <input
               type="checkbox"
@@ -645,7 +632,6 @@ function StartScreen() {
                 setDemo(enabled)
                 if (enabled) {
                   setProblem(DEMO_PROBLEM)
-                  setQuestions(DEMO_QUESTIONS)
                 }
               }}
               className="size-3.5 accent-[var(--node)]"

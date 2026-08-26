@@ -272,20 +272,16 @@ test.beforeEach(async ({ page }) => {
   await page.evaluate(() => localStorage.clear())
 })
 
-test("joins wrapped lines into complete research questions", async ({ page }) => {
+test("starts a custom Investigation from the problem alone", async ({ page }) => {
   await page.getByRole("checkbox", { name: "Demo mode" }).uncheck()
   await page
-    .getByRole("textbox", { name: "Research questions" })
+    .getByRole("textbox", { name: "Problem" })
     .fill(
-      "What trade-off exists between prompt compression and\n" +
-        "obligation preservation?\n\n" +
-        "Can the compiler produce auditable evidence that\n" +
-        "Pₓ covers every critical obligation?\n" +
-        "How does compression change latency\n" +
-        "Which obligations require the full prompt\n" +
-        "Impact of compression on latency\n" +
-        "Obligation coverage in adversarial requests",
+      "What trade-off exists between prompt compression and obligation preservation?",
     )
+  await expect(
+    page.getByRole("textbox", { name: "Research questions" }),
+  ).toHaveCount(0)
   await page.getByRole("button", { name: "Begin" }).click()
   await expect(page).toHaveURL(/workspace=[a-f0-9]+/)
   const workspaceId = new URL(page.url()).searchParams.get("workspace")
@@ -295,14 +291,10 @@ test("joins wrapped lines into complete research questions", async ({ page }) =>
     `/api/focused/workspaces/${workspaceId}`,
     "get",
   )
-  expect(view.research_questions).toEqual([
+  expect(view.research_questions).toEqual([])
+  expect(view.problem).toBe(
     "What trade-off exists between prompt compression and obligation preservation?",
-    "Can the compiler produce auditable evidence that Pₓ covers every critical obligation?",
-    "How does compression change latency",
-    "Which obligations require the full prompt",
-    "Impact of compression on latency",
-    "Obligation coverage in adversarial requests",
-  ])
+  )
 })
 
 test("shows a centered search-to-clustering timeline", async ({ page }) => {
@@ -707,7 +699,15 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   await addPerspective(page, "Host and microbiome")
   await expect(page.getByText("Perspective matrix (2)", { exact: true })).toBeVisible()
 
-  await page.getByRole("button", { name: "Continue" }).click()
+  // New workspaces route Continue to the Thread dialogue surface; the
+  // legacy panel remains for workspaces that already carry deliberations,
+  // so seed one through the API and land on it via reload.
+  await requestJson(
+    page.request,
+    `/api/focused/sessions/${rootId}/deliberations`,
+    "post",
+  )
+  await page.reload()
   await expect(
     page.getByRole("dialog", { name: "Choose the focused panel" }),
   ).toHaveCount(0)
@@ -1728,7 +1728,12 @@ test("allows a focused panel with more than three Perspectives", async ({ page }
 
   await page.reload()
   await expect(page.getByText("Perspective matrix (5)", { exact: true })).toBeVisible()
-  await page.getByRole("button", { name: "Continue" }).click()
+  await requestJson(
+    page.request,
+    `/api/focused/sessions/${rootId}/deliberations`,
+    "post",
+  )
+  await page.reload()
   await expect(
     page.getByRole("dialog", { name: "Choose the focused panel" }),
   ).toHaveCount(0)

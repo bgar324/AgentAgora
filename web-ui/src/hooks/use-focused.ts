@@ -34,37 +34,6 @@ type SearchProgressResponse = {
   next: number
 }
 
-const WRAPPED_LINE_END =
-  /(?:[,;:]|\b(?:a|an|and|as|between|by|for|from|in|of|on|or|than|that|the|to|which|who|whose|with|without))$/i
-
-export function parseResearchQuestions(value: string): string[] {
-  const questions: string[] = []
-  let pending: string[] = []
-  const flush = () => {
-    const question = pending.join(" ").trim()
-    if (question) questions.push(question)
-    pending = []
-  }
-  for (const rawLine of value.split(/\r?\n/)) {
-    const trimmed = rawLine.trim()
-    const listPrefix = trimmed.match(/^(?:[-*•]|\d+[.)])\s+/)
-    const line = listPrefix ? trimmed.slice(listPrefix[0].length) : trimmed
-    if (!line) {
-      flush()
-      continue
-    }
-    if (pending.length > 0) {
-      const previous = pending[pending.length - 1]
-      const continuesPrevious =
-        WRAPPED_LINE_END.test(previous) || /^[a-z]/.test(line)
-      if (listPrefix || !continuesPrevious) flush()
-    }
-    pending.push(line)
-    if (/[?？][)"'\]]?$/.test(line)) flush()
-  }
-  flush()
-  return questions
-}
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api/focused/${path}`, {
