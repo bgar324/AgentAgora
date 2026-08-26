@@ -11,7 +11,9 @@ Persistent header: brand · step trail (Search, Perspectives, Panel) ·
 demo badge · Start over · one primary Continue or Add to panel action.
 
 Surfaces:
-- Start — centered 440px form (Problem, Research questions, Demo, Begin)
+- Start — centered 440px form (Problem, Demo, Begin). Research questions are
+  never typed by users; demo seeds its fixed set internally, live derives
+  queries from the problem alone.
 - Extraction — left rail (brief and question-linked queries), right clusters,
   matrix below.
   Every Perspective exposes Scope, Explanation, Approach, and Significance,
@@ -134,14 +136,16 @@ Every entry class resolves instantly under `prefers-reduced-motion`.
 
 ## Components (features/focused/ui.tsx)
 
-Button(variant primary|outline|ghost, size sm|md) — primary is --node
-fill; ghost transparent, hover --hover; outline hairline + hover bg.
+Button(variant primary|outline|ghost|danger, size sm|md) — primary is --node
+fill; ghost transparent, hover --hover; outline hairline + hover bg; danger
+red-tinted outline for destructive actions (reject/discard).
 Spinner. ModalShell(title, onClose): 640px/92vw, 48px minimum header,
 12px vertical padding, 16px 600 title. SectionLabel: 12px 500 mute.
 EmptyLine: 13px mute.
 EvidenceHighlight(label): amber evidence mark with a portal tooltip on hover
 and keyboard focus.
-IdentityChip(color, name, selected?) — dot + colored name; selected
+IdentityChip(color, name, selected?, lead?) — person icon + colored name,
+or a tilted crown when lead; selected
 fills --node with white text. ListRow(disabled?, onClick) — hover bg +
 border affordance. CheckRow(checked, onToggle) — 13px checklist row.
 

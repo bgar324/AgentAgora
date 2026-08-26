@@ -8,6 +8,7 @@ import {
   useState,
   type CSSProperties,
 } from "react"
+import { Crown, User } from "lucide-react"
 import Markdown from "react-markdown"
 import {
   Background,
@@ -33,9 +34,10 @@ import {
   type DeliberationPoint,
   type DeliberationCompletion,
   type DeliberationRound,
+  type DeliberationThread,
   type DeliberationState,
   type Facet,
-  type FacetVerdict,
+  type ThreadVerdict,
   type HypothesisDev,
   type HypothesisVersion,
   type QuestionStatus,
@@ -87,13 +89,56 @@ const FACET_META: Record<
   },
 }
 
+const RELATION_LABELS: Record<
+  NonNullable<Turn["relation"]>,
+  string
+> = {
+  answer: "Answers the question",
+  reply: "Reply",
+  support: "Cites evidence",
+  challenge: "Challenge",
+}
+
+const ASSENT_LABELS: Record<"accept" | "qualify" | "reject", string> = {
+  accept: "accepted",
+  qualify: "wants justification",
+  reject: "rejected",
+}
+
+function promptTopic(value: string | undefined): string | null {
+  const segment = value?.split("; ")[0]?.trim().replace(/[.?!]+$/, "")
+  if (!segment || segment.length > 140) return null
+  return segment[0].toLowerCase() + segment.slice(1)
+}
+
 const VERDICT_META: Record<
-  FacetVerdict["status"],
+  ThreadVerdict["status"],
   { label: string; color: string }
 > = {
   consensus: { label: "Consensus", color: "var(--green)" },
   disagreement: { label: "Disagreement", color: "var(--red)" },
   unsettled: { label: "Unsettled", color: "var(--amber)" },
+}
+
+function completionAgentIids(
+  completion: DeliberationState["completion_history"][number],
+): number[] {
+  return completion.agent_iids.length
+    ? completion.agent_iids
+    : (completion.rounds.at(-1)?.participant_iids ?? [])
+}
+
+function agentCycleByIid(
+  deliberation: DeliberationState,
+): Map<number, number> {
+  const cycles = new Map<number, number>()
+  deliberation.completion_history.forEach((completion, cycle) => {
+    completionAgentIids(completion).forEach((iid) => cycles.set(iid, cycle))
+  })
+  deliberation.agent_iids.forEach((iid) =>
+    cycles.set(iid, deliberation.completion_history.length),
+  )
+  return cycles
 }
 
 export function StageDeliberation() {
@@ -137,6 +182,7 @@ export function StageDeliberation() {
     if (!deliberation) return result
 
     const history = deliberation.completion_history
+    const cycleByAgentIid = agentCycleByIid(deliberation)
     const allQuestions = [
       ...history.flatMap((completion) => completion.recommended_questions),
       ...deliberation.recommended_questions,
@@ -160,12 +206,6 @@ export function StageDeliberation() {
         }
       })
 
-    const completionAgentIids = (
-      completion: DeliberationState["completion_history"][number],
-    ) =>
-      completion.agent_iids.length
-        ? completion.agent_iids
-        : (completion.rounds.at(-1)?.participant_iids ?? [])
     const questionIdsForCompletion = (
       completion: DeliberationState["completion_history"][number],
     ) =>
@@ -183,24 +223,10 @@ export function StageDeliberation() {
         questionCycle.set(questionId, cycle)
       })
     })
-    const targetCycleForAgent = (agent: AgentState) => {
-      const perspective = perspectiveForAgent(agent)
-      if (perspective && perspective.panel_cycle > 0) {
-        return Math.min(perspective.panel_cycle, history.length)
-      }
-      const sourceQuestionId = perspective?.source_question_id
-      const sourceCycle = sourceQuestionId
-        ? questionCycle.get(sourceQuestionId)
-        : undefined
-      if (sourceCycle !== undefined) return sourceCycle + 1
-      const completedCycle = history.findIndex((completion) =>
-        completionAgentIids(completion).includes(agent.iid),
-      )
-      return completedCycle >= 0 ? completedCycle : history.length
-    }
     const agentGroups = new Map<number, AgentState[]>()
     for (const agent of session.agents) {
-      const targetCycle = targetCycleForAgent(agent)
+      const targetCycle = cycleByAgentIid.get(agent.iid)
+      if (targetCycle === undefined) continue
       agentGroups.set(targetCycle, [
         ...(agentGroups.get(targetCycle) ?? []),
         agent,
@@ -258,14 +284,7 @@ export function StageDeliberation() {
             position: { x: artifactX(cycle), y },
             data: {
               versionId: artifact.version.id,
-              hypothesis:
-                [
-                  artifact.version.steps.hypothesis,
-                  artifact.version.steps.reasoning,
-                  artifact.version.steps.problem,
-                  artifact.version.steps.previous_work,
-                ].find((part) => part !== "Not established yet.") ??
-                artifact.version.steps.hypothesis,
+              hypothesis: artifact.version.steps.hypothesis,
               promoted:
                 workspace?.promoted_hypothesis_version_id === artifact.version.id,
               onOpen: () => setSavedHypothesisModal(artifact.version),
@@ -325,7 +344,7 @@ export function StageDeliberation() {
           status: `${
             completion.reason === "restarted" ? "Restarted" : "Ended"
           } after ${completion.round_count} ${
-            completion.round_count === 1 ? "round" : "rounds"
+            completion.round_count === 1 ? "Thread" : "Threads"
           }`,
           canJoin: true,
           ended: true,
@@ -350,14 +369,14 @@ export function StageDeliberation() {
         members: membersFor(deliberation.agent_iids),
         status: ended
           ? `Ended after ${completedRounds.length} ${
-              completedRounds.length === 1 ? "round" : "rounds"
+              completedRounds.length === 1 ? "Thread" : "Threads"
             }`
           : completedRounds.length
             ? `${completedRounds.length} completed ${
-                completedRounds.length === 1 ? "round" : "rounds"
+                completedRounds.length === 1 ? "Thread" : "Threads"
               }`
             : deliberation.agent_iids.length >= 2
-              ? "Ready for a focused round"
+              ? "Ready for a focused Thread"
               : "Needs two Perspectives",
         canJoin: deliberation.agent_iids.length >= 2,
         ended,
@@ -400,6 +419,7 @@ export function StageDeliberation() {
     }
     const result: RFEdge[] = []
     const history = deliberation.completion_history
+    const cycleByAgentIid = agentCycleByIid(deliberation)
     const historyPanelId = (cycle: number) =>
       `panel-${deliberation.id}-completion-${cycle + 1}`
     const currentPanelId = `panel-${deliberation.id}`
@@ -423,13 +443,9 @@ export function StageDeliberation() {
       })
     })
 
-    const completionAgentIids = (
-      completion: DeliberationState["completion_history"][number],
-    ) =>
-      completion.agent_iids.length
-        ? completion.agent_iids
-        : (completion.rounds.at(-1)?.participant_iids ?? [])
     for (const agent of session.agents) {
+      const targetCycle = cycleByAgentIid.get(agent.iid)
+      if (targetCycle === undefined) continue
       const perspective = session.perspectives.find(
         (item) => item.id === agent.perspective_id,
       )
@@ -437,21 +453,11 @@ export function StageDeliberation() {
       const sourceCycle = sourceQuestionId
         ? questionCycle.get(sourceQuestionId)
         : undefined
-      const completedCycle = history.findIndex((completion) =>
-        completionAgentIids(completion).includes(agent.iid),
-      )
-      const declaredCycle =
-        perspective && perspective.panel_cycle > 0
-          ? Math.min(perspective.panel_cycle, history.length)
-          : undefined
-      const targetCycle =
-        declaredCycle ??
-        (sourceCycle !== undefined
-          ? sourceCycle + 1
-          : completedCycle >= 0
-            ? completedCycle
-            : history.length)
-      if (sourceQuestionId && sourceCycle !== undefined) {
+      if (
+        sourceQuestionId &&
+        sourceCycle !== undefined &&
+        targetCycle === sourceCycle + 1
+      ) {
         result.push({
           id: `e-question-${sourceQuestionId}-agent-${agent.iid}`,
           source: `research-${sourceQuestionId}`,
@@ -685,33 +691,24 @@ function ArchivedPanelDialog({
       </div>
       <div className="flex flex-col gap-4">
         {completion.rounds.map((round) => (
-          <section key={round.n} aria-label={`Archived round ${round.n}`}>
-            <RoundRecord round={round} />
+          <section key={round.n} aria-label={`Archived Thread ${round.n}`}>
+            <RoundRecord
+              round={round}
+              thread={completion.threads.find(
+                (thread) => thread.id === round.thread_id,
+              )}
+            />
           </section>
         ))}
       </div>
       {hypothesis && (
         <section className="mt-4 rounded-lg border border-[var(--line)] p-3">
           <SectionLabel>Last working hypothesis</SectionLabel>
-          <dl className="mt-2 grid gap-2">
-            {(
-              [
-                ["Problem", hypothesis.problem],
-                ["Previous work", hypothesis.previous_work],
-                ["Reasoning", hypothesis.reasoning],
-                ["Hypothesis", hypothesis.hypothesis],
-              ] as const
-            ).map(([label, value]) => (
-              <div key={label}>
-                <dt className="text-[10.5px] font-medium text-[var(--mute)]">
-                  {label}
-                </dt>
-                <dd className="text-[12px] leading-relaxed text-[var(--ink-2)]">
-                  {value}
-                </dd>
-              </div>
-            ))}
-          </dl>
+          <div className="mt-2 rounded-lg bg-[var(--bg)] p-3">
+            <p className="text-[12px] leading-relaxed text-[var(--ink-2)]">
+              {hypothesis.hypothesis}
+            </p>
+          </div>
         </section>
       )}
       {completion.recommended_questions.length > 0 && (
@@ -755,12 +752,13 @@ function PanelDrawer({
     runRound,
     completeDeliberation,
     confirmHypothesis,
+    decideResolution,
     saveHypothesis,
     switchInvestigation,
     updateQuestionStatus,
     sendChat,
   } = useFocusedPanel()
-  const [selectedFacets, setSelectedFacets] = useState<Facet[]>([])
+  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null)
   const [message, setMessage] = useState("")
   const [leadSelection, setLeadSelection] = useState("")
   const [target, setTarget] = useState<number | null>(null)
@@ -774,7 +772,7 @@ function PanelDrawer({
   const drawerTitleId = useId()
   const drawerRef = useDialogSurface<HTMLElement>(onClose)
   const latestChatRef = useRef<HTMLDivElement>(null)
-  const chatInputRef = useRef<HTMLInputElement>(null)
+  const chatInputRef = useRef<HTMLTextAreaElement>(null)
   const flushingQueuedChatRef = useRef(false)
   const [hypothesisDraft, setHypothesisDraft] = useState<HypothesisDev | null>(
     () => {
@@ -830,6 +828,7 @@ function PanelDrawer({
 
   const perspectiveOf = (agent: AgentState): Perspective | undefined =>
     session.perspectives.find((item) => item.id === agent.perspective_id)
+  const leadPerspective = leadAgent ? perspectiveOf(leadAgent) : undefined
 
   const act = async <Result,>(
     operation: () => Promise<Result>,
@@ -842,26 +841,29 @@ function PanelDrawer({
     }
   }
 
-  const toggleFacet = (facet: Facet) => {
-    setSelectedFacets((current) => {
-      if (current.includes(facet)) {
-        return current.filter((item) => item !== facet)
-      }
-      return current.length < 1 ? [...current, facet] : current
-    })
-  }
 
   const startRound = () => {
-    if (openerIid == null || selectedFacets.length !== 1) return
+    if (openerIid == null || selectedThreadId === null) return
     void act(async () => {
-      const state = await runRound(active.id, openerIid, selectedFacets)
+      const state = await runRound(active.id, openerIid, selectedThreadId)
       const updated = state.deliberations.find((item) => item.id === active.id)
       setHypothesisDraft(
         updated?.hypothesis ? { ...updated.hypothesis } : null,
       )
-      setSelectedFacets([])
+      setSelectedThreadId(null)
       return state
     })
+  }
+
+  const decideRoundResolution = (
+    roundN: number,
+    decision: "accept" | "edit" | "keep_open",
+    summary?: string,
+    note?: string,
+  ) => {
+    void act(() =>
+      decideResolution(active.id, roundN, decision, summary, note),
+    )
   }
 
   const initializePanel = () => {
@@ -878,19 +880,16 @@ function PanelDrawer({
     })
   }
 
-  const confirmDraft = async (
-    draft: HypothesisDev,
-    selectedParts?: (keyof HypothesisDev)[],
-  ): Promise<boolean> => {
-    if (Object.values(draft).some((part) => !part.trim())) {
-      setError("Complete all four hypothesis fields.")
+  const confirmDraft = async (draft: HypothesisDev): Promise<boolean> => {
+    if (!draft.hypothesis.trim()) {
+      setError("Complete the hypothesis.")
       return false
     }
     const mode = active.hypothesis_confirmed
       ? "edit_applied"
       : "apply_pending"
     const state = await act(() =>
-      confirmHypothesis(active.id, draft, mode, selectedParts),
+      confirmHypothesis(active.id, draft, mode),
     )
     if (!state) return false
     const updated = state.deliberations.find((item) => item.id === active.id)
@@ -953,11 +952,26 @@ function PanelDrawer({
   const completedRoundCount = active.rounds.filter(
     (round) => round.completed,
   ).length
-  const discussedFacetCount = FACETS.filter((facet) =>
-    active.rounds.some(
-      (round) => round.completed && round.facets.includes(facet),
-    ),
-  ).length
+  const lastCompletedRound =
+    [...active.rounds].reverse().find((round) => round.completed) ?? null
+  const agreementTopic = promptTopic(
+    lastCompletedRound?.resolution?.consensus_points[0]?.text,
+  )
+  const unresolvedTopic = promptTopic(
+    lastCompletedRound?.resolution?.disagreement_points[0]?.text ??
+      lastCompletedRound?.resolution?.unsettled_points[0]?.text,
+  )
+  const discussedThreadCount = new Set(
+    active.rounds
+      .filter((round) => round.completed && round.thread_id)
+      .map((round) => round.thread_id),
+  ).size
+  const pendingReviewRound =
+    active.completed_at === null
+      ? (active.rounds.find(
+          (round) => round.completed && round.resolution_decision === null,
+        ) ?? null)
+      : null
   const selectedLeadId =
     leadSelection ||
     active.lead_perspective_id ||
@@ -1002,41 +1016,43 @@ function PanelDrawer({
             {active.completed_at
               ? "Ended"
               : `${completedRoundCount} completed ${
-                  completedRoundCount === 1 ? "round" : "rounds"
+                  completedRoundCount === 1 ? "Thread" : "Threads"
                 }`}
           </span>
           <button
             type="button"
             onClick={onClose}
             aria-label="Close panel"
-            className="text-[13px] text-[var(--mute)] hover:text-[var(--ink)]"
+            className="flex size-7 items-center justify-center rounded-lg text-[13px] text-[var(--mute)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--ink)]"
           >
             ×
           </button>
         </header>
 
         <div className="min-h-0 flex-1 overflow-y-auto lg:flex lg:overflow-hidden">
-          <div className="flex min-w-0 flex-1 flex-col lg:min-h-0">
+          {leadAgent && leadPerspective && (
+            <LeadPerspectiveRail
+              agent={leadAgent}
+              perspective={leadPerspective}
+              deliberation={active}
+            />
+          )}
+          <div className="relative flex min-w-0 flex-1 flex-col lg:min-h-0">
           <div
             data-testid="panel-conversation-scroll"
-            className="min-w-0 flex-1 px-5 py-4 lg:overflow-y-auto"
+            className="min-w-0 flex-1 px-5 py-4 pb-3 lg:overflow-y-auto"
           >
           <div className="flex flex-wrap items-center gap-2">
             {agents.map((agent) => {
               const perspective = perspectiveOf(agent)
               return (
-                <div key={agent.iid} className="flex items-center gap-1">
-                  <IdentityChip
-                    color={perspective?.color ?? "var(--ink-2)"}
-                    name={perspective?.name ?? agent.label}
-                    onClick={() => onOpenAgent(agent)}
-                  />
-                  {agent.iid === openerIid && (
-                    <span className="text-[9.5px] font-semibold text-[var(--green)]">
-                      Lead
-                    </span>
-                  )}
-                </div>
+                <IdentityChip
+                  key={agent.iid}
+                  color={perspective?.color ?? "var(--ink-2)"}
+                  name={perspective?.name ?? agent.label}
+                  lead={agent.iid === openerIid}
+                  onClick={() => onOpenAgent(agent)}
+                />
               )
             })}
             {agents.length < 2 && (
@@ -1047,23 +1063,71 @@ function PanelDrawer({
 
           <div className="mt-4 min-w-0">
             <div className="min-w-0">
-              <div className="flex flex-col gap-5">
+              <div className="flex flex-col gap-5 [&>section+section]:border-t [&>section+section]:border-[var(--line)] [&>section+section]:pt-5">
             {active.rounds.map((round, index) => (
               <RoundRecord
                 key={round.n}
                 round={round}
-                showPrompts={
-                  active.completed_at === null &&
-                  round.completed &&
-                  index === active.rounds.length - 1
+                thread={active.threads.find(
+                  (thread) => thread.id === round.thread_id,
+                )}
+                reviewable={active.completed_at === null}
+                onDecide={(decision, summary, note) =>
+                  decideRoundResolution(round.n, decision, summary, note)
                 }
-                onPrompt={(prompt) => {
-                  setMessage(prompt)
-                  window.requestAnimationFrame(() => chatInputRef.current?.focus())
-                }}
               />
             ))}
           </div>
+          {active.document && (
+            <section
+              className="ep-card-enter mt-5 rounded-xl border border-[var(--line)] bg-[var(--bg)] p-4"
+              data-testid="deliberation-document"
+            >
+              <SectionLabel>Final document</SectionLabel>
+              <h2 className="mt-1 text-[14px] font-semibold text-[var(--ink)]">
+                {active.document.title}
+              </h2>
+              <div className="mt-3">
+                <div className="text-[11px] font-semibold text-[var(--ink-2)]">
+                  Hypotheses
+                </div>
+                <div className="mt-1.5 flex flex-col gap-2">
+                  {active.document.sections.map((section, index) => (
+                    <div
+                      key={section.thread_id ?? section.title}
+                      className="rounded-lg border border-[var(--line)] bg-[var(--panel)] p-3"
+                    >
+                      <div className="text-[11.5px] font-semibold text-[var(--ink)]">
+                        {section.title}
+                      </div>
+                      <p className="mt-1 text-[11.5px] leading-relaxed text-[var(--ink)]">
+                        <span className="font-semibold">H{index + 1}.</span>{" "}
+                        {section.hypothesis}
+                      </p>
+                      {section.explanation && (
+                        <p className="mt-1 text-[11px] leading-relaxed text-[var(--ink-2)]">
+                          <span className="font-semibold">Explanation.</span>{" "}
+                          {section.explanation}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {active.document.open_questions.length > 0 && (
+                <div className="mt-3">
+                  <div className="text-[11px] font-semibold text-[var(--ink-2)]">
+                    Open questions
+                  </div>
+                  <ol className="mt-1 list-decimal pl-5 text-[11px] leading-relaxed text-[var(--ink-2)]">
+                    {active.document.open_questions.map((question) => (
+                      <li key={question}>{question}</li>
+                    ))}
+                  </ol>
+                </div>
+              )}
+            </section>
+          )}
           {(active.chat.length > 0 || pendingChat) && (
             <section
               className="mt-5 border-t border-[var(--line)] pt-4"
@@ -1096,6 +1160,10 @@ function PanelDrawer({
                         text: pendingChat.text,
                         citations: [],
                         exchange_n: null,
+                        reply_to_turn_id: null,
+                        relation: null,
+                        assumption: "",
+                        hypothesis_fragments: [],
                       }}
                     />
                     <div ref={latestChatRef}>
@@ -1109,10 +1177,14 @@ function PanelDrawer({
                           facet: null,
                           text:
                             pendingChat.status === "queued" && runningRound
-                              ? "Queued for after this round"
+                              ? "Queued for after this Thread"
                               : "Thinking…",
                           citations: [],
                           exchange_n: null,
+                          reply_to_turn_id: null,
+                          relation: null,
+                          assumption: "",
+                          hypothesis_fragments: [],
                         }}
                         thinking={
                           pendingChat.status === "thinking" || !runningRound
@@ -1209,7 +1281,7 @@ function PanelDrawer({
                 No new shared ground
               </div>
               <p className="mt-1 text-[12px] leading-relaxed text-[var(--ink-2)]">
-                This round left the working hypothesis unchanged. Its unresolved
+                This Thread left the working hypothesis unchanged. Its unresolved
                 points still ground the next investigation.
               </p>
             </div>
@@ -1220,16 +1292,16 @@ function PanelDrawer({
             active.baseline_hypothesis === null && (
               <section className="ep-card-enter rounded-xl border border-[var(--line)] bg-[var(--bg)] p-4">
                 <SectionLabel>Set up the panel</SectionLabel>
-                <h2 className="text-[15px] font-semibold tracking-[-0.01em]">
+                <h2 className="text-[15px] font-semibold">
                   Choose the lead Perspective
                 </h2>
                 <p className="mt-1 text-[12px] leading-relaxed text-[var(--mute)]">
-                  The lead drafts the baseline hypothesis and opens every round.
+                  The lead drafts the baseline hypothesis and opens every Thread.
                   The remaining Perspectives form the panel.
                 </p>
                 {active.rounds.length > 0 && (
                   <p className="mt-2 text-[11px] leading-relaxed text-[var(--amber)]">
-                    Confirming a lead archives these earlier rounds, questions,
+                    Confirming a lead archives these earlier Threads, questions,
                     and chat in Panel history, then starts a new cycle.
                   </p>
                 )}
@@ -1290,118 +1362,204 @@ function PanelDrawer({
                   active.rounds.length > 0 ? "mt-4" : ""
                 }`}
               >
-            {active.rounds.length === 0 && (
-              <div className="mb-4 border-b border-[var(--line)] pb-4">
-                <h2 className="text-[15px] font-semibold tracking-[-0.01em]">
-                  How this panel works
-                </h2>
-                <p className="mt-1 max-w-[68ch] text-[12px] leading-relaxed text-[var(--ink-2)]">
-                  Every Perspective in the matrix is now part of this panel.
-                  Together, they will build and refine the working hypothesis
-                  shown on the right.
-                </p>
-                <p className="mt-1.5 max-w-[68ch] text-[12px] leading-relaxed text-[var(--mute)]">
-                  Each round examines one area. You can revisit an area and ask
-                  the panel or one Perspective a follow-up question between rounds.
-                </p>
-              </div>
-            )}
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <SectionLabel>Round {active.rounds.length + 1}</SectionLabel>
-                <h2 className="text-[15px] font-semibold tracking-[-0.01em]">
-                  Choose what this panel should focus on
-                </h2>
-                <p className="mt-1 max-w-[62ch] text-[12px] leading-relaxed text-[var(--mute)]">
-                  Select one area. Areas remain reusable, and you can end after
-                  any completed round.
-                </p>
-              </div>
-              <div className="shrink-0 text-right">
-                <span className="rounded-full border border-[var(--line)] bg-[var(--panel)] px-2 py-1 text-[11px] text-[var(--mute)]">
-                  {selectedFacets.length}/1 selected
-                </span>
-                <div className="mt-1.5 text-[10.5px] text-[var(--mute)]">
-                  {discussedFacetCount}/4 discussed
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-3 grid grid-cols-2 gap-2">
-              {FACETS.map((facet) => {
-                const selected = selectedFacets.includes(facet)
-                const unavailable = !selected && selectedFacets.length >= 1
-                const meta = FACET_META[facet]
-                const discussedRounds = active.rounds
-                  .filter(
-                    (round) =>
-                      round.completed && round.facets.includes(facet),
-                  )
-                  .map((round) => round.n)
-                return (
-                  <button
-                    key={facet}
-                    type="button"
-                    aria-pressed={selected}
-                    disabled={!!busy || unavailable}
-                    onClick={() => toggleFacet(facet)}
-                    className="rounded-lg border px-3 py-2.5 text-left transition disabled:cursor-default disabled:opacity-45"
-                    style={{
-                      borderColor: selected ? meta.color : "var(--line-strong)",
-                      background: selected ? meta.tint : "var(--panel)",
-                    }}
-                  >
-                    <div
-                      className="text-[12px] font-semibold"
-                      style={{ color: selected ? meta.color : "var(--ink)" }}
-                    >
-                      {meta.label}
-                    </div>
-                    <div className="mt-0.5 text-[11px] leading-snug text-[var(--mute)]">
-                      {meta.short}
-                    </div>
-                    <div
-                      className="mt-1 text-[10.5px] leading-snug"
-                      data-testid={`facet-history-${facet}`}
-                      style={{
-                        color:
-                          discussedRounds.length > 0
-                            ? meta.color
-                            : "var(--mute)",
-                      }}
-                    >
-                      {discussedRounds.length === 0
-                        ? "Not discussed yet"
-                        : discussedRounds.length === 1
-                          ? `Discussed in round ${discussedRounds[0]}`
-                          : `Discussed in rounds ${discussedRounds.join(", ")}`}
-                    </div>
-                  </button>
-                )
-              })}
-            </div>
-
-            <div className="mt-3 flex justify-end border-t border-[var(--line)] pt-3">
-              <Button
-                variant="primary"
-                size="md"
-                disabled={
-                  !!busy ||
-                  agents.length < 2 ||
-                  openerIid == null ||
-                  selectedFacets.length !== 1
-                }
-                onClick={startRound}
-              >
-                {runningRound ? (
-                  <>
-                    <Spinner /> Deliberating…
-                  </>
-                ) : (
-                  "Start round"
+                {active.rounds.length === 0 && (
+                  <div className="mb-4 border-b border-[var(--line)] pb-4">
+                    <h2 className="text-[15px] font-semibold">
+                      How this panel works
+                    </h2>
+                    <p className="mt-1 max-w-[68ch] text-[12px] leading-relaxed text-[var(--ink-2)]">
+                      Every Perspective in the matrix is part of this panel. The
+                      panel identified focused Threads from its differing
+                      assumptions and the working hypothesis.
+                    </p>
+                    <p className="mt-1.5 max-w-[68ch] text-[12px] leading-relaxed text-[var(--mute)]">
+                      Each Thread centers one scientific disagreement or open
+                      question. The conversation advances through challenges,
+                      replies, evidence, and refinement. Scope, Explanation,
+                      Approach, and Significance are each Perspective&apos;s
+                      representation: they surface where Perspectives differ and
+                      record what changed after each Thread, without setting the
+                      agenda.
+                    </p>
+                  </div>
                 )}
-              </Button>
-            </div>
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <SectionLabel>Thread {active.rounds.length + 1}</SectionLabel>
+                    <h2 className="text-[15px] font-semibold">
+                      Choose a Thread
+                    </h2>
+                    <p className="mt-1 max-w-[62ch] text-[12px] leading-relaxed text-[var(--mute)]">
+                      Select the disagreement or open question the Perspectives
+                      should examine next.
+                    </p>
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <span className="rounded-full border border-[var(--line)] bg-[var(--panel)] px-2 py-1 text-[11px] text-[var(--mute)]">
+                      {selectedThreadId === null ? 0 : 1}/1 selected
+                    </span>
+                    <div className="mt-1.5 text-[10.5px] text-[var(--mute)]">
+                      {discussedThreadCount}/{active.threads.length} discussed
+                    </div>
+                  </div>
+                </div>
+
+                {active.threads.length === 0 ? (
+                  <div className="mt-3 rounded-lg border border-dashed border-[var(--line-strong)] bg-[var(--panel)] p-3">
+                    <p className="text-[11px] leading-relaxed text-[var(--mute)]">
+                      This saved panel predates Thread-based deliberation. Identify
+                      Threads from its existing baseline before continuing.
+                    </p>
+                    <Button
+                      className="mt-2"
+                      disabled={!!busy}
+                      onClick={initializePanel}
+                    >
+                      {busy === "Generating lead hypothesis" ? (
+                        <>
+                          <Spinner /> Identifying Threads…
+                        </>
+                      ) : (
+                        "Identify Threads"
+                      )}
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="mt-3 space-y-2">
+                    {active.threads.map((thread) => {
+                      const selected = selectedThreadId === thread.id
+                      const discussedRounds = active.rounds
+                        .filter(
+                          (round) =>
+                            round.completed && round.thread_id === thread.id,
+                        )
+                        .map((round) => round.n)
+                      const accent =
+                        FACET_META[thread.facets[0] ?? "explanation"].color
+                      return (
+                        <button
+                          key={thread.id}
+                          type="button"
+                          aria-pressed={selected}
+                          disabled={!!busy}
+                          onClick={() =>
+                            setSelectedThreadId(selected ? null : thread.id)
+                          }
+                          className="w-full rounded-lg border px-3 py-3 text-left transition disabled:cursor-default disabled:opacity-45"
+                          data-testid={`thread-card-${thread.id}`}
+                          style={{
+                            borderColor: selected
+                              ? accent
+                              : "var(--line-strong)",
+                            background: selected
+                              ? `color-mix(in srgb, ${accent} 8%, var(--panel))`
+                              : "var(--panel)",
+                          }}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div
+                                className="text-[12px] font-semibold"
+                                style={{
+                                  color: selected ? accent : "var(--ink)",
+                                }}
+                              >
+                                {thread.title}
+                                {thread.source_round !== null && (
+                                  <span className="ml-2 rounded-full border border-[var(--line)] px-1.5 py-0.5 text-[9px] font-medium text-[var(--mute)]">
+                                    From Thread {thread.source_round}
+                                  </span>
+                                )}
+                              </div>
+                              <p className="mt-1 text-[11.5px] leading-relaxed text-[var(--ink-2)]">
+                                {thread.question}
+                              </p>
+                            </div>
+                            <span className="shrink-0 text-[10.5px] text-[var(--mute)]">
+                              {discussedRounds.length === 0
+                                ? "Not discussed"
+                                : `Thread${discussedRounds.length > 1 ? "s" : ""} ${discussedRounds.join(", ")}`}
+                            </span>
+                          </div>
+                          <p className="mt-1.5 text-[10.5px] leading-relaxed text-[var(--mute)]">
+                            {thread.context}
+                          </p>
+                          {thread.hypothesis_fragments.map((fragment) => (
+                            <blockquote
+                              key={fragment}
+                              className="mt-2 rounded-lg border border-[var(--line)] bg-[var(--bg)] px-2.5 py-2 text-[11.5px] leading-relaxed text-[var(--ink-2)]"
+                            >
+                              {fragment}
+                            </blockquote>
+                          ))}
+                          <div className="mt-2 flex flex-wrap gap-1">
+                            {thread.related.length > 0 &&
+                            new Set(
+                              thread.related.map((link) =>
+                                link.facets.join("|"),
+                              ),
+                            ).size > 1 ? (
+                              thread.related.map((link) => (
+                                <span
+                                  key={link.perspective_name}
+                                  className="rounded-full border border-[var(--line)] px-1.5 py-0.5 text-[9.5px] font-medium text-[var(--ink-2)]"
+                                >
+                                  {link.perspective_name}
+                                  {link.facets.length > 0
+                                    ? ` · ${link.facets
+                                        .map(
+                                          (facet) => FACET_META[facet].label,
+                                        )
+                                        .join(", ")}`
+                                    : ""}
+                                </span>
+                              ))
+                            ) : (
+                              thread.facets.map((facet) => (
+                                <span
+                                  key={facet}
+                                  className="rounded-full border border-[var(--line)] px-1.5 py-0.5 text-[9.5px] font-medium"
+                                  style={{ color: FACET_META[facet].color }}
+                                >
+                                  {FACET_META[facet].label}
+                                </span>
+                              ))
+                            )}
+                          </div>
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+
+                <div className="mt-3 flex items-center justify-end gap-3 border-t border-[var(--line)] pt-3">
+                  {pendingReviewRound && (
+                    <span className="text-[10.5px] text-[var(--amber)]">
+                      Review Thread {pendingReviewRound.n}&apos;s resolution
+                      first.
+                    </span>
+                  )}
+                  <Button
+                    variant="primary"
+                    size="md"
+                    disabled={
+                      !!busy ||
+                      agents.length < 2 ||
+                      openerIid == null ||
+                      selectedThreadId === null ||
+                      pendingReviewRound !== null
+                    }
+                    onClick={startRound}
+                  >
+                    {runningRound ? (
+                      <>
+                        <Spinner /> Deliberating…
+                      </>
+                    ) : (
+                      "Start Thread"
+                    )}
+                  </Button>
+                </div>
           </section>
           )}
           {error && (
@@ -1409,6 +1567,50 @@ function PanelDrawer({
               {error}
             </div>
           )}
+          {active.completed_at === null &&
+            !runningRound &&
+            lastCompletedRound && (
+              <div className="pointer-events-none sticky bottom-0 z-10 mt-3 flex flex-wrap justify-center gap-2">
+                <button
+                  type="button"
+                  className="pointer-events-auto flex h-7 items-center whitespace-nowrap rounded-full border border-[var(--line)] bg-[var(--panel)] px-3 text-[12px] font-medium text-[var(--mute)] shadow-[0_2px_10px_rgba(16,24,40,0.07)] transition-colors hover:border-[var(--line-strong)] hover:text-[var(--ink)]"
+                  onClick={() => {
+                    setMessage(
+                      lastCompletedRound.stop_reason === "unanimous"
+                        ? `Why did the panel agree${
+                            agreementTopic
+                              ? ` that ${agreementTopic}`
+                              : " on this shared ground"
+                          }?`
+                        : `Which disagreements or uncertainties remain unresolved${
+                            unresolvedTopic ? ` about ${unresolvedTopic}` : ""
+                          }?`,
+                    )
+                    window.requestAnimationFrame(() =>
+                      chatInputRef.current?.focus(),
+                    )
+                  }}
+                >
+                  {lastCompletedRound.stop_reason === "unanimous"
+                    ? "Why this agreement?"
+                    : "What remains unresolved?"}
+                </button>
+                <button
+                  type="button"
+                  className="pointer-events-auto flex h-7 items-center whitespace-nowrap rounded-full border border-[var(--line)] bg-[var(--panel)] px-3 text-[12px] font-medium text-[var(--mute)] shadow-[0_2px_10px_rgba(16,24,40,0.07)] transition-colors hover:border-[var(--line-strong)] hover:text-[var(--ink)]"
+                  onClick={() => {
+                    setMessage(
+                      "Which part of the working hypothesis would you change, and why?",
+                    )
+                    window.requestAnimationFrame(() =>
+                      chatInputRef.current?.focus(),
+                    )
+                  }}
+                >
+                  What would you change?
+                </button>
+              </div>
+            )}
             </div>
           </div>
           </div>
@@ -1441,8 +1643,9 @@ function PanelDrawer({
                   </option>
                 ))}
               </select>
-              <input
+              <textarea
                 ref={chatInputRef}
+                rows={1}
                 value={message}
                 onChange={(event) => setMessage(event.target.value)}
                 onKeyDown={(event) => {
@@ -1451,7 +1654,7 @@ function PanelDrawer({
                     send()
                   }
                 }}
-                className="field h-9 min-w-0 flex-1 px-3 text-[13px]"
+                className="field max-h-32 min-h-9 min-w-0 flex-1 resize-none px-3 py-2 text-[13px] leading-snug [field-sizing:content]"
                 placeholder="Ask a question at any point…"
                 disabled={
                   pendingChat !== null ||
@@ -1514,22 +1717,139 @@ function PanelDrawer({
   )
 }
 
+function LeadPerspectiveRail({
+  agent,
+  perspective,
+  deliberation,
+}: {
+  agent: AgentState
+  perspective: Perspective
+  deliberation: DeliberationState
+}) {
+  const framing = deliberation.revised_perspective?.framing ?? perspective.framing
+  const reflections = deliberation.rounds.flatMap((round) =>
+    round.reflections
+      .filter((reflection) => reflection.agent_iid === agent.iid)
+      .map((reflection) => ({ round: round.n, reflection })),
+  )
+  return (
+    <aside
+      data-testid="lead-perspective-rail"
+      className="shrink-0 border-b border-[var(--line)] bg-[var(--bg)] px-4 py-4 lg:w-[250px] lg:overflow-y-auto lg:border-b-0 lg:border-r"
+    >
+      <SectionLabel>
+        Lead Perspective
+        {agent.facet_version > 1
+          ? ` · ${agent.facet_version - 1} revision${
+              agent.facet_version > 2 ? "s" : ""
+            }`
+          : ""}
+      </SectionLabel>
+      <h2 className="mt-1 text-[13px] font-semibold text-[var(--ink)]">
+        {perspective.name}
+      </h2>
+      {framing && (
+        <div className="mt-3 space-y-2">
+          <div>
+            <div className="text-[9.5px] font-semibold text-[var(--mute)]">
+              Framing
+            </div>
+            <p className="mt-0.5 text-[10.5px] leading-relaxed text-[var(--ink-2)]">
+              {framing.framing}
+            </p>
+          </div>
+          <div>
+            <div className="text-[9.5px] font-semibold text-[var(--mute)]">
+              Position
+            </div>
+            <p className="mt-0.5 text-[10.5px] leading-relaxed text-[var(--ink-2)]">
+              {framing.position}
+            </p>
+          </div>
+        </div>
+      )}
+      <div className="mt-4 space-y-2 border-t border-[var(--line)] pt-3">
+        {FACETS.map((facet) => {
+          const current = agent.facets[facet]?.text ?? "Not established"
+          const initial = perspective.facets[facet]?.text
+          return (
+            <div key={facet}>
+              <div
+                className="text-[9.5px] font-semibold"
+                style={{ color: FACET_META[facet].color }}
+              >
+                {FACET_META[facet].label}
+              </div>
+              <p className="mt-0.5 text-[10.5px] leading-relaxed text-[var(--ink-2)]">
+                {current}
+              </p>
+              {initial && initial !== current && (
+                <p className="mt-0.5 text-[9.5px] leading-relaxed text-[var(--mute)]">
+                  Started from: {initial}
+                </p>
+              )}
+            </div>
+          )
+        })}
+      </div>
+      <div className="mt-4 border-t border-[var(--line)] pt-3">
+        <SectionLabel>Revision history</SectionLabel>
+        <div className="mt-2 space-y-2">
+          {reflections.length ? (
+            reflections.map(({ round, reflection }) => (
+              <div key={round} className="text-[10px] leading-relaxed">
+                <span className="font-semibold text-[var(--ink)]">
+                  Thread {round}
+                </span>{" "}
+                <span className="text-[var(--mute)]">{reflection.reason}</span>
+                {reflection.revisions.map((revision) => (
+                  <p
+                    key={revision.facet}
+                    className="mt-0.5 text-[10px] leading-relaxed text-[var(--ink-2)]"
+                  >
+                    {FACET_META[revision.facet].label}: {revision.text}
+                  </p>
+                ))}
+              </div>
+            ))
+          ) : (
+            <p className="text-[10px] text-[var(--mute)]">No Threads yet.</p>
+          )}
+        </div>
+      </div>
+    </aside>
+  )
+}
+
 function RoundRecord({
   round,
-  showPrompts = false,
-  onPrompt,
+  thread,
+  reviewable = false,
+  onDecide,
 }: {
   round: DeliberationRound
-  showPrompts?: boolean
-  onPrompt?: (prompt: string) => void
+  thread?: DeliberationThread
+  reviewable?: boolean
+  onDecide?: (
+    decision: "accept" | "edit" | "keep_open",
+    summary?: string,
+    note?: string,
+  ) => void
 }) {
+  const [editingResolution, setEditingResolution] = useState(false)
+  const [resolutionDraft, setResolutionDraft] = useState("")
   const exchangeNumbers = Array.from(
     new Set(round.turns.map((turn) => turn.exchange_n ?? 1)),
   )
   return (
     <section className="ep-enter">
       <div className="mb-2 flex items-center gap-2">
-        <SectionLabel>Round {round.n}</SectionLabel>
+        <SectionLabel>Thread {round.n}</SectionLabel>
+        {thread && (
+          <span className="text-[11px] font-semibold text-[var(--ink-2)]">
+            {thread.title}
+          </span>
+        )}
         {round.facets.map((facet) => (
           <span
             key={facet}
@@ -1593,7 +1913,7 @@ function RoundRecord({
                         className="flex items-start gap-2 text-[9.5px]"
                       >
                         <span className="shrink-0 rounded-full border border-[var(--line)] px-2 py-0.5 text-[var(--ink-2)]">
-                          {assent.agent_label}: {assent.decision}
+                          {assent.agent_label}: {ASSENT_LABELS[assent.decision]}
                         </span>
                         <span className="pt-0.5 leading-relaxed text-[var(--mute)]">
                           {assent.reason}
@@ -1612,54 +1932,148 @@ function RoundRecord({
           <ResolutionCard resolution={round.resolution} />
         </div>
       )}
-
-      {round.verdicts.length > 0 && (
-        <div className="mt-3 grid grid-cols-2 gap-2">
-          {round.verdicts.map((verdict) => {
-            const meta = VERDICT_META[verdict.status]
-            return (
-              <div
-                key={verdict.facet}
-                className="rounded-lg border border-[var(--line)] bg-[var(--panel)] px-3 py-2.5"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[11px] font-semibold text-[var(--ink)]">
-                    {FACET_META[verdict.facet].label}
-                  </span>
-                  <span
-                    className="text-[10.5px] font-semibold"
-                    style={{ color: meta.color }}
+      {round.completed &&
+        round.resolution &&
+        round.resolution_decision === null &&
+        reviewable &&
+        onDecide && (
+          <div
+            className="mt-3 rounded-lg border border-[var(--amber)] bg-[var(--panel)] px-3 py-2.5"
+            data-testid={`thread-${round.n}-resolution-review`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <SectionLabel>Thread review</SectionLabel>
+              <span className="text-[10px] font-semibold text-[var(--amber)]">
+                Awaiting your decision
+              </span>
+            </div>
+            <p className="mt-1 text-[11px] leading-relaxed text-[var(--ink-2)]">
+              Accept the moderator synthesis to close this Thread, edit it in
+              your own words, or keep the Thread open for another discussion.
+            </p>
+            {editingResolution ? (
+              <div className="mt-2">
+                <textarea
+                  value={resolutionDraft}
+                  onChange={(event) => setResolutionDraft(event.target.value)}
+                  rows={3}
+                  aria-label="Edited Thread resolution"
+                  className="w-full rounded-lg border border-[var(--line-strong)] bg-[var(--bg)] px-2.5 py-2 text-[11.5px] leading-relaxed text-[var(--ink)]"
+                />
+                <div className="mt-2 flex gap-2">
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    disabled={!resolutionDraft.trim()}
+                    onClick={() => {
+                      onDecide("edit", resolutionDraft.trim())
+                      setEditingResolution(false)
+                    }}
                   >
-                    {meta.label}
-                  </span>
+                    Save edited resolution
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setEditingResolution(false)}
+                  >
+                    Cancel
+                  </Button>
                 </div>
-                <p className="mt-1 text-[11px] leading-relaxed text-[var(--ink-2)]">
-                  {verdict.summary}
-                </p>
               </div>
-            )
-          })}
+            ) : (
+              <div className="mt-2 flex flex-wrap gap-2">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => onDecide("accept")}
+                >
+                  Accept resolution
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setResolutionDraft(round.resolution?.summary ?? "")
+                    setEditingResolution(true)
+                  }}
+                >
+                  Edit resolution
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onDecide("keep_open")}
+                >
+                  Keep Thread open
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
+      {round.resolution_decision !== null && (
+        <div
+          className="mt-2 text-[10.5px] text-[var(--mute)]"
+          data-testid={`thread-${round.n}-resolution-decision`}
+        >
+          {round.resolution_decision === "accepted"
+            ? "Resolution accepted — Thread closed."
+            : round.resolution_decision === "edited"
+              ? "Resolution edited by you — Thread closed."
+              : "Thread kept open for another discussion."}
+          {round.resolution_note ? ` ${round.resolution_note}` : ""}
         </div>
       )}
 
-      {round.reflections.some((item) => item.decision === "revised") && (
+      {round.verdict && (
+        <div className="mt-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] px-3 py-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] font-semibold text-[var(--ink)]">
+              Thread finding
+            </span>
+            <span
+              className="text-[10.5px] font-semibold"
+              style={{ color: VERDICT_META[round.verdict.status].color }}
+            >
+              {VERDICT_META[round.verdict.status].label}
+            </span>
+          </div>
+          <div className="mt-1.5 flex flex-wrap gap-1">
+            {round.verdict.facets.map((facet) => (
+              <span
+                key={facet}
+                className="rounded-full border border-[var(--line)] px-1.5 py-0.5 text-[9.5px]"
+                style={{ color: FACET_META[facet].color }}
+              >
+                {FACET_META[facet].label}
+              </span>
+            ))}
+          </div>
+          <p className="mt-1.5 text-[11px] leading-relaxed text-[var(--ink-2)]">
+            {round.verdict.summary}
+          </p>
+        </div>
+      )}
+
+      {round.reflections.length > 0 && (
         <div className="mt-3 rounded-lg border border-[var(--line)] px-3 py-2.5">
-          <SectionLabel>Lead Perspective update</SectionLabel>
+          <SectionLabel>Perspective delta</SectionLabel>
           <div className="mt-1 flex flex-col gap-2">
-            {round.reflections
-              .filter((item) => item.decision === "revised")
-              .map((item) => (
+            {round.reflections.map((item) => (
                 <div key={item.agent_iid} className="text-[11px] leading-relaxed">
                   <div>
                     <span className="font-semibold text-[var(--ink)]">
                       {item.perspective_name}
                     </span>{" "}
-                    <span className="text-[var(--mute)]">{item.reason}</span>
+                    <span className="text-[var(--mute)]">
+                      {item.decision === "revised" ? "Revised." : "Unchanged."}{" "}
+                      {item.reason}
+                    </span>
                   </div>
                   {item.revisions.map((revision) => (
                     <p
                       key={revision.facet}
-                      className="mt-1 text-[var(--ink-2)]"
+                      className="mt-1 text-[11px] leading-relaxed text-[var(--ink-2)]"
                     >
                       <span className="font-semibold">
                         {FACET_META[revision.facet].label}:
@@ -1673,39 +2087,50 @@ function RoundRecord({
         </div>
       )}
 
-      {showPrompts && onPrompt && (
-        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-[var(--line)] pt-3">
-          <span className="text-[10.5px] text-[var(--mute)]">
-            Ask about this round:
-          </span>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() =>
-              onPrompt(
-                round.stop_reason === "unanimous"
-                  ? "Why did the panel agree on this shared ground?"
-                  : "Which disagreements or uncertainties remain unresolved?",
-              )
-            }
-          >
-            {round.stop_reason === "unanimous"
-              ? "Why this agreement?"
-              : "What remains unresolved?"}
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() =>
-              onPrompt(
-                "Which part of the working hypothesis would you change, and why?",
-              )
-            }
-          >
-            What would you change?
-          </Button>
+      {round.hypothesis_before && round.hypothesis_proposal && (
+        <div
+          className="mt-3 rounded-lg border border-[var(--line)] px-3 py-2.5"
+          data-testid={`thread-${round.n}-hypothesis-delta`}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <SectionLabel>Working hypothesis delta</SectionLabel>
+            <span className="text-[10px] font-semibold text-[var(--amber)]">
+              {round.hypothesis_before.hypothesis.trim() ===
+              round.hypothesis_proposal.hypothesis.trim()
+                ? "Unchanged"
+                : round.hypothesis_decision
+                  ? `Proposal ${round.hypothesis_decision}`
+                  : "Proposal ready"}
+            </span>
+          </div>
+          {round.hypothesis_before.hypothesis.trim() ===
+          round.hypothesis_proposal.hypothesis.trim() ? (
+            <p className="mt-1 text-[11px] leading-relaxed text-[var(--mute)]">
+              This Thread did not change the working hypothesis.
+            </p>
+          ) : (
+            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+              <div className="rounded-lg bg-[var(--bg)] p-2.5">
+                <div className="text-[9.5px] font-semibold text-[var(--mute)]">
+                  Before
+                </div>
+                <p className="mt-0.5 text-[10.5px] leading-relaxed text-[var(--ink-2)]">
+                  {round.hypothesis_before.hypothesis}
+                </p>
+              </div>
+              <div className="rounded-lg bg-[var(--bg)] p-2.5">
+                <div className="text-[9.5px] font-semibold text-[var(--amber)]">
+                  Proposed
+                </div>
+                <p className="mt-0.5 text-[10.5px] leading-relaxed text-[var(--ink)]">
+                  {round.hypothesis_proposal.hypothesis}
+                </p>
+              </div>
+            </div>
+          )}
         </div>
       )}
+
     </section>
   )
 }
@@ -1838,26 +2263,44 @@ function DeliberationScoringDialog({
   )
 }
 
-function ResolutionCard({ resolution }: { resolution: NonNullable<DeliberationRound["resolution"]> }) {
+function ResolutionCard({
+  resolution,
+}: {
+  resolution: NonNullable<DeliberationRound["resolution"]>
+}) {
   const groups: {
     title: string
     points: DeliberationPoint[]
     color: string
   }[] = [
-    { title: "Shared ground", points: resolution.consensus_points, color: "var(--green)" },
-    { title: "Disagreement", points: resolution.disagreement_points, color: "var(--red)" },
-    { title: "Still unsettled", points: resolution.unsettled_points, color: "var(--amber)" },
+    {
+      title: "Shared ground",
+      points: resolution.consensus_points,
+      color: "var(--green)",
+    },
+    {
+      title: "Disagreement",
+      points: resolution.disagreement_points,
+      color: "var(--red)",
+    },
+    {
+      title: "Still unsettled",
+      points: resolution.unsettled_points,
+      color: "var(--amber)",
+    },
   ]
   return (
     <section
-      aria-label="Moderator summary"
+      aria-label="Thread resolution"
       className="mt-3 rounded-xl border border-[var(--line)] bg-[var(--bg)] p-3.5"
     >
       <div className="flex items-center justify-between gap-3">
         <span className="text-[12px] font-semibold text-[var(--ink)]">
-          Moderator
+          Thread resolution
         </span>
-        <span className="text-[10.5px] text-[var(--mute)]">Round summary</span>
+        <span className="text-[10.5px] text-[var(--mute)]">
+          Moderator synthesis
+        </span>
       </div>
       <p className="mt-1 text-[13px] leading-relaxed text-[var(--ink)]">
         {resolution.summary}
@@ -1865,22 +2308,30 @@ function ResolutionCard({ resolution }: { resolution: NonNullable<DeliberationRo
       <div className="mt-3 grid grid-cols-3 gap-3">
         {groups.map((group) => (
           <div key={group.title}>
-            <div className="text-[10.5px] font-semibold" style={{ color: group.color }}>
+            <div
+              className="text-[10.5px] font-semibold"
+              style={{ color: group.color }}
+            >
               {group.title}
             </div>
             {group.points.length ? (
               <ul className="mt-1.5 flex flex-col gap-1.5">
                 {group.points.map((point, index) => (
-                  <li key={`${point.facet}-${index}`} className="text-[11px] leading-relaxed text-[var(--ink-2)]">
+                  <li
+                    key={`${point.facets.join("-")}-${index}`}
+                    className="text-[11px] leading-relaxed text-[var(--ink-2)]"
+                  >
                     <span className="font-semibold text-[var(--ink)]">
-                      {FACET_META[point.facet].label}:
+                      {point.facets.map((facet) => FACET_META[facet].label).join(" · ")}:
                     </span>{" "}
                     {point.text}
                   </li>
                 ))}
               </ul>
             ) : (
-              <p className="mt-1.5 text-[11px] text-[var(--mute)]">None recorded</p>
+              <p className="mt-1.5 text-[11px] text-[var(--mute)]">
+                None recorded
+              </p>
             )}
           </div>
         ))}
@@ -1896,10 +2347,11 @@ const HYPOTHESIS_PARTS: {
   label: string
   prompt: string
 }[] = [
-  { key: "problem", label: "Problem", prompt: "What needs explaining?" },
-  { key: "previous_work", label: "Previous work", prompt: "What does prior work establish?" },
-  { key: "reasoning", label: "Reasoning", prompt: "Why should the claim follow?" },
-  { key: "hypothesis", label: "Hypothesis", prompt: "What testable claim follows?" },
+  {
+    key: "hypothesis",
+    label: "Possible solution",
+    prompt: "What direct, testable solution follows?",
+  },
 ]
 
 function normalizedHypothesisPart(value: string | undefined): string {
@@ -1937,10 +2389,7 @@ function WorkingHypothesisPanel({
   completed: boolean
   ending: boolean
   onChange: (value: HypothesisDev) => void
-  onApply: (
-    value: HypothesisDev,
-    selectedParts: (keyof HypothesisDev)[],
-  ) => Promise<boolean>
+  onApply: (value: HypothesisDev) => Promise<boolean>
   onReject: () => Promise<boolean>
   onSave: () => Promise<boolean>
   onEnd: (selectedQuestionIds: string[]) => Promise<boolean>
@@ -1957,17 +2406,11 @@ function WorkingHypothesisPanel({
     (question) => question.status === "open",
   )
   const current: HypothesisDev = value ?? {
-    problem: "",
-    previous_work: "",
-    reasoning: "",
     hypothesis: "",
   }
   const [editing, setEditing] = useState(false)
   const [applyConfirmationOpen, setApplyConfirmationOpen] = useState(false)
   const [finalReviewOpen, setFinalReviewOpen] = useState(false)
-  const [selectedHypothesisParts, setSelectedHypothesisParts] = useState<
-    (keyof HypothesisDev)[]
-  >([])
   const [selectedQuestionIds, setSelectedQuestionIds] = useState<string[]>(
     () =>
       deliberation.recommended_questions
@@ -2011,7 +2454,7 @@ function WorkingHypothesisPanel({
             Working hypothesis
           </div>
           <p className="mt-0.5 text-[10.5px] leading-relaxed text-[var(--mute)]">
-            Four steps that evolve as the panel establishes shared ground.
+            The panel’s current possible solution to the research problem.
           </p>
         </div>
         {value && (
@@ -2034,8 +2477,7 @@ function WorkingHypothesisPanel({
 
       {reviewingChanges && (
         <p className="mt-2 text-[10.5px] leading-relaxed text-[var(--ink-2)]">
-          {changedParts.length} of {HYPOTHESIS_PARTS.length} parts changed.
-          Review the previous and proposed text before applying.
+          Review the current and proposed hypothesis before applying.
         </p>
       )}
 
@@ -2119,96 +2561,112 @@ function WorkingHypothesisPanel({
         <div className="mt-3 border-t border-[var(--line)] pt-3">
           {pending && (
             <p className="mb-2 text-[10.5px] leading-relaxed text-[var(--ink-2)]">
-              The latest round proposed changes from supported shared ground.
+              The latest Thread proposed changes from supported shared ground.
               Apply them to the working hypothesis before saving a checkpoint.
             </p>
           )}
           {unsaved && !pending && (
             <p className="mb-2 text-[10.5px] leading-relaxed text-[var(--ink-2)]">
-              The working hypothesis has unsaved changes. Save it when the
-              four-part claim is ready to appear on the canvas.
+              The hypothesis has unsaved changes. Save it when the solution
+              candidate is ready to appear on the Canvas.
             </p>
           )}
-          <div className="flex gap-2">
-            {!completed && !editing && (
-              <Button
-                variant="outline"
-                size="sm"
-                className="flex-1"
-                onClick={() => setEditing(true)}
-                disabled={busy}
-              >
-                {pending ? "Edit update" : "Edit hypothesis"}
-              </Button>
-            )}
+          <div className="flex flex-col gap-2">
             {!completed && pending && !editing && (
               <Button
-                variant="ghost"
+                variant="primary"
                 size="sm"
-                className="flex-1"
-                onClick={() => void onReject()}
-                disabled={busy}
-              >
-                Reject update
-              </Button>
-            )}
-            {!completed && editing && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="flex-1"
-                onClick={cancelEditing}
-                disabled={busy}
-              >
-                Cancel editing
-              </Button>
-            )}
-            {!completed && (pending || editing) && (
-              <Button
-                variant={pending ? "primary" : "outline"}
-                size="sm"
-                className="flex-1"
-                onClick={() => {
-                  setSelectedHypothesisParts(
-                    changedParts.map((part) => part.key),
-                  )
-                  setApplyConfirmationOpen(true)
-                }}
+                className="w-full whitespace-nowrap"
+                onClick={() => setApplyConfirmationOpen(true)}
                 disabled={busy || changedParts.length === 0}
               >
                 {applying ? (
                   <>
                     <Spinner /> Applying…
                   </>
-                ) : pending ? (
+                ) : (
                   "Apply shared ground"
-                ) : (
-                  "Apply edits"
                 )}
               </Button>
             )}
-            {!completed && unsaved && !pending && !editing && (
-              <Button
-                variant="primary"
-                size="sm"
-                className="flex-1"
-                onClick={() => void onSave()}
-                disabled={busy}
-              >
-                {saving ? (
-                  <>
-                    <Spinner /> Saving…
-                  </>
-                ) : (
-                  "Save hypothesis"
-                )}
-              </Button>
-            )}
+            <div className="flex gap-2">
+              {!completed && !editing && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="flex-1 whitespace-nowrap"
+                  onClick={() => setEditing(true)}
+                  disabled={busy}
+                >
+                  {pending ? "Edit update" : "Edit hypothesis"}
+                </Button>
+              )}
+              {!completed && pending && !editing && (
+                <Button
+                  variant="danger"
+                  size="sm"
+                  className="flex-1 whitespace-nowrap"
+                  onClick={() => void onReject()}
+                  disabled={busy}
+                >
+                  Reject update
+                </Button>
+              )}
+              {!completed && editing && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="flex-1 whitespace-nowrap"
+                  onClick={cancelEditing}
+                  disabled={busy}
+                >
+                  Cancel editing
+                </Button>
+              )}
+              {!completed && editing && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="flex-1 whitespace-nowrap"
+                  onClick={() => {
+                    void onApply(current).then((applied) => {
+                      if (applied) setEditing(false)
+                    })
+                  }}
+                  disabled={busy || changedParts.length === 0}
+                >
+                  {applying ? (
+                    <>
+                      <Spinner /> Applying…
+                    </>
+                  ) : (
+                    "Apply edits"
+                  )}
+                </Button>
+              )}
+              {!completed && unsaved && !pending && !editing && (
+                <Button
+                  variant="primary"
+                  size="sm"
+                  className="flex-1 whitespace-nowrap"
+                  onClick={() => void onSave()}
+                  disabled={busy}
+                >
+                  {saving ? (
+                    <>
+                      <Spinner /> Saving…
+                    </>
+                  ) : (
+                    "Save hypothesis"
+                  )}
+                </Button>
+              )}
+            </div>
           </div>
         </div>
       ) : (
         <p className="mt-3 rounded-lg bg-[var(--bg)] px-3 py-2.5 text-[10.5px] leading-relaxed text-[var(--mute)]">
-          Complete a round to add supported shared ground.
+          Complete a Thread to add supported shared ground.
         </p>
       )}
       <div className="mt-4 border-t border-[var(--line)] pt-3">
@@ -2354,7 +2812,7 @@ function WorkingHypothesisPanel({
             <p className="text-[10.5px] leading-relaxed text-[var(--mute)]">
               {hasCompletedRound
                 ? "Review the saved hypothesis and choose which open questions to prioritize before ending."
-                : "Complete a round before reviewing and ending the deliberation."}
+                : "Complete a Thread before reviewing and ending the deliberation."}
             </p>
             <Button
               variant="primary"
@@ -2474,57 +2932,21 @@ function WorkingHypothesisPanel({
           }}
         >
           <p className="mb-4 text-[12px] leading-relaxed text-[var(--ink-2)]">
-            Select the proposed parts to apply. Unselected parts keep their
-            current text.
+            Review the current and proposed hypothesis before applying.
           </p>
-          <div className="flex max-h-[52vh] flex-col gap-3 overflow-y-auto">
-            {changedParts.map((part) => {
-              const selected = selectedHypothesisParts.includes(part.key)
-              return (
-                <label
-                  key={part.key}
-                  data-testid={`changed-hypothesis-part-${part.key}`}
-                  className="cursor-pointer rounded-lg border px-3 py-2.5"
-                  style={{
-                    borderColor: selected ? "var(--amber)" : "var(--line)",
-                    background: selected
-                      ? "color-mix(in srgb, var(--amber) 7%, var(--panel))"
-                      : "transparent",
-                  }}
-                >
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      aria-label={`Apply ${part.label}`}
-                      checked={selected}
-                      disabled={applying || baseline === null}
-                      onChange={() =>
-                        setSelectedHypothesisParts((currentParts) =>
-                          selected
-                            ? currentParts.filter((key) => key !== part.key)
-                            : [...currentParts, part.key],
-                        )
-                      }
-                    />
-                    <span className="text-[11px] font-semibold text-[var(--ink)]">
-                      {part.label}
-                    </span>
-                  </div>
-                  <div className="mt-2 text-[9.5px] font-medium text-[var(--mute)]">
-                    Before
-                  </div>
-                  <p className="mt-0.5 text-[11px] leading-relaxed text-[var(--ink-2)]">
-                    {baseline?.[part.key] || "Not established yet."}
-                  </p>
-                  <div className="mt-2 text-[9.5px] font-medium text-[var(--amber)]">
-                    Proposed
-                  </div>
-                  <p className="mt-0.5 text-[11px] leading-relaxed text-[var(--ink)]">
-                    {current[part.key] || "Not established yet."}
-                  </p>
-                </label>
-              )
-            })}
+          <div className="rounded-lg border border-[var(--amber)] bg-[color-mix(in_srgb,var(--amber)_7%,var(--panel))] px-3 py-2.5">
+            <div className="text-[9.5px] font-medium text-[var(--mute)]">
+              Current hypothesis
+            </div>
+            <p className="mt-0.5 text-[11px] leading-relaxed text-[var(--ink-2)]">
+              {baseline?.hypothesis || "Not established yet."}
+            </p>
+            <div className="mt-2 text-[9.5px] font-medium text-[var(--amber)]">
+              Proposed hypothesis
+            </div>
+            <p className="mt-0.5 text-[11px] leading-relaxed text-[var(--ink)]">
+              {current.hypothesis || "Not established yet."}
+            </p>
           </div>
           <div className="mt-5 flex justify-end gap-2">
             <Button
@@ -2538,9 +2960,9 @@ function WorkingHypothesisPanel({
             <Button
               variant="primary"
               size="sm"
-              disabled={applying || selectedHypothesisParts.length === 0}
+              disabled={applying}
               onClick={() => {
-                void onApply(current, selectedHypothesisParts).then((applied) => {
+                void onApply(current).then((applied) => {
                   if (!applied) return
                   setEditing(false)
                   setApplyConfirmationOpen(false)
@@ -2552,9 +2974,7 @@ function WorkingHypothesisPanel({
                   <Spinner /> Applying…
                 </>
               ) : (
-                `Apply ${selectedHypothesisParts.length} part${
-                  selectedHypothesisParts.length === 1 ? "" : "s"
-                }`
+                "Apply shared ground"
               )}
             </Button>
           </div>
@@ -2590,37 +3010,57 @@ function TurnBubble({
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
       <div
-        className={`w-full rounded-xl border px-3 py-2.5 ${
+        className={`rounded-xl border px-3 py-2.5 ${
           isUser
-            ? "border-transparent bg-[var(--node)] text-white"
+            ? "w-fit max-w-[78%] border-[var(--line)] bg-[color-mix(in_srgb,var(--node)_6%,var(--panel))]"
             : isSupport
-              ? "border-[var(--line)] bg-[var(--bg)]"
-              : "border-[var(--line)] bg-[var(--panel)]"
+              ? "w-full border-[var(--line)] bg-[var(--bg)]"
+              : "w-full border-[var(--line)] bg-[var(--panel)]"
         }`}
       >
         <div className="mb-2 flex items-baseline justify-between gap-3">
           <span
-            className={`text-[11px] font-semibold ${
-              isUser ? "text-white" : ""
+            className={`inline-flex items-center gap-1 text-[11px] font-semibold ${
+              isUser ? "text-[var(--ink)]" : ""
             }`}
             style={isUser ? undefined : { color: identityColor }}
           >
-            {isUser ? "Researcher" : turn.agent_label || "Panel"}
-            {turn.role === "lead" && (
-              <span className="ml-1 text-[9.5px] text-[var(--green)]">
-                Lead
-              </span>
+            {turn.role === "lead" ? (
+              <Crown
+                size={12}
+                strokeWidth={2}
+                className="-rotate-12 shrink-0"
+                aria-label="Lead"
+              />
+            ) : (
+              <User
+                size={12}
+                strokeWidth={2}
+                className="shrink-0"
+                aria-hidden="true"
+              />
             )}
+            {isUser ? "Researcher" : turn.agent_label || "Panel"}
           </span>
-          {turn.facet && (
-            <span
-              className={`shrink-0 text-[10px] font-medium ${
-                isUser ? "text-white/70" : "text-[var(--mute)]"
-              }`}
-            >
-              {FACET_META[turn.facet].label}
-            </span>
-          )}
+          <div className="flex shrink-0 items-center gap-1.5 text-[9.5px] text-[var(--mute)]">
+            {turn.relation === "challenge" ? (
+              <span className="font-semibold text-[var(--amber)]">
+                {turn.reply_to_turn_id !== null
+                  ? `Challenging T${turn.reply_to_turn_id}`
+                  : "Challenge"}
+              </span>
+            ) : turn.relation === "reply" ? (
+              <span>
+                {turn.reply_to_turn_id !== null
+                  ? `Replying to T${turn.reply_to_turn_id}`
+                  : "Reply"}
+              </span>
+            ) : turn.relation ? (
+              <span>{RELATION_LABELS[turn.relation]}</span>
+            ) : turn.reply_to_turn_id !== null ? (
+              <span>Responding to T{turn.reply_to_turn_id}</span>
+            ) : null}
+          </div>
         </div>
         {thinking ? (
           <p className="flex items-center gap-2 text-[12.5px] leading-relaxed text-[var(--mute)]">
@@ -2628,12 +3068,30 @@ function TurnBubble({
             Thinking…
           </p>
         ) : isUser ? (
-          <p className="whitespace-pre-wrap text-[12.5px] leading-relaxed text-white">
+          <p className="whitespace-pre-wrap text-[12.5px] leading-relaxed text-[var(--ink)]">
             {turn.text}
           </p>
         ) : (
-          <div className="text-[12.5px] leading-relaxed text-[var(--ink)] [&_a]:underline [&_a]:underline-offset-2 [&_li]:my-1 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-0 [&_p+p]:mt-2 [&_strong]:font-semibold [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5">
+          <div className="text-[12.5px] leading-relaxed text-[var(--ink)] [&_a]:underline [&_a]:underline-offset-2 [&_li]:my-1 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-0 [&_p]:text-[12.5px] [&_p+p]:mt-2 [&_strong]:font-semibold [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5">
             <Markdown>{turn.text}</Markdown>
+          </div>
+        )}
+        {!thinking && !isUser && turn.assumption && (
+          <p className="mt-2 rounded-lg bg-[var(--bg)] px-2.5 py-2 text-[10.5px] leading-relaxed text-[var(--ink-2)]">
+            <span className="font-semibold">Assumption:</span>{" "}
+            {turn.assumption}
+          </p>
+        )}
+        {!thinking && !isUser && turn.hypothesis_fragments.length > 0 && (
+          <div className="mt-2 flex flex-col gap-1">
+            {turn.hypothesis_fragments.map((fragment) => (
+              <blockquote
+                key={fragment}
+                className="rounded-lg border border-[var(--line)] bg-[var(--bg)] px-2.5 py-2 text-[11.5px] leading-relaxed text-[var(--ink-2)]"
+              >
+                {fragment}
+              </blockquote>
+            ))}
           </div>
         )}
         {turn.citations.length > 0 && (
@@ -2704,7 +3162,7 @@ function AddPerspectiveDialog({
     >
       <p className="mb-4 text-[12px] leading-relaxed text-[var(--ink-2)]">
         The added Perspective starts a new deliberation from scratch. Prior
-        rounds and hypotheses remain in panel history.
+        Threads and hypotheses remain in panel history.
       </p>
       <fieldset className="mb-4">
         <legend className="mb-1.5 text-[12px] font-medium text-[var(--ink-2)]">
@@ -2908,7 +3366,7 @@ function SavedHypothesisModal({
         ))}
       </div>
       <p className="mt-3 text-[11px] leading-relaxed text-[var(--mute)]">
-        Saved from round {version.source_round ?? "unknown"}
+        Saved from Thread {version.source_round ?? "unknown"}
         {version.parent_ids.length
           ? ` · follows ${version.parent_ids.join(" + ")}`
           : " · first checkpoint"}

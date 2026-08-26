@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
+from typing import Any
 
 import pytest
 
 from agora.focused import agents
+from agora.focused.migrations import migrate_v5_payloads
 from agora.focused.models import (
     FACETS,
     AgentState,
     DeliberationCompletion,
     DeliberationRound,
     DeliberationState,
+    Facet,
     FacetEvidence,
     HypothesisDev,
     Perspective,
@@ -28,12 +32,7 @@ PROBLEM = (
 
 
 def hypothesis(label: str) -> HypothesisDev:
-    return HypothesisDev(
-        problem=f"{label} problem",
-        previous_work=f"{label} previous work",
-        reasoning=f"{label} reasoning",
-        hypothesis=f"{label} testable claim",
-    )
+    return HypothesisDev(hypothesis=f"{label} testable claim")
 
 
 def panel_perspective(perspective_id: str, name: str, prefix: str) -> Perspective:
@@ -50,6 +49,49 @@ def panel_perspective(perspective_id: str, name: str, prefix: str) -> Perspectiv
             for facet in FACETS
         },
     )
+
+
+def _thread_id(
+    service: FocusedPanelService,
+    session_id: str,
+    facet: Facet = "scope",
+) -> str:
+    deliberation = service.get(session_id).deliberations[0]
+    return next(issue.id for issue in deliberation.threads if facet in issue.facets)
+
+
+_PERSISTED_HYPOTHESIS_FIELDS = {
+    "applied_hypothesis",
+    "baseline_hypothesis",
+    "hypothesis",
+    "hypothesis_before",
+    "hypothesis_proposal",
+    "steps",
+}
+
+
+def _as_legacy_v5(value: Any, field: str | None = None) -> Any:
+    if isinstance(value, list):
+        return [_as_legacy_v5(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    if field in _PERSISTED_HYPOTHESIS_FIELDS and set(value) == {"hypothesis"}:
+        candidate = value["hypothesis"]
+        return {
+            "problem": "legacy problem",
+            "previous_work": "legacy previous work",
+            "reasoning": "legacy reasoning",
+            "hypothesis": candidate,
+        }
+    if field == "step_sources":
+        source = value.get("hypothesis")
+        return {
+            "problem": source,
+            "previous_work": source,
+            "reasoning": source,
+            "hypothesis": source,
+        }
+    return {key: _as_legacy_v5(item, key) for key, item in value.items()}
 
 
 def test_legacy_completion_history_materializes_on_session_load() -> None:
@@ -166,7 +208,7 @@ def test_completion_allows_one_finished_round() -> None:
             state.id,
             deliberation.id,
             lead_iid=deliberation.agent_iids[0],
-            facets=["scope"],
+            thread_id=_thread_id(service, state.id, "scope"),
         )
         deliberation = state.deliberations[0]
         if not deliberation.hypothesis_confirmed:
@@ -176,6 +218,12 @@ def test_completion_allows_one_finished_round() -> None:
                 deliberation.id,
                 deliberation.hypothesis,
             )
+        state = await service.decide_thread_resolution(
+            state.id,
+            deliberation.id,
+            state.deliberations[0].rounds[-1].n,
+            decision="accept",
+        )
         state = await service.save_deliberation_hypothesis(
             state.id,
             deliberation.id,
@@ -462,7 +510,7 @@ def test_edit_applied_creates_a_provenance_preserving_version() -> None:
         state = service.get(root.id)
         deliberation = state.deliberations[0]
         edited = hypothesis("root").model_copy(
-            update={"reasoning": "researcher-edited reasoning"}
+            update={"hypothesis": "researcher-edited solution candidate"}
         )
 
         state = await service.confirm_deliberation_hypothesis(
@@ -489,12 +537,7 @@ def test_edit_applied_creates_a_provenance_preserving_version() -> None:
         ).workspace.hypothesis_versions[-1]
         assert version.source_kind == "edit"
         assert version.parent_ids == ["H1"]
-        assert version.step_sources == {
-            "problem": "H1",
-            "previous_work": "H1",
-            "reasoning": "H2",
-            "hypothesis": "H1",
-        }
+        assert version.step_sources == {"hypothesis": "H2"}
         assert (
             service.workspace_view(
                 root.workspace_id
@@ -568,22 +611,14 @@ def test_hypothesis_versions_promote_merge_archive_and_close_question() -> None:
             root.workspace_id,
             target_investigation_id=second.id,
             source_version_id=first_version,
-            parts_from_source=["problem", "hypothesis"],
+            hypothesis=hypothesis("first"),
         )
         assert merged.workspace.promoted_hypothesis_version_id == "H4"
         merged_version = merged.workspace.hypothesis_versions[-1]
         assert merged_version.parent_ids == ["H3", "H2"]
         assert merged_version.source_kind == "merge"
-        assert merged_version.steps.problem == "first problem"
         assert merged_version.steps.hypothesis == "first testable claim"
-        assert merged_version.steps.previous_work == "second previous work"
-        assert merged_version.steps.reasoning == "second reasoning"
-        assert merged_version.step_sources == {
-            "problem": "H2",
-            "previous_work": "H3",
-            "reasoning": "H3",
-            "hypothesis": "H2",
-        }
+        assert merged_version.step_sources == {"hypothesis": "H2"}
 
         with pytest.raises(SessionError, match="current checkpoint"):
             service.promote_hypothesis(root.workspace_id, "H3")
@@ -626,7 +661,7 @@ def test_merge_cannot_overwrite_a_pending_panel_update() -> None:
                 root.workspace_id,
                 target_investigation_id=root.id,
                 source_version_id="H2",
-                parts_from_source=["problem"],
+                hypothesis=hypothesis("child"),
             )
 
     asyncio.run(go())
@@ -655,7 +690,7 @@ def test_promoted_merge_addresses_its_contributing_child_question() -> None:
             root.workspace_id,
             target_investigation_id=root.id,
             source_version_id="H2",
-            parts_from_source=["reasoning"],
+            hypothesis=hypothesis("child"),
         )
 
         assert merged.workspace.promoted_hypothesis_version_id == "H3"
@@ -691,7 +726,13 @@ def test_repeated_unsettled_round_does_not_duplicate_open_question() -> None:
                 state.id,
                 deliberation.id,
                 lead_iid=agent_iids[0],
-                facets=["scope"],
+                thread_id=_thread_id(service, state.id, "scope"),
+            )
+            state = await service.decide_thread_resolution(
+                state.id,
+                deliberation.id,
+                state.deliberations[0].rounds[-1].n,
+                decision="keep_open",
             )
             current = state.deliberations[0]
             if not current.hypothesis_confirmed:
@@ -777,10 +818,10 @@ def test_round_batches_independent_agent_calls(monkeypatch) -> None:
             state.id,
             deliberation.id,
             lead_iid=agent_iids[0],
-            facets=["scope"],
+            thread_id=_thread_id(service, state.id, "scope"),
         )
 
-        assert peak == {"answer": 2, "reflection": 1, "post": 3}
+        assert peak == {"answer": 2, "reflection": 3, "post": 3}
 
     asyncio.run(go())
 
@@ -836,7 +877,7 @@ def test_concurrent_round_requests_serialize_without_detached_side_effects(
                 state.id,
                 deliberation.id,
                 lead_iid=agent_iids[0],
-                facets=["scope"],
+                thread_id=_thread_id(service, state.id, "scope"),
             )
         )
         await entered.wait()
@@ -845,14 +886,34 @@ def test_concurrent_round_requests_serialize_without_detached_side_effects(
                 state.id,
                 deliberation.id,
                 lead_iid=agent_iids[0],
-                facets=["explanation"],
+                thread_id=_thread_id(service, state.id, "explanation"),
             )
         )
         await asyncio.sleep(0.05)
         assert not second_round.done()
 
         release.set()
-        await asyncio.gather(first_round, second_round)
+        await first_round
+        # The serialized second request lands after the first Thread completed
+        # and deterministically hits the researcher-review gate.
+        with pytest.raises(SessionError, match="Review the completed Thread"):
+            await second_round
+        rounds = service.get(state.id).deliberations[0].rounds
+        assert [round_state.n for round_state in rounds] == [1]
+        assert rounds[0].completed
+
+        await service.decide_thread_resolution(
+            state.id,
+            deliberation.id,
+            rounds[0].n,
+            decision="accept",
+        )
+        await service.run_round(
+            state.id,
+            deliberation.id,
+            lead_iid=agent_iids[0],
+            thread_id=_thread_id(service, state.id, "explanation"),
+        )
         rounds = service.get(state.id).deliberations[0].rounds
         assert [round_state.n for round_state in rounds] == [1, 2]
         assert all(round_state.completed for round_state in rounds)
@@ -913,7 +974,7 @@ def test_workspace_lock_preserves_sibling_mutation_after_failed_round(
                 child.id,
                 deliberation.id,
                 lead_iid=agent_iids[0],
-                facets=["scope"],
+                thread_id=_thread_id(service, child.id, "scope"),
             )
         )
         await entered.wait()
@@ -979,7 +1040,7 @@ def test_failed_round_restores_the_entire_in_memory_investigation(
                 state.id,
                 deliberation.id,
                 lead_iid=agent_iids[0],
-                facets=["scope"],
+                thread_id=_thread_id(service, state.id, "scope"),
             )
         assert service.get(state.id).model_dump(mode="json") == before
         monkeypatch.setattr(
@@ -997,7 +1058,7 @@ def test_failed_round_restores_the_entire_in_memory_investigation(
                 state.id,
                 deliberation.id,
                 lead_iid=agent_iids[0],
-                facets=["scope"],
+                thread_id=_thread_id(service, state.id, "scope"),
             )
 
         assert service.get(state.id).model_dump(mode="json") == before
@@ -1058,6 +1119,119 @@ def test_workspace_and_lineage_reload_from_sqlite(tmp_path) -> None:
         connection.close()
 
     asyncio.run(go())
+
+
+def test_v5_sqlite_snapshot_is_archived_and_migrated_without_data_loss(
+    tmp_path,
+    legacy_v5_deliberation,
+) -> None:
+    async def go() -> None:
+        connection = sqlite3.connect(
+            tmp_path / "focused-v5.db",
+            check_same_thread=False,
+        )
+        connection.row_factory = sqlite3.Row
+        service = FocusedPanelService(persistence=FocusedPersistence(connection))
+        root = service.create_workspace(
+            problem=PROBLEM,
+            research_questions=[],
+            demo=True,
+        ).active
+        await apply_checkpoint(service, root.id, hypothesis("legacy"))
+
+        workspace_row = connection.execute(
+            "select workspace_id, revision, payload from focused_workspaces "
+            "where workspace_id = ?",
+            (root.workspace_id,),
+        ).fetchone()
+        investigation_rows = connection.execute(
+            "select investigation_id, payload from focused_investigations "
+            "where workspace_id = ? order by investigation_id",
+            (root.workspace_id,),
+        ).fetchall()
+        assert workspace_row is not None
+        legacy_workspace = _as_legacy_v5(json.loads(workspace_row["payload"]))
+        legacy_workspace["schema_version"] = 5
+        legacy_investigations = {
+            row["investigation_id"]: _as_legacy_v5(json.loads(row["payload"]))
+            for row in investigation_rows
+        }
+        root_payload = legacy_investigations[root.id]
+        root_payload["deliberations"] = [legacy_v5_deliberation("persp-legacy")]
+        legacy_archive = {
+            "workspace": legacy_workspace,
+            "investigations": list(legacy_investigations.values()),
+        }
+        with connection:
+            connection.execute(
+                "update focused_workspaces set payload = ? where workspace_id = ?",
+                (json.dumps(legacy_workspace), root.workspace_id),
+            )
+            for investigation_id, payload in legacy_investigations.items():
+                connection.execute(
+                    "update focused_investigations set payload = ? "
+                    "where investigation_id = ?",
+                    (json.dumps(payload), investigation_id),
+                )
+
+        restored = FocusedPanelService(persistence=FocusedPersistence(connection))
+        view = restored.workspace_view(root.workspace_id)
+        assert view.workspace.schema_version == 6
+        assert view.active.applied_hypothesis == hypothesis("legacy")
+        assert view.workspace.hypothesis_versions[0].step_sources == {
+            "hypothesis": "H1"
+        }
+
+        migrated = view.active.deliberations[0]
+        assert migrated.baseline_hypothesis == HypothesisDev(
+            hypothesis="H legacy before"
+        )
+        migrated_round = migrated.rounds[0]
+        assert migrated_round.verdict is not None
+        assert migrated_round.verdict.facets == ["scope", "significance"]
+        assert migrated_round.verdict.status == "consensus"
+        assert migrated_round.verdict.consensus == "Adults in inpatient care."
+        assert migrated_round.verdict.supporting == ["Lead", "Other"]
+        assert migrated_round.verdict.evidence == {
+            "Lead": ["p1"],
+            "Other": ["p2"],
+        }
+        assert [turn.kind.value for turn in migrated_round.turns] == ["open", "reply"]
+        assert migrated_round.turns[1].relation == "reply"
+        assert migrated_round.moderator_checks[0].verdict.facets == ["scope"]
+        assert migrated_round.resolution is not None
+        assert migrated_round.resolution.consensus_points[0].facets == ["scope"]
+        assert migrated_round.resolution.unsettled_points[0].facets == ["significance"]
+        assert migrated_round.hypothesis_before == HypothesisDev(
+            hypothesis="H legacy before"
+        )
+        assert migrated.chat[0].kind.value == "user"
+        archived_round = migrated.completion_history[0].rounds[0]
+        assert archived_round.verdict is not None
+        assert archived_round.verdict.facets == ["scope", "significance"]
+
+        archive_row = connection.execute(
+            "select payload from focused_workspace_archives "
+            "where workspace_id = ? and schema_version = 5",
+            (root.workspace_id,),
+        ).fetchone()
+        assert archive_row is not None
+        assert json.loads(archive_row["payload"]) == legacy_archive
+
+        FocusedPanelService(persistence=FocusedPersistence(connection))
+        archive_count = connection.execute(
+            "select count(*) from focused_workspace_archives where workspace_id = ?",
+            (root.workspace_id,),
+        ).fetchone()[0]
+        assert archive_count == 1
+        connection.close()
+
+    asyncio.run(go())
+
+
+def test_snapshot_migration_rejects_unknown_schema_versions() -> None:
+    with pytest.raises(ValueError, match="unsupported"):
+        migrate_v5_payloads({"schema_version": 4}, {})
 
 
 def test_malformed_workspace_is_quarantined_without_blocking_healthy_state(

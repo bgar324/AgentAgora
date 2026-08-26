@@ -4,7 +4,42 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from agora.schemas.deliberation import (
+    Contribution as CanonContribution,
+)
+from agora.schemas.deliberation import (
+    PanelReview as CanonPanelReview,
+)
+from agora.schemas.deliberation import (
+    PerspectiveState as CanonPerspectiveState,
+)
+from agora.schemas.deliberation import (
+    Proposal as CanonProposal,
+)
+from agora.schemas.deliberation import (
+    Refinement as CanonRefinement,
+)
+from agora.schemas.deliberation import (
+    Reflection as CanonReflection,
+)
+from agora.schemas.deliberation import (
+    Resolution as CanonResolution,
+)
+from agora.schemas.deliberation import (
+    Revision as CanonRevision,
+)
+from agora.schemas.deliberation import (
+    Suggestion as CanonSuggestion,
+)
+from agora.schemas.deliberation import (
+    Thread as CanonThread,
+)
+from agora.schemas.deliberation import (
+    WorkingDocument as CanonWorkingDocument,
+)
+from agora.schemas.panel import Observation as CanonObservation
 
 Facet = Literal["scope", "explanation", "approach", "significance"]
 ResearchQuestion = Annotated[str, Field(min_length=1, max_length=4000)]
@@ -116,15 +151,14 @@ class ClusteringDiagnostics(BaseModel):
 
 
 class HypothesisDev(BaseModel):
-    """A hypothesis developed in four inspectable steps."""
+    """One testable solution candidate for the research problem."""
 
-    problem: str = Field(min_length=1, max_length=4000)
-    previous_work: str = Field(min_length=1, max_length=4000)
-    reasoning: str = Field(min_length=1, max_length=4000)
+    model_config = ConfigDict(extra="forbid")
+
     hypothesis: str = Field(min_length=1, max_length=4000)
 
 
-HypothesisPart = Literal["problem", "previous_work", "reasoning", "hypothesis"]
+HypothesisPart = Literal["hypothesis"]
 HypothesisConfirmationMode = Literal[
     "apply_pending",
     "edit_applied",
@@ -163,6 +197,8 @@ class TurnKind(str, Enum):
     support = "support"
     user = "user"
     system = "system"
+    challenge = "challenge"
+    reply = "reply"
 
 
 class Turn(BaseModel):
@@ -175,17 +211,20 @@ class Turn(BaseModel):
     text: str
     citations: list[str] = Field(default_factory=list)
     exchange_n: int | None = Field(default=None, ge=1)
+    reply_to_turn_id: int | None = None
+    relation: Literal["answer", "reply", "support", "challenge"] | None = None
+    assumption: str = ""
+    hypothesis_fragments: list[str] = Field(default_factory=list)
 
 
-class FacetVerdict(BaseModel):
-    """Moderator finding for one active facet.
+class ThreadVerdict(BaseModel):
+    """Moderator finding for one scientific Thread.
 
-    ``disagreement`` is reserved for genuinely incompatible positions.
-    ``unsettled`` captures missing evidence, boundaries, or unanswered
-    questions without manufacturing opposition.
+    ``facets`` is traceability metadata: it names the Perspective facets the
+    finding touches. It never constrains what the Thread may discuss.
     """
 
-    facet: Facet
+    facets: list[Facet] = Field(default_factory=list, max_length=4)
     status: Literal["consensus", "disagreement", "unsettled"]
     summary: str
     proposed_shared_ground: str = ""
@@ -203,12 +242,14 @@ class SharedGroundAssent(BaseModel):
     agent_label: str
     decision: Literal["accept", "qualify", "reject"]
     reason: str = ""
+    challenge_turn_id: int | None = None
+    challenge: str = ""
 
 
 class ModeratorCheck(BaseModel):
     exchange_n: int = Field(ge=1)
     proposed_shared_ground: str
-    verdict: FacetVerdict
+    verdict: ThreadVerdict
     assents: list[SharedGroundAssent] = Field(default_factory=list)
     unanimous: bool = False
 
@@ -224,11 +265,37 @@ class ModeratorCheck(BaseModel):
 
 
 class DeliberationPoint(BaseModel):
-    facet: Facet
+    facets: list[Facet] = Field(default_factory=list, max_length=4)
     text: str
     rationale: str = ""
     perspective_names: list[str] = Field(default_factory=list)
     citations: list[str] = Field(default_factory=list)
+
+
+class ThreadPerspectiveLink(BaseModel):
+    """Which fragments of one Perspective a Thread relates to (traceability)."""
+
+    perspective_name: str = Field(min_length=1, max_length=200)
+    facets: list[Facet] = Field(default_factory=list, max_length=4)
+
+
+class DeliberationThread(BaseModel):
+    """One scientific issue, disagreement, or open question under deliberation.
+
+    The ``question`` drives the discussion. ``related`` and ``facets`` are the
+    representation/traceability layer: they surface where Perspectives differ
+    and what changed afterward, but never determine the conversation.
+    """
+
+    id: str
+    title: str = Field(min_length=1, max_length=200)
+    question: str = Field(min_length=1, max_length=1000)
+    context: str = Field(default="", max_length=2000)
+    facets: list[Facet] = Field(default_factory=list, max_length=4)
+    related: list[ThreadPerspectiveLink] = Field(default_factory=list)
+    perspective_names: list[str] = Field(default_factory=list)
+    hypothesis_fragments: list[str] = Field(default_factory=list)
+    source_round: int | None = Field(default=None, ge=1)
 
 
 class RoundResolution(BaseModel):
@@ -286,9 +353,10 @@ class DeliberationRound(BaseModel):
     n: int
     lead_iid: int
     participant_iids: list[int] = Field(default_factory=list)
-    facets: list[Facet] = Field(min_length=1, max_length=2)
+    facets: list[Facet] = Field(default_factory=list, max_length=4)
+    thread_id: str | None = None
     turns: list[Turn] = Field(default_factory=list)
-    verdicts: list[FacetVerdict] = Field(default_factory=list)
+    verdict: ThreadVerdict | None = None
     resolution: RoundResolution | None = None
     reflections: list[ParticipantReflection] = Field(default_factory=list)
     metrics: RoundMetrics | None = None
@@ -298,6 +366,8 @@ class DeliberationRound(BaseModel):
     hypothesis_decision: HypothesisDecision | None = None
     moderator_checks: list[ModeratorCheck] = Field(default_factory=list)
     stop_reason: Literal["unanimous", "exchange_limit"] | None = None
+    resolution_decision: Literal["accepted", "edited", "kept_open"] | None = None
+    resolution_note: str = Field(default="", max_length=2000)
 
 
 QuestionStatus = Literal["open", "investigating", "addressed", "archived"]
@@ -327,6 +397,27 @@ class RecommendedQuestion(BaseModel):
         return self
 
 
+class DocumentSection(BaseModel):
+    """One resolved Thread rendered as a substantive research section."""
+
+    thread_id: str | None = None
+    title: str = Field(min_length=1, max_length=200)
+    hypothesis: str = Field(min_length=1, max_length=4000)
+    explanation: str = Field(default="", max_length=4000)
+
+
+class DeliberationDocument(BaseModel):
+    """The researcher-approved outcome of deliberation.
+
+    Resolved Threads contribute hypotheses and explanations; unresolved
+    scientific issues remain as open questions.
+    """
+
+    title: str = Field(min_length=1, max_length=4000)
+    sections: list[DocumentSection] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
+
+
 class DeliberationCompletion(BaseModel):
     archived_at: datetime = Field(default_factory=utcnow)
     reason: Literal["completed", "restarted"] = "completed"
@@ -337,8 +428,10 @@ class DeliberationCompletion(BaseModel):
     agent_iids: list[int] = Field(default_factory=list)
     question_ids: list[str] = Field(default_factory=list)
     lead_perspective_id: str | None = None
+    threads: list[DeliberationThread] = Field(default_factory=list)
     baseline_hypothesis: HypothesisDev | None = None
     selected_question_ids: list[str] = Field(default_factory=list)
+    document: DeliberationDocument | None = None
     rating: DeliberationRating | None = None
     rounds: list[DeliberationRound] = Field(default_factory=list)
     recommended_questions: list[RecommendedQuestion] = Field(default_factory=list)
@@ -373,10 +466,12 @@ class DeliberationCompletion(BaseModel):
 
 class DeliberationState(BaseModel):
     id: str
+    threads: list[DeliberationThread] = Field(default_factory=list)
     agent_iids: list[int] = Field(default_factory=list)
     lead_perspective_id: str | None = None
     baseline_hypothesis: HypothesisDev | None = None
     selected_question_ids: list[str] = Field(default_factory=list)
+    document: DeliberationDocument | None = None
     rounds: list[DeliberationRound] = Field(default_factory=list)
     revised_perspective: Perspective | None = None
     hypothesis: HypothesisDev | None = None
@@ -461,6 +556,56 @@ class QuestionReach(BaseModel):
     reached: bool = False
 
 
+DialogueStage = Literal["opening", "selection", "deliberation"]
+DialogueWaiting = Literal["proposal_selection", "resolution_decision"]
+
+
+class DialogueState(BaseModel):
+    """Canonical Perspectra-style deliberation state for one Investigation.
+
+    Every collection holds objects from ``agora.schemas.deliberation``
+    verbatim, so the engine, the wire format, and persistence share one
+    contract. Versioned objects are append-only: the latest version of an
+    id wins, and history stays readable.
+    """
+
+    id: str
+    stage: DialogueStage = "opening"
+    waiting_for: DialogueWaiting | None = None
+    active_thread_id: str | None = None
+    perspective_states: list[CanonPerspectiveState] = Field(default_factory=list)
+    observations: list[CanonObservation] = Field(default_factory=list)
+    proposals: list[CanonProposal] = Field(default_factory=list)
+    reviews: list[CanonPanelReview] = Field(default_factory=list)
+    refinements: list[CanonRefinement] = Field(default_factory=list)
+    selected_proposal_ids: list[str] = Field(default_factory=list)
+    document: CanonWorkingDocument | None = None
+    threads: list[CanonThread] = Field(default_factory=list)
+    contributions: list[CanonContribution] = Field(default_factory=list)
+    resolutions: list[CanonResolution] = Field(default_factory=list)
+    suggestions: list[CanonSuggestion] = Field(default_factory=list)
+    revisions: list[CanonRevision] = Field(default_factory=list)
+    reflections: list[CanonReflection] = Field(default_factory=list)
+
+    def latest_thread(self, thread_id: str) -> CanonThread | None:
+        for thread in reversed(self.threads):
+            if thread.id == thread_id:
+                return thread
+        return None
+
+    def latest_resolution(self, resolution_id: str) -> CanonResolution | None:
+        for resolution in reversed(self.resolutions):
+            if resolution.id == resolution_id:
+                return resolution
+        return None
+
+    def current_threads(self) -> list[CanonThread]:
+        latest: dict[str, CanonThread] = {}
+        for thread in self.threads:
+            latest[thread.id] = thread
+        return list(latest.values())
+
+
 class SessionState(BaseModel):
     """Full wire state for one focused-panel Investigation."""
 
@@ -485,6 +630,7 @@ class SessionState(BaseModel):
     perspectives: list[Perspective] = Field(default_factory=list)
     agents: list[AgentState] = Field(default_factory=list)
     deliberations: list[DeliberationState] = Field(default_factory=list)
+    dialogue: DialogueState | None = None
     searched: bool = False
     clustering: ClusteringDiagnostics | None = None
 
@@ -538,6 +684,7 @@ class WorkspaceState(BaseModel):
     id: str
     created_at: datetime = Field(default_factory=utcnow)
     revision: int = Field(default=0, ge=0)
+    schema_version: Literal[6] = 6
     problem: str = Field(max_length=4000)
     root_investigation_id: str
     active_investigation_id: str
@@ -593,6 +740,13 @@ class QuerySuggestions(BaseModel):
     )
 
 
+class DerivedQuestions(BaseModel):
+    questions: list[str] = Field(
+        description="Two or three answerable research questions, each probing "
+        "a distinct empirical uncertainty inside the research problem."
+    )
+
+
 class QuestionPlan(BaseModel):
     form: str = ""
     candidates: list[str] = Field(default_factory=list)
@@ -637,6 +791,15 @@ class FacetExtraction(BaseModel):
 
 class Statement(BaseModel):
     text: str = Field(description="One short spoken turn, 1-3 sentences.")
+    assumption: str = Field(
+        default="",
+        description="The assumption or causal belief supporting this turn.",
+    )
+    relation: Literal["answer", "reply", "support", "challenge"] = "answer"
+    hypothesis_fragments: list[str] = Field(
+        default_factory=list,
+        description="Exact excerpts from the current hypothesis addressed by the turn.",
+    )
     citations: list[str] = Field(
         default_factory=list,
         description="Paper IDs or titles supporting the statement.",
@@ -652,8 +815,7 @@ class SupportPassage(BaseModel):
     reason: str = Field(description="Why this passage supports the statement.")
 
 
-class FacetVerdictDraft(BaseModel):
-    facet: Facet
+class ThreadVerdictDraft(BaseModel):
     status: Literal["consensus", "disagreement", "unsettled"]
     summary: str
     proposed_shared_ground: str = ""
@@ -664,13 +826,45 @@ class FacetVerdictDraft(BaseModel):
     contested_by: list[str] = Field(default_factory=list)
 
 
-class FacetVerdicts(BaseModel):
-    verdicts: list[FacetVerdictDraft]
+class ThreadVerdictOutput(BaseModel):
+    verdict: ThreadVerdictDraft
 
 
 class SharedGroundAssentDraft(BaseModel):
     decision: Literal["accept", "qualify", "reject"]
     reason: str
+    challenge_turn_id: int | None = None
+    challenge: str = ""
+
+
+class DeliberationThreadDraft(BaseModel):
+    title: str
+    question: str
+    context: str
+    related: list[ThreadPerspectiveLink] = Field(
+        default_factory=list,
+        description="Per-Perspective fragments this Thread relates to.",
+    )
+    facets: list[Facet] = Field(default_factory=list, max_length=4)
+    perspective_names: list[str] = Field(default_factory=list)
+    hypothesis_fragments: list[str] = Field(default_factory=list)
+
+
+class DeliberationThreads(BaseModel):
+    threads: list[DeliberationThreadDraft] = Field(default_factory=list)
+
+
+class DocumentSectionDraft(BaseModel):
+    thread_title: str = Field(description="The resolved Thread's topic title.")
+    hypothesis: str = Field(description="The hypothesis this Thread supports.")
+    explanation: str = Field(
+        description="Why the hypothesis is warranted, without the transcript."
+    )
+
+
+class DocumentDraft(BaseModel):
+    sections: list[DocumentSectionDraft] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
 
 
 class ReflectionDraft(BaseModel):

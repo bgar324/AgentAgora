@@ -37,11 +37,11 @@ from agora.focused.models import (
     DeliberationRating,
     DeliberationRound,
     DeliberationState,
+    DeliberationThread,
     ExpPaper,
     Facet,
     FacetDistance,
     FacetEvidence,
-    FacetVerdict,
     HypothesisConfirmationMode,
     HypothesisDev,
     HypothesisPart,
@@ -57,6 +57,7 @@ from agora.focused.models import (
     RoundResolution,
     SessionState,
     SharedGroundAssent,
+    ThreadVerdict,
     Turn,
     TurnKind,
     WorkspaceState,
@@ -82,7 +83,10 @@ MIN_CLUSTERING_CORPUS = 90
 MIN_THREE_CLUSTER_PAPERS = 15
 DEMO_RETRIEVAL_DELAY_SECONDS = 1.05
 MAX_SEARCH_PROGRESS_EVENTS = 192
+MIN_DELIBERATION_EXCHANGES = 2
 MAX_DELIBERATION_EXCHANGES = 3
+MAX_SUGGESTED_THREADS_PER_ROUND = 2
+MAX_DELIBERATION_THREADS = 10
 SearchProgressKind = Literal[
     "query_started",
     "query_completed",
@@ -94,6 +98,42 @@ SearchProgressKind = Literal[
     "round_turn",
     "round_check",
 ]
+
+
+def _question_thread_title(question: str) -> str:
+    """Derive a concise Thread title from an open research question.
+
+    Template questions name their substantive issue after a colon
+    ("What evidence would settle … : <issue>?"); title from that issue.
+    """
+    text = question.strip().rstrip("?？")
+    _, _, tail = text.rpartition(": ")
+    words = (tail or text).split()
+    title = " ".join(words[:8])
+    if not title:
+        return "Open question"
+    return (title[:1].upper() + title[1:])[:200]
+
+
+def _resolution_context(resolution: RoundResolution) -> str:
+    """Render one resolution as prose for chat context and demo replies."""
+    lines = [resolution.summary]
+    if resolution.consensus_points:
+        lines.append(
+            "Shared ground: "
+            + "; ".join(point.text for point in resolution.consensus_points)
+        )
+    if resolution.disagreement_points:
+        lines.append(
+            "Disagreement: "
+            + "; ".join(point.text for point in resolution.disagreement_points)
+        )
+    if resolution.unsettled_points:
+        lines.append(
+            "Still open: "
+            + "; ".join(point.text for point in resolution.unsettled_points)
+        )
+    return "\n".join(lines)
 
 
 @dataclass(frozen=True)
@@ -663,22 +703,16 @@ class FocusedPanelService:
         )
         version_id = f"H{len(workspace.hypothesis_versions) + 1}"
         if step_sources is None:
-            step_sources = {}
-            for part in (
-                "problem",
-                "previous_work",
-                "reasoning",
-                "hypothesis",
+            source_id = version_id
+            if (
+                current_version is not None
+                and current_version.steps.hypothesis == hypothesis.hypothesis
             ):
-                if current_version is not None and getattr(
-                    current_version.steps, part
-                ) == getattr(hypothesis, part):
-                    step_sources[part] = current_version.step_sources.get(
-                        part,
-                        current_version.id,
-                    )
-                else:
-                    step_sources[part] = version_id
+                source_id = current_version.step_sources.get(
+                    "hypothesis",
+                    current_version.id,
+                )
+            step_sources = {"hypothesis": source_id}
         version = HypothesisVersion(
             id=version_id,
             workspace_id=workspace.id,
@@ -1078,7 +1112,7 @@ class FocusedPanelService:
         *,
         target_investigation_id: str,
         source_version_id: str,
-        parts_from_source: list[HypothesisPart],
+        hypothesis: HypothesisDev,
     ) -> WorkspaceView:
         workspace = self._require_workspace(workspace_id)
         self._ensure_workspace_idle(workspace)
@@ -1113,41 +1147,24 @@ class FocusedPanelService:
         source_version = self._hypothesis_version(workspace, source_version_id)
         if source_version.archived:
             raise SessionError("An archived hypothesis cannot be merged.", status=409)
-        selected = list(dict.fromkeys(parts_from_source))
-        if not selected:
-            raise SessionError("Select at least one hypothesis step to merge.")
         if source_version.id == target_version.id:
             raise SessionError("Choose a different hypothesis branch to merge.")
-
-        merged = target_version.steps.model_dump()
-        source = source_version.steps.model_dump()
-        for part in selected:
-            merged[part] = source[part]
-        hypothesis = HypothesisDev(**merged)
-        if hypothesis == target_version.steps:
+        merged = HypothesisDev(hypothesis=hypothesis.hypothesis.strip())
+        if merged == target_version.steps:
             return self.workspace_view(workspace.id)
-        step_sources = {
-            part: target_version.step_sources.get(part, target_version.id)
-            for part in (
-                "problem",
-                "previous_work",
-                "reasoning",
-                "hypothesis",
-            )
-        }
-        for part in selected:
-            step_sources[part] = source_version.step_sources.get(
-                part,
-                source_version.id,
-            )
+        source_id = (
+            source_version.step_sources.get("hypothesis", source_version.id)
+            if merged == source_version.steps
+            else f"H{len(workspace.hypothesis_versions) + 1}"
+        )
         promoted_target = workspace.promoted_hypothesis_version_id == target_version.id
         version = self._record_hypothesis(
             target_state,
             deliberation,
-            hypothesis,
+            merged,
             source_kind="merge",
             parent_ids=[target_version.id, source_version.id],
-            step_sources=step_sources,
+            step_sources={"hypothesis": source_id},
         )
         if promoted_target:
             workspace.promoted_hypothesis_version_id = version.id
@@ -1311,6 +1328,13 @@ class FocusedPanelService:
                 for index, question in enumerate(state.research_questions)
             ]
         else:
+            if not state.research_questions:
+                # Users never type research questions (Kat's protocol); derive
+                # them so answer-tier retrieval and coverage ranking still run.
+                state.research_questions = await agents.derive_research_questions(
+                    state.problem,
+                    provider=self._provider_for(session),
+                )
             problem_suggestions = [
                 suggestion.model_copy(
                     update={"kind": "problem", "question_index": None, "round": 1}
@@ -1680,17 +1704,23 @@ class FocusedPanelService:
             },
         )
 
-    def _demo_cluster(self, papers: list[ExpPaper]) -> list[list[ExpPaper]]:
+    def _demo_cluster(
+        self, papers: list[ExpPaper]
+    ) -> tuple[list[list[ExpPaper]], list[int]]:
         groups: list[list[ExpPaper]] = [[] for _ in DEMO_CLUSTERS]
         for paper in papers:
             text = f"{paper.title} {paper.abstract or ''}".lower()
             best, best_score = 0, 0
             for i, seed in enumerate(DEMO_CLUSTERS):
-                score = sum(1 for t in seed["terms"] if t in text)
+                score = sum(1 for term in seed["terms"] if term in text)
                 if score > best_score:
                     best, best_score = i, score
             groups[best].append(paper)
-        return [g for g in groups if g]
+        populated = [(index, group) for index, group in enumerate(groups) if group]
+        return (
+            [group for _, group in populated],
+            [index for index, _ in populated],
+        )
 
     @staticmethod
     def _validate_facet_source(
@@ -1994,13 +2024,17 @@ class FocusedPanelService:
 
         partition_representatives: list[list[ExpPaper]] | None = None
         unassigned_papers: list[ExpPaper] = []
+        demo_group_indices: list[int] | None = None
         if self._demo(session):
-            groups = self._demo_cluster(papers) if papers else []
+            groups, demo_group_indices = (
+                self._demo_cluster(papers) if papers else ([], [])
+            )
             if len(groups) < requested_clusters:
                 groups = self._balanced_fallback_clusters(
                     papers,
                     requested_clusters,
                 )
+                demo_group_indices = None
                 method = "balanced_fallback"
             else:
                 method = "demo_seeds"
@@ -2061,6 +2095,9 @@ class FocusedPanelService:
             )
         )
         for idx, group in enumerate(ordered_groups):
+            demo_index = (
+                demo_group_indices[idx] if demo_group_indices is not None else idx
+            )
             naming = namings[idx] if idx < len(namings) else None
             demo_facets = (
                 [DEMO_FACETS.get(paper.id, []) for paper in group]
@@ -2102,10 +2139,10 @@ class FocusedPanelService:
                     id=f"cluster-{idx + 1}",
                     name=naming.name
                     if naming
-                    else (DEMO_CLUSTERS[idx % len(DEMO_CLUSTERS)]["name"]),
+                    else (DEMO_CLUSTERS[demo_index % len(DEMO_CLUSTERS)]["name"]),
                     blurb=naming.blurb
                     if naming
-                    else (DEMO_CLUSTERS[idx % len(DEMO_CLUSTERS)]["blurb"]),
+                    else (DEMO_CLUSTERS[demo_index % len(DEMO_CLUSTERS)]["blurb"]),
                     facets=grounded,
                     paper_ids=[p.id for p in group],
                     representative_paper_ids=[p.id for p in representatives],
@@ -2281,7 +2318,15 @@ class FocusedPanelService:
                     if deliberation.baseline_hypothesis is not None
                     else None
                 ),
+                threads=[
+                    thread.model_copy(deep=True) for thread in deliberation.threads
+                ],
                 selected_question_ids=list(deliberation.selected_question_ids),
+                document=(
+                    deliberation.document.model_copy(deep=True)
+                    if deliberation.document is not None
+                    else None
+                ),
                 rating=(
                     deliberation.rating.model_copy(deep=True)
                     if deliberation.rating is not None
@@ -2345,6 +2390,8 @@ class FocusedPanelService:
         deliberation.lead_perspective_id = None
         deliberation.baseline_hypothesis = None
         deliberation.selected_question_ids = []
+        deliberation.document = None
+        deliberation.threads = []
         deliberation.agent_iids = [
             self._new_panel_agent(session, perspectives[perspective_id]).iid
             for perspective_id in roster
@@ -2613,11 +2660,7 @@ class FocusedPanelService:
             text = value.strip()
             return "" if text == "Not established yet." else text
 
-        parts = ("problem", "previous_work", "reasoning", "hypothesis")
-        return all(
-            normalized(getattr(proposed, part)) == normalized(getattr(current, part))
-            for part in parts
-        )
+        return normalized(proposed.hypothesis) == normalized(current.hypothesis)
 
     @staticmethod
     def _require_open_deliberation(deliberation: DeliberationState) -> None:
@@ -2667,14 +2710,16 @@ class FocusedPanelService:
                 and deliberation.baseline_hypothesis is None
             )
             if not legacy_rounds:
-                raise SessionError("The lead cannot change after round 1.")
-            agent_by_iid = {agent.iid: agent for agent in state.agents}
-            roster = [
-                agent_by_iid[iid].perspective_id
-                for iid in deliberation.agent_iids
-                if iid in agent_by_iid
-            ]
-            deliberation = self._restart_deliberation(session, roster)
+                if deliberation.lead_perspective_id != lead_perspective_id:
+                    raise SessionError("The lead cannot change after round 1.")
+            else:
+                agent_by_iid = {agent.iid: agent for agent in state.agents}
+                roster = [
+                    agent_by_iid[iid].perspective_id
+                    for iid in deliberation.agent_iids
+                    if iid in agent_by_iid
+                ]
+                deliberation = self._restart_deliberation(session, roster)
         lead = next(
             (
                 agent
@@ -2689,20 +2734,59 @@ class FocusedPanelService:
         if (
             deliberation.lead_perspective_id == lead_perspective_id
             and deliberation.baseline_hypothesis is not None
+            and deliberation.threads
         ):
             return state
-        baseline = await agents.develop_hypothesis(
-            self._agent_profile(state, lead),
-            provider=self._provider_for(session),
+        existing_baseline = (
+            deliberation.baseline_hypothesis
+            if deliberation.lead_perspective_id == lead_perspective_id
+            else None
         )
+        baseline = (
+            existing_baseline.model_copy(deep=True)
+            if existing_baseline is not None
+            else await agents.develop_hypothesis(
+                self._agent_profile(state, lead),
+                provider=self._provider_for(session),
+            )
+        )
+        panel_profiles = [
+            self._agent_profile(state, agent)
+            for agent in state.agents
+            if agent.iid in deliberation.agent_iids
+        ]
+        thread_drafts = await agents.suggest_deliberation_threads(
+            panel_profiles,
+            baseline,
+            provider=self._provider_for(session),
+            demo=self._demo(session),
+        )
+        threads = [
+            DeliberationThread(
+                id=f"{deliberation.id}-thread-{index}",
+                title=thread.title,
+                question=thread.question,
+                context=thread.context,
+                facets=thread.facets,
+                related=[link.model_copy(deep=True) for link in thread.related],
+                perspective_names=thread.perspective_names,
+                hypothesis_fragments=self._canonical_hypothesis_fragments(
+                    baseline,
+                    thread.hypothesis_fragments,
+                ),
+            )
+            for index, thread in enumerate(thread_drafts, start=1)
+        ]
         lead.hypothesis = baseline.model_copy(deep=True)
         deliberation.lead_perspective_id = lead_perspective_id
-        deliberation.baseline_hypothesis = baseline.model_copy(deep=True)
-        deliberation.hypothesis = baseline.model_copy(deep=True)
-        deliberation.applied_hypothesis = baseline.model_copy(deep=True)
-        deliberation.hypothesis_confirmed = True
-        deliberation.working_hypothesis_source_kind = None
-        deliberation.working_hypothesis_source_round = None
+        deliberation.threads = threads
+        if existing_baseline is None:
+            deliberation.baseline_hypothesis = baseline.model_copy(deep=True)
+            deliberation.hypothesis = baseline.model_copy(deep=True)
+            deliberation.applied_hypothesis = baseline.model_copy(deep=True)
+            deliberation.hypothesis_confirmed = True
+            deliberation.working_hypothesis_source_kind = None
+            deliberation.working_hypothesis_source_round = None
         return self._save_state(state)
 
     @staticmethod
@@ -2745,6 +2829,23 @@ class FocusedPanelService:
             if paper_id and paper_id in allowed_ids and paper_id not in out:
                 out.append(paper_id)
         return out
+
+    @staticmethod
+    def _canonical_hypothesis_fragments(
+        hypothesis: HypothesisDev | None,
+        fragments: list[str],
+    ) -> list[str]:
+        if hypothesis is None:
+            return []
+        text = hypothesis.hypothesis
+        canonical = list(
+            dict.fromkeys(
+                fragment.strip()
+                for fragment in fragments
+                if fragment.strip() and fragment.strip() in text
+            )
+        )
+        return canonical or [text]
 
     @staticmethod
     def _facet_snapshot(
@@ -2887,28 +2988,21 @@ class FocusedPanelService:
         deliberation_id: str,
         *,
         lead_iid: int,
-        facets: list[Facet],
+        thread_id: str,
         progress_generation: int | None = None,
     ) -> SessionState:
-        """Run one user-directed round over exactly one hypothesis facet."""
+        """Run one directed discussion within a panel-identified Thread."""
         session = self._require(session_id)
         state = session.state
         if progress_generation is None:
             self.start_search_progress(state.id)
         elif self._search_progress_generation.get(state.id) != progress_generation:
-            raise SessionError("Round progress generation is stale.", status=409)
+            raise SessionError("Thread progress generation is stale.", status=409)
         self._search_progress_active_generation[state.id] = (
             self._search_progress_generation[state.id]
         )
         deliberation = self._deliberation(state, deliberation_id)
         self._require_open_deliberation(deliberation)
-        selected = list(dict.fromkeys(facets))
-        if len(selected) != 1 or len(facets) != 1:
-            raise SessionError("Select exactly one area for this round.")
-        if any(facet not in FACETS for facet in selected):
-            raise SessionError(
-                "Choose from Scope, Explanation, Approach, and Significance."
-            )
         if len(deliberation.agent_iids) < 2:
             raise SessionError("Wire in at least two agents first.")
         if lead_iid not in deliberation.agent_iids:
@@ -2920,14 +3014,34 @@ class FocusedPanelService:
             raise SessionError("Choose a lead and generate its baseline first.")
         configured_lead = self._deliberation_lead(state, deliberation)
         if configured_lead is None or configured_lead.iid != lead_iid:
-            raise SessionError("Use the configured lead for every round.")
+            raise SessionError("Use the configured lead for every Thread.")
+        thread = next(
+            (
+                candidate
+                for candidate in deliberation.threads
+                if candidate.id == thread_id
+            ),
+            None,
+        )
+        if thread is None:
+            raise SessionError("Choose a Thread identified by this panel.")
+        selected = list(thread.facets)
         if (
             deliberation.hypothesis is not None
             and not deliberation.hypothesis_confirmed
         ):
             raise SessionError(
                 "Apply or edit the pending shared-ground update before "
-                "starting another round."
+                "starting another Thread."
+            )
+        if (
+            deliberation.rounds
+            and deliberation.rounds[-1].completed
+            and deliberation.rounds[-1].resolution_decision is None
+        ):
+            raise SessionError(
+                "Review the completed Thread's resolution before "
+                "starting another Thread."
             )
 
         if deliberation.rounds and not deliberation.rounds[-1].completed:
@@ -2939,6 +3053,7 @@ class FocusedPanelService:
             lead_iid=lead_iid,
             participant_iids=participant_iids,
             facets=selected,
+            thread_id=thread.id,
         )
         round_state.hypothesis_before = (
             deliberation.applied_hypothesis.model_copy(deep=True)
@@ -3000,19 +3115,41 @@ class FocusedPanelService:
                 turn=turn,
             )
 
-        facet = selected[0]
-        final_verdict: FacetVerdict | None = None
+        primary_facet = selected[0] if selected else None
+        final_verdict: ThreadVerdict | None = None
         for exchange_n in range(1, MAX_DELIBERATION_EXCHANGES + 1):
             prior_turns = [
-                f"{turn.agent_label or 'Panel'}: {turn.text}"
+                f"[T{turn.id}] {turn.agent_label or 'Panel'} "
+                f"({turn.relation or turn.kind.value}): {turn.text}"
                 for turn in round_state.turns
-                if turn.facet == facet
             ]
             previous_check = (
                 round_state.moderator_checks[-1]
                 if round_state.moderator_checks
                 else None
             )
+            reply_target_id = next(
+                (
+                    turn.id
+                    for assent in (previous_check.assents if previous_check else [])
+                    if assent.decision != "accept"
+                    for turn in reversed(round_state.turns)
+                    if turn.exchange_n == exchange_n - 1
+                    and turn.agent_iid == assent.agent_iid
+                    and turn.relation in {"challenge", "reply"}
+                ),
+                None,
+            )
+            if reply_target_id is None and previous_check is not None:
+                reply_target_id = next(
+                    (
+                        turn.id
+                        for turn in reversed(round_state.turns)
+                        if turn.exchange_n == exchange_n - 1
+                        and turn.agent_iid != lead_iid
+                    ),
+                    None,
+                )
             moderator_feedback = (
                 (
                     f"Proposed shared ground: "
@@ -3023,23 +3160,35 @@ class FocusedPanelService:
                     )
                 )
                 if previous_check is not None
-                else None
+                else (
+                    f"Thread: {thread.title}\n"
+                    f"Question: {thread.question}\n"
+                    f"Context: {thread.context}"
+                )
             )
             statement = await agents.open_statement(
                 lead_profile,
-                facet,
+                thread,
                 provider=self._provider_for(session),
                 round_turns=prior_turns,
                 moderator_feedback=moderator_feedback,
+                current_hypothesis=round_state.hypothesis_before,
             )
             lead_turn = Turn(
                 id=session.next_turn_id(),
                 agent_iid=lead_iid,
                 agent_label=lead_agent.label,
                 role="lead",
-                kind=TurnKind.open,
-                facet=facet,
+                kind=TurnKind.reply if exchange_n > 1 else TurnKind.open,
+                facet=primary_facet,
                 text=statement.text,
+                reply_to_turn_id=reply_target_id,
+                relation=statement.relation,
+                assumption=statement.assumption,
+                hypothesis_fragments=self._canonical_hypothesis_fragments(
+                    round_state.hypothesis_before,
+                    statement.hypothesis_fragments,
+                ),
                 citations=self._canonical_citations(
                     state,
                     statement.citations,
@@ -3065,12 +3214,13 @@ class FocusedPanelService:
                                 task_group.create_task(
                                     agents.answer_statement(
                                         profile,
-                                        facet,
+                                        thread,
                                         lead_agent.label,
                                         statement.text,
                                         provider=self._provider_for(session),
                                         round_turns=prior_turns,
                                         moderator_feedback=moderator_feedback,
+                                        current_hypothesis=round_state.hypothesis_before,
                                     )
                                 ),
                             )
@@ -3084,9 +3234,22 @@ class FocusedPanelService:
                     agent_iid=iid,
                     agent_label=agent.label,
                     role="other",
-                    kind=TurnKind.answer,
-                    facet=facet,
+                    kind=(
+                        TurnKind.challenge
+                        if response.relation == "challenge"
+                        else TurnKind.reply
+                        if response.relation == "reply"
+                        else TurnKind.answer
+                    ),
+                    facet=primary_facet,
                     text=response.text,
+                    reply_to_turn_id=lead_turn.id,
+                    relation=response.relation,
+                    assumption=response.assumption,
+                    hypothesis_fragments=self._canonical_hypothesis_fragments(
+                        round_state.hypothesis_before,
+                        response.hypothesis_fragments,
+                    ),
                     citations=self._canonical_citations(
                         state,
                         response.citations,
@@ -3118,8 +3281,13 @@ class FocusedPanelService:
                             agent_label=lead_agent.label,
                             role="lead",
                             kind=TurnKind.support,
-                            facet=facet,
+                            facet=primary_facet,
                             text=support.text,
+                            relation="support",
+                            hypothesis_fragments=self._canonical_hypothesis_fragments(
+                                round_state.hypothesis_before,
+                                [],
+                            ),
                             citations=self._canonical_citations(
                                 state,
                                 support.citations,
@@ -3129,26 +3297,29 @@ class FocusedPanelService:
                         )
                     )
 
-            facet_turns = [turn for turn in round_state.turns if turn.facet == facet]
+            thread_turns = list(round_state.turns)
             labeled_turns = [
-                f"{turn.agent_label or 'Panel'}: {turn.text}" for turn in facet_turns
+                f"[T{turn.id}] {turn.agent_label or 'Panel'} "
+                f"({turn.relation or turn.kind.value}): {turn.text}"
+                for turn in thread_turns
             ]
-            verdict = await agents.judge_facet(
+            verdict = await agents.judge_thread(
                 lead_profile,
                 other_profiles,
-                facet,
+                thread,
                 labeled_turns,
                 provider=self._provider_for(session),
                 shared_ground=(
-                    DEMO_SHARED_GROUND[facet]
-                    if state.clustering is not None
+                    "; ".join(DEMO_SHARED_GROUND[facet] for facet in selected)
+                    if selected
+                    and state.clustering is not None
                     and state.clustering.method == "demo_seeds"
                     else None
                 ),
             )
             positions: dict[str, str] = {}
             evidence: dict[str, list[str]] = {}
-            for turn in facet_turns:
+            for turn in thread_turns:
                 if turn.kind != TurnKind.support:
                     positions[turn.agent_label] = turn.text
                 if turn.citations:
@@ -3163,7 +3334,6 @@ class FocusedPanelService:
             known = set(positions)
             verdict = verdict.model_copy(
                 update={
-                    "facet": facet,
                     "supporting": [
                         name for name in verdict.supporting if name in known
                     ],
@@ -3186,26 +3356,38 @@ class FocusedPanelService:
                                 task_group.create_task(
                                     agents.assent_to_shared_ground(
                                         profile,
-                                        facet,
+                                        thread,
                                         verdict.proposed_shared_ground,
                                         labeled_turns,
                                         provider=self._provider_for(session),
                                         demo=self._demo(session),
+                                        exchange_n=exchange_n,
+                                        challenge_turn_id=lead_turn.id,
                                     )
                                 ),
                             )
                         )
             except* Exception as errors:  # noqa: BLE001
                 raise errors.exceptions[0]
-            assents = [
-                SharedGroundAssent(
-                    agent_iid=agent.iid,
-                    agent_label=agent.label,
-                    decision=task.result().decision,
-                    reason=task.result().reason,
+            assents = []
+            valid_turn_ids = {turn.id for turn in thread_turns}
+            for agent, task in assent_tasks:
+                draft = task.result()
+                challenge_turn_id = (
+                    draft.challenge_turn_id
+                    if draft.challenge_turn_id in valid_turn_ids
+                    else None
                 )
-                for agent, task in assent_tasks
-            ]
+                assents.append(
+                    SharedGroundAssent(
+                        agent_iid=agent.iid,
+                        agent_label=agent.label,
+                        decision=draft.decision,
+                        reason=draft.reason,
+                        challenge_turn_id=challenge_turn_id,
+                        challenge=draft.challenge.strip(),
+                    )
+                )
             unanimous = (
                 bool(verdict.proposed_shared_ground.strip())
                 and len(assents) == len(participant_iids)
@@ -3230,7 +3412,7 @@ class FocusedPanelService:
                 kind="round_check",
                 check=check,
             )
-            if unanimous:
+            if unanimous and exchange_n >= MIN_DELIBERATION_EXCHANGES:
                 final_verdict = verdict.model_copy(
                     update={
                         "consensus": verdict.proposed_shared_ground,
@@ -3261,13 +3443,13 @@ class FocusedPanelService:
                         "supporting": [],
                     }
                 )
-        round_state.verdicts = [final_verdict]
+        round_state.verdict = final_verdict
         report(3, "judging", "Moderator finalized the agreement check.")
 
-        report(4, "summary", "Moderator is synthesizing the round.")
-        resolution = await agents.summarize_round(
-            selected,
-            round_state.verdicts,
+        report(4, "summary", "Moderator is synthesizing the Thread.")
+        resolution = await agents.summarize_thread(
+            thread,
+            final_verdict,
             [
                 f"{turn.agent_label or 'Panel'}: {turn.text}"
                 for turn in round_state.turns
@@ -3292,32 +3474,53 @@ class FocusedPanelService:
                 ]
         round_state.resolution = resolution
 
-        report(5, "lead_revision", "Updating the lead Perspective.")
+        report(5, "lead_revision", "Updating the affected Perspectives.")
         consensus_resolution = RoundResolution(
             summary=resolution.summary,
             consensus_points=[
                 point.model_copy(deep=True) for point in resolution.consensus_points
             ],
         )
-        reflection, updated = await agents.reflect_on_round(
+        reflection_tasks = []
+        ordered_iids = [
             lead_iid,
-            lead_profile,
-            selected,
-            consensus_resolution,
-            provider=self._provider_for(session),
-        )
-        lead_agent.facets = updated
-        if reflection.decision == "revised":
-            lead_agent.facet_version += 1
-        round_state.reflections.append(reflection)
+            *(iid for iid in participant_iids if iid != lead_iid),
+        ]
+        try:
+            async with asyncio.TaskGroup() as task_group:
+                for iid in ordered_iids:
+                    agent, profile = self._agent_view(state, iid)
+                    reflection_tasks.append(
+                        (
+                            agent,
+                            task_group.create_task(
+                                agents.reflect_on_round(
+                                    iid,
+                                    profile,
+                                    selected,
+                                    consensus_resolution,
+                                    provider=self._provider_for(session),
+                                    demo=self._demo(session),
+                                )
+                            ),
+                        )
+                    )
+        except* Exception as errors:  # noqa: BLE001
+            raise errors.exceptions[0]
+        for agent, task in reflection_tasks:
+            reflection, updated = task.result()
+            agent.facets = updated
+            if reflection.decision == "revised":
+                agent.facet_version += 1
+            round_state.reflections.append(reflection)
 
         after = self._facet_snapshot(state, participant_iids)
         _, revised = self._agent_view(state, lead_iid)
         revised = revised.model_copy(
             deep=True,
             update={
-                "id": f"{revised.id}-round-{round_state.n}",
-                "name": f"{revised.name} · round {round_state.n}",
+                "id": f"{revised.id}-thread-{round_state.n}",
+                "name": f"{revised.name} · Thread {round_state.n}",
                 "evolved": True,
                 "origin": deliberation.id,
             },
@@ -3362,21 +3565,15 @@ class FocusedPanelService:
         if hypothesis_task is not None:
             deliberation.no_agreement = False
             proposed_hypothesis = hypothesis_task.result()
-            if deliberation.applied_hypothesis is not None:
-                proposed_hypothesis = proposed_hypothesis.model_copy(
-                    update={
-                        part: getattr(deliberation.applied_hypothesis, part)
-                        for part in (
-                            "problem",
-                            "previous_work",
-                            "reasoning",
-                            "hypothesis",
-                        )
-                        if not getattr(proposed_hypothesis, part).strip()
-                        or getattr(proposed_hypothesis, part).strip()
-                        == "Not established yet."
-                    }
-                )
+            if not proposed_hypothesis.hypothesis.strip():
+                if deliberation.applied_hypothesis is not None:
+                    proposed_hypothesis = deliberation.applied_hypothesis.model_copy(
+                        deep=True
+                    )
+                else:
+                    proposed_hypothesis = HypothesisDev(
+                        hypothesis="Not established yet."
+                    )
             round_state.hypothesis_proposal = proposed_hypothesis.model_copy(deep=True)
             if deliberation.applied_hypothesis is not None and self._same_hypothesis(
                 proposed_hypothesis,
@@ -3431,10 +3628,83 @@ class FocusedPanelService:
                 )
             )
         deliberation.recommended_questions.extend(new_questions)
+        # Kat's F→J→D loop: a Resolution's open questions re-enter the
+        # deliberation as suggested Threads the researcher may start next.
+        existing_thread_questions = {
+            " ".join(thread.question.casefold().split())
+            for thread in deliberation.threads
+        }
+        panel_names = [
+            self._agent_view(state, iid)[0].label for iid in participant_iids
+        ]
+        for question in new_questions[:MAX_SUGGESTED_THREADS_PER_ROUND]:
+            identity = " ".join(question.question.casefold().split())
+            if identity in existing_thread_questions:
+                continue
+            if len(deliberation.threads) >= MAX_DELIBERATION_THREADS:
+                break
+            existing_thread_questions.add(identity)
+            deliberation.threads.append(
+                DeliberationThread(
+                    id=f"{deliberation.id}-thread-{len(deliberation.threads) + 1}",
+                    title=_question_thread_title(question.question),
+                    question=question.question,
+                    context=question.rationale[:2000],
+                    facets=list(dict.fromkeys(question.facets))[:4],
+                    related=[],
+                    perspective_names=panel_names,
+                    hypothesis_fragments=[],
+                    source_round=round_state.n,
+                )
+            )
         deliberation.questions_generated = True
         round_state.completed = True
-        report(7, "saving", "Saving the completed round.")
+        report(7, "saving", "Saving the completed Thread.")
 
+        return self._save_state(state)
+
+    @_serialized_session_mutation
+    async def decide_thread_resolution(
+        self,
+        session_id: str,
+        deliberation_id: str,
+        round_n: int,
+        *,
+        decision: Literal["accept", "edit", "keep_open"],
+        summary: str | None = None,
+        note: str = "",
+    ) -> SessionState:
+        """Researcher review of a completed Thread's Resolution.
+
+        Accept closes the Thread as synthesized, edit closes it with the
+        researcher's own synthesis, and keep-open leaves the Thread available
+        for another discussion.
+        """
+        session = self._require(session_id)
+        state = session.state
+        deliberation = self._deliberation(state, deliberation_id)
+        self._require_open_deliberation(deliberation)
+        round_state = next(
+            (item for item in deliberation.rounds if item.n == round_n),
+            None,
+        )
+        if round_state is None or not round_state.completed:
+            raise SessionError("Review a completed Thread.", status=404)
+        if round_state.resolution is None:
+            raise SessionError("This Thread has no resolution to review.")
+        if round_state.resolution_decision in {"accepted", "edited"}:
+            raise SessionError("This Thread's resolution is already closed.")
+        if decision == "edit":
+            edited = (summary or "").strip()
+            if not edited:
+                raise SessionError("An edited resolution needs its summary.")
+            round_state.resolution.summary = edited[:2000]
+            round_state.resolution_decision = "edited"
+        elif decision == "accept":
+            round_state.resolution_decision = "accepted"
+        else:
+            round_state.resolution_decision = "kept_open"
+        round_state.resolution_note = note.strip()[:2000]
         return self._save_state(state)
 
     @_serialized_session_mutation
@@ -3452,6 +3722,11 @@ class FocusedPanelService:
         if not deliberation.rounds or not deliberation.rounds[-1].completed:
             raise SessionError(
                 "Complete a focused round before ending the deliberation."
+            )
+        if deliberation.rounds[-1].resolution_decision is None:
+            raise SessionError(
+                "Review the completed Thread's resolution before "
+                "ending the deliberation."
             )
         selected = (
             deliberation.selected_question_ids
@@ -3491,6 +3766,27 @@ class FocusedPanelService:
             raise SessionError(
                 "Save the current hypothesis before ending the deliberation."
             )
+        open_questions = [
+            question.question
+            for question in deliberation.recommended_questions
+            if question.status == "open"
+        ]
+        unsettled_threads = [
+            thread.question
+            for thread in deliberation.threads
+            if not any(
+                round_state.thread_id == thread.id
+                and round_state.resolution_decision in {"accepted", "edited"}
+                for round_state in deliberation.rounds
+            )
+        ]
+        deliberation.document = await agents.synthesize_document(
+            state.problem,
+            deliberation.threads,
+            deliberation.rounds,
+            list(dict.fromkeys([*open_questions, *unsettled_threads])),
+            provider=self._provider_for(session),
+        )
         deliberation.completed_at = utcnow()
         deliberation.final_hypothesis_version_id = state.applied_hypothesis_version_id
         return self._save_state(state)
@@ -3520,7 +3816,6 @@ class FocusedPanelService:
         deliberation_id: str,
         hypothesis: HypothesisDev,
         mode: HypothesisConfirmationMode = "apply_pending",
-        selected_parts: list[HypothesisPart] | None = None,
     ) -> SessionState:
         session = self._require(session_id)
         deliberation = self._deliberation(session.state, deliberation_id)
@@ -3551,28 +3846,10 @@ class FocusedPanelService:
             raise SessionError(
                 "This round did not establish enough common ground for a hypothesis."
             )
-        candidate = hypothesis
-        if selected_parts is not None:
-            if deliberation.applied_hypothesis is None:
-                raise SessionError("There is no applied hypothesis to retain.")
-            selected = list(dict.fromkeys(selected_parts))
-            candidate = deliberation.applied_hypothesis.model_copy(
-                update={part: getattr(hypothesis, part) for part in selected}
-            )
-        parts = (
-            candidate.problem.strip(),
-            candidate.previous_work.strip(),
-            candidate.reasoning.strip(),
-            candidate.hypothesis.strip(),
-        )
-        if any(not part for part in parts):
-            raise SessionError("Complete all four parts of the hypothesis.")
-        applied = HypothesisDev(
-            problem=parts[0],
-            previous_work=parts[1],
-            reasoning=parts[2],
-            hypothesis=parts[3],
-        )
+        text = hypothesis.hypothesis.strip()
+        if not text:
+            raise SessionError("Complete the hypothesis.")
+        applied = HypothesisDev(hypothesis=text)
         if mode == "apply_pending":
             if deliberation.hypothesis_confirmed:
                 if applied == deliberation.applied_hypothesis:
@@ -3669,6 +3946,199 @@ class FocusedPanelService:
             workspace.promoted_hypothesis_version_id = version.id
         return self._save_state(session.state)
 
+    # ------------------------------------------------------------------
+    # Thread-centered dialogue (canonical deliberation engine)
+    # ------------------------------------------------------------------
+
+    def _dialogue_engine(self, session: _Session):
+        from agora.focused import dialogue as dialogue_module
+
+        if self._demo(session):
+            return dialogue_module.DemoDialogueEngine()
+        from agora.config.settings import load_settings
+
+        models = load_settings().models
+        return dialogue_module.LiveDialogueEngine(
+            panel=models.panel,
+            deliberation=models.deliberation,
+        )
+
+    def _dialogue_reporter(self, session_id: str):
+        service = self
+
+        class _Reporter:
+            def stage(self, stage: str, message: str) -> None:
+                service._publish_search_progress(
+                    session_id, "round_stage", message, stage=stage
+                )
+
+            def turn(self, author: str, text: str) -> None:
+                service._publish_search_progress(
+                    session_id, "round_turn", text, author=author
+                )
+
+        return _Reporter()
+
+    def _begin_dialogue_progress(
+        self, session_id: str, progress_generation: int | None
+    ) -> None:
+        if progress_generation is None:
+            self.start_search_progress(session_id)
+        elif self._search_progress_generation.get(session_id) != (
+            progress_generation
+        ):
+            raise SessionError("Dialogue progress generation is stale.", status=409)
+        self._search_progress_active_generation[session_id] = (
+            self._search_progress_generation[session_id]
+        )
+
+    @_serialized_session_mutation
+    async def start_dialogue(
+        self,
+        session_id: str,
+        *,
+        progress_generation: int | None = None,
+    ) -> SessionState:
+        """Run the opening phase: proposals, peer review, refinement."""
+        from agora.focused import dialogue as dialogue_module
+
+        session = self._require(session_id)
+        state = session.state
+        self._begin_dialogue_progress(session_id, progress_generation)
+        if state.dialogue is not None and state.dialogue.stage != "opening":
+            raise SessionError("The deliberation has already started.")
+        try:
+            await dialogue_module.start_dialogue(
+                state,
+                engine=self._dialogue_engine(session),
+                reporter=self._dialogue_reporter(session_id),
+            )
+        except dialogue_module.DialogueError as error:
+            raise SessionError(str(error)) from error
+        return self._save_state(state)
+
+    @_serialized_session_mutation
+    async def select_dialogue_directions(
+        self,
+        session_id: str,
+        *,
+        proposal_ids: list[str],
+        progress_generation: int | None = None,
+    ) -> SessionState:
+        """Create the Working Document from the selected refinements."""
+        from agora.focused import dialogue as dialogue_module
+
+        session = self._require(session_id)
+        state = session.state
+        self._begin_dialogue_progress(session_id, progress_generation)
+        try:
+            await dialogue_module.select_directions(
+                state,
+                engine=self._dialogue_engine(session),
+                reporter=self._dialogue_reporter(session_id),
+                proposal_ids=proposal_ids,
+            )
+        except dialogue_module.DialogueError as error:
+            raise SessionError(str(error)) from error
+        return self._save_state(state)
+
+    @_serialized_session_mutation
+    async def open_dialogue_thread(
+        self,
+        session_id: str,
+        *,
+        thread_id: str,
+        progress_generation: int | None = None,
+    ) -> SessionState:
+        """Open a suggested Thread and run its discussion cascade."""
+        from agora.focused import dialogue as dialogue_module
+
+        session = self._require(session_id)
+        state = session.state
+        self._begin_dialogue_progress(session_id, progress_generation)
+        try:
+            await dialogue_module.open_dialogue_thread(
+                state,
+                engine=self._dialogue_engine(session),
+                reporter=self._dialogue_reporter(session_id),
+                thread_id=thread_id,
+            )
+        except dialogue_module.DialogueError as error:
+            raise SessionError(str(error)) from error
+        return self._save_state(state)
+
+    @_serialized_session_mutation
+    async def message_dialogue_thread(
+        self,
+        session_id: str,
+        *,
+        thread_id: str,
+        message: str,
+        reply_to: str | None = None,
+        progress_generation: int | None = None,
+    ) -> SessionState:
+        """Record a researcher challenge and run the reply cascade."""
+        from agora.focused import dialogue as dialogue_module
+
+        session = self._require(session_id)
+        state = session.state
+        self._begin_dialogue_progress(session_id, progress_generation)
+        try:
+            await dialogue_module.message_thread(
+                state,
+                engine=self._dialogue_engine(session),
+                reporter=self._dialogue_reporter(session_id),
+                thread_id=thread_id,
+                message=message,
+                reply_to=reply_to,
+            )
+        except dialogue_module.DialogueError as error:
+            raise SessionError(str(error)) from error
+        return self._save_state(state)
+
+    @_serialized_session_mutation
+    async def decide_dialogue_thread(
+        self,
+        session_id: str,
+        *,
+        resolution_id: str,
+        action: str,
+        consensus: str | None = None,
+        disagreement: str | None = None,
+        open_question: str | None = None,
+        progress_generation: int | None = None,
+    ) -> SessionState:
+        """Apply the researcher's decision on a pending Resolution."""
+        from agora.focused import dialogue as dialogue_module
+
+        session = self._require(session_id)
+        state = session.state
+        self._begin_dialogue_progress(session_id, progress_generation)
+        try:
+            await dialogue_module.decide_dialogue_thread(
+                state,
+                engine=self._dialogue_engine(session),
+                reporter=self._dialogue_reporter(session_id),
+                resolution_id=resolution_id,
+                action=action,
+                consensus=consensus,
+                disagreement=disagreement,
+                open_question=open_question,
+            )
+        except (dialogue_module.DialogueError, ValueError) as error:
+            raise SessionError(str(error)) from error
+        return self._save_state(state)
+
+    def dialogue_report(self, session_id: str) -> str:
+        """Synthesize the final Document from resolved Threads."""
+        from agora.focused import dialogue as dialogue_module
+
+        session = self._require(session_id)
+        try:
+            return dialogue_module.synthesize_report(session.state)
+        except dialogue_module.DialogueError as error:
+            raise SessionError(str(error)) from error
+
     @_serialized_session_mutation
     async def chat(
         self,
@@ -3724,13 +4194,22 @@ class FocusedPanelService:
                 )
                 + "\n\nFinal moderator check:\n"
                 + (
-                    final_check.model_dump_json(indent=2)
+                    (
+                        f"{'Unanimous' if final_check.unanimous else 'Not unanimous'}. "
+                        f"Proposed shared ground: "
+                        f"{final_check.proposed_shared_ground or 'none'}.\n"
+                        + "\n".join(
+                            f"- {assent.agent_label}: {assent.decision} — "
+                            f"{assent.reason}"
+                            for assent in final_check.assents
+                        )
+                    )
                     if final_check is not None
                     else "No moderator check recorded."
                 )
                 + "\n\nModerator resolution:\n"
                 + (
-                    latest_round.resolution.model_dump_json(indent=2)
+                    _resolution_context(latest_round.resolution)
                     if latest_round.resolution is not None
                     else "No resolution recorded."
                 )
@@ -3801,7 +4280,7 @@ class FocusedPanelService:
         view = self.workspace_view(workspace_id)
         return {
             "schema": "agora-hypothesis-workspace",
-            "schema_version": 5,
+            "schema_version": 6,
             "exported_at": utcnow().isoformat(),
             "workspace": view.workspace.model_dump(mode="json"),
             "investigations": [

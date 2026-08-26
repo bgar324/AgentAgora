@@ -143,9 +143,7 @@ def density_partition(
     assigned_labels = [
         int(label) for label in np.unique(labels) if label != NOISE_LABEL
     ]
-    assigned_labels.sort(
-        key=lambda label: (-int(np.sum(labels == label)), label)
-    )
+    assigned_labels.sort(key=lambda label: (-int(np.sum(labels == label)), label))
     if len(assigned_labels) < minimum_clusters:
         return None
 
@@ -160,8 +158,7 @@ def density_partition(
             noise_label=NOISE_LABEL,
         )
         representative_indices = {
-            label: [item.index for item in selected[label]]
-            for label in assigned_labels
+            label: [item.index for item in selected[label]] for label in assigned_labels
         }
     except (ImportError, ValueError):
         representative_indices = {
@@ -180,9 +177,6 @@ def density_partition(
         ],
         unassigned=[
             *missing_embeddings,
-            *[
-                clusterable[index]
-                for index in np.flatnonzero(labels == NOISE_LABEL)
-            ],
+            *[clusterable[index] for index in np.flatnonzero(labels == NOISE_LABEL)],
         ],
     )

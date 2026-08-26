@@ -10,21 +10,34 @@ startup configuration, and Vercel, Railway, and Supabase deployment support.
 Each workspace begins with one research problem and one root Investigation.
 The exact queries submitted for retrieval remain visible beside the resulting
 literature clusters and are included in workspace exports.
-Perspectives contain four abstract-grounded areas: Scope, Explanation,
-Approach, and Significance. Before round 1, the researcher chooses one lead
-Perspective and generates its baseline hypothesis. The same lead opens every
-round of panel deliberation.
+Perspectives carry four abstract-grounded facets — Scope, Explanation,
+Approach, and Significance — the representation and traceability layer of the
+panel: they surface where Perspectives differ and record what changed after
+each discussion, without setting the agenda.
 
-The drawer reports round progress and shows agent turns as they arrive. The
-moderator summary follows the conversation. Each proposal shows Before and
-Proposed values for the changed hypothesis. The researcher can accept, edit,
-or reject the proposal. Questions can be submitted before or between rounds. A
-question submitted during a round waits until the round finishes.
+The researcher chooses one lead Perspective, which drafts the baseline
+hypothesis (one scalar "possible solution"). The panel then identifies
+Threads: the scientific issues, disagreements, and open questions worth
+deliberating. Each discussion centers one Thread. The lead answers the
+Thread's question; the other Perspectives challenge, reply, and cite
+evidence; exchanges continue automatically until every Perspective accepts
+the moderator's proposed shared ground, with a moderator check after each
+exchange.
+
+A completed Thread records its finding, the moderator's resolution, a
+Perspective delta for every panelist, and the working-hypothesis delta. The
+researcher reviews each resolution — accept it, edit it in their own words,
+or keep the Thread open for another discussion — and separately accepts,
+edits, or rejects the hypothesis proposal. A resolution's open questions
+re-enter the picker as suggested Threads. Questions to the panel can be
+submitted at any point; one sent during a Thread waits until it finishes.
 
 Saving creates an immutable checkpoint. Review and end shows the final
-hypothesis and lets the researcher select open questions. Confirm and end closes
-the deliberation and opens one dialog for separate 1–7 divergent-thinking and
-convergent-thinking scores.
+hypothesis and lets the researcher select open questions. Confirm and end
+synthesizes the final Document — each resolved Thread becomes a research
+section stating the hypothesis it supports and why, with unresolved issues
+kept as numbered open questions — then closes the deliberation and opens one
+dialog for separate 1–7 divergent-thinking and convergent-thinking scores.
 
 An open question starts a research branch with fresh literature and Perspectives
 while inheriting the parent's last applied hypothesis checkpoint. Continue
@@ -41,8 +54,8 @@ a branch, preserve alternatives, merge checkpoints with provenance, archive a
 superseded checkpoint, and restore it later. A panel requires at least two
 Perspectives but has no product-level maximum. Every matrix Perspective
 automatically becomes an agent on the canvas. The Canvas Add Perspective action
-appends another literature-grounded agent to the same open deliberation; prior
-rounds, questions, and hypothesis checkpoints remain unchanged. Open questions
+archives the current cycle into Panel history and starts a new deliberation
+with the enlarged panel; hypothesis checkpoints remain. Open questions
 move through Open, Investigating, Addressed, and Archived states.
 
 Focused workspaces use revision-checked aggregate snapshots in local SQLite or
@@ -121,9 +134,10 @@ The browser never receives the Supabase secret or the API proxy token.
 
 ### 1. Create the Supabase tables
 
-Create a Supabase project, then run
-`supabase/migrations/20260822180000_focused_workspace_snapshots.sql` in its SQL
-editor. Copy the project URL and secret key after the migration succeeds.
+Create a Supabase project, then run every file in `supabase/migrations/` in
+its SQL editor, in filename order (workspace snapshots, then pre-migration
+workspace archives). Copy the project URL and secret key after the migrations
+succeed.
 
 To import existing local workspaces, run:
 
@@ -194,9 +208,10 @@ should reach FastAPI and return `404` for the example ID.
 
 In the browser, create an Investigation and run a demo search. Confirm that the
 submitted queries remain visible after the clusters load. Add two Perspectives,
-continue directly to the canvas, complete a round, save the hypothesis, and end
-the deliberation. Submit the final scores, refresh the page, and confirm that
-Supabase restores the workspace and final canvas nodes.
+continue directly to the canvas, complete a Thread, accept its resolution,
+save the hypothesis, and end the deliberation. Submit the final scores,
+refresh the page, and confirm that Supabase restores the workspace and final
+canvas nodes.
 
 ## Verification
 
@@ -210,20 +225,23 @@ pnpm exec playwright install chromium  # first run only
 pnpm test:e2e
 ```
 
-The Playwright suite starts an isolated API and frontend. It covers persistent
-search-query history, automatic agent placement, later-Perspective state
-preservation, terminal deliberation completion and scoring, final artifact
-reveal, open-question branching and status transitions, fresh child state,
-Investigation-map navigation, UI hypothesis application, promotion,
-provenance-preserving merge, archive confirmation and restore, URL restoration,
-transient restore failure, export failure and retry, abstract loading failure
-and retry, destructive reset, keyboard dialog behavior, and mobile overflow.
+The Playwright suite starts an isolated API and frontend. It covers wrapped
+research-question parsing, the search-to-clustering timeline, sibling searches
+surviving a stopped query, unassigned-paper inspection, concurrent matrix
+additions, Thread selection and the auto-continuing exchange loop, resolution
+review, suggested Threads from open questions, the final Document, hypothesis
+application and editing, promotion and provenance-preserving merge, archive
+and restore, open-question branching and continuation, panel restart on Add
+Perspective, URL restoration, transient restore failure, API restart recovery,
+revision-conflict reload, repeated-question dedup, panels beyond three
+Perspectives, destructive reset, and mobile overflow.
 
 Workspace exports include every Investigation, submitted search queries,
-abstract provenance, selected areas, each round’s participant roster, turns,
-moderator evidence references, participant reflections, hidden semantic-distance
-metrics, deliberation completion and final scores, open-question status, and
-hypothesis lineage.
+abstract provenance, identified Threads, each Thread's participant roster,
+turns, moderator checks and evidence references, participant reflections for
+every panelist, resolution decisions, the final Document, hidden
+semantic-distance metrics, deliberation completion and final scores,
+open-question status, and hypothesis lineage.
 
 ## Credits
 

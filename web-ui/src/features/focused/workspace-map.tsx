@@ -17,20 +17,14 @@ import "@xyflow/react/dist/style.css"
 import { useFocusedPanel } from "@/hooks/use-focused"
 import { useFocusedStore } from "@/store/focused"
 import type {
-  HypothesisPart,
+  HypothesisDev,
   HypothesisVersion,
   InvestigationSummary,
 } from "@/types/focused"
 
-import { Button, CheckRow, ModalShell, SectionLabel, Spinner } from "./ui"
+import { Button, ModalShell, SectionLabel, Spinner } from "./ui"
 
 const HIDDEN_HANDLE = { opacity: 0, pointerEvents: "none" } as const
-const PARTS: { key: HypothesisPart; label: string }[] = [
-  { key: "problem", label: "Problem" },
-  { key: "previous_work", label: "Previous work" },
-  { key: "reasoning", label: "Reasoning" },
-  { key: "hypothesis", label: "Hypothesis" },
-]
 
 const WORKSPACE_NODE_TYPES = {
   investigation: InvestigationNode,
@@ -178,7 +172,7 @@ export function WorkspaceMap() {
       <section className="relative min-h-[620px] border-b border-[var(--line)] xl:border-b-0 xl:border-r">
         <div className="pointer-events-none absolute left-5 top-5 z-10 max-w-[420px] rounded-xl border border-[var(--line)] bg-[var(--panel)]/95 px-4 py-3 shadow-sm backdrop-blur-sm">
           <SectionLabel>Investigation map</SectionLabel>
-          <h1 className="mt-1 text-[17px] font-semibold tracking-[-0.02em]">
+          <h1 className="mt-1 text-[17px] font-semibold">
             Follow questions without flattening the research
           </h1>
           <p className="mt-1 text-[11.5px] leading-relaxed text-[var(--mute)]">
@@ -211,7 +205,7 @@ export function WorkspaceMap() {
         <div className="flex items-start justify-between gap-3">
           <div>
             <SectionLabel>Hypothesis lineage</SectionLabel>
-            <h2 className="mt-1 text-[15px] font-semibold tracking-[-0.01em]">
+            <h2 className="mt-1 text-[15px] font-semibold">
               {visibleVersions.length
                 ? `${visibleVersions.length} saved checkpoint${visibleVersions.length === 1 ? "" : "s"}`
                 : "No applied checkpoint yet"}
@@ -264,10 +258,8 @@ export function WorkspaceMap() {
                     : " · branch origin"}
                 </p>
                 <p className="mt-1 text-[9px] leading-relaxed text-[var(--mute)]">
-                  {PARTS.map(
-                    (part) =>
-                      `${part.label} ${version.step_sources[part.key] ?? version.id}`,
-                  ).join(" · ")}
+                  Content source{" "}
+                  {version.step_sources.hypothesis ?? version.id}
                 </p>
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   {branchCurrent && !promoted && (
@@ -352,9 +344,9 @@ export function WorkspaceMap() {
           target={currentVersion}
           busy={busy === "Merging hypotheses"}
           onClose={() => setMergeSource(null)}
-          onMerge={async (parts) => {
+          onMerge={async (hypothesis) => {
             const merged = await run(() =>
-              mergeHypotheses(session.id, mergeSource.id, parts),
+              mergeHypotheses(session.id, mergeSource.id, hypothesis),
             )
             if (merged) setMergeSource(null)
           }}
@@ -468,51 +460,39 @@ function MergeModal({
   target: HypothesisVersion
   busy: boolean
   onClose: () => void
-  onMerge: (parts: HypothesisPart[]) => Promise<void>
+  onMerge: (hypothesis: HypothesisDev) => Promise<void>
 }) {
-  const [selected, setSelected] = useState<HypothesisPart[]>([])
+  const [hypothesis, setHypothesis] = useState(target.steps.hypothesis)
   return (
     <ModalShell title={`Compare ${source.id} with ${target.id}`} onClose={onClose}>
       <p className="mb-4 text-[11.5px] leading-relaxed text-[var(--ink-2)]">
-        Select the steps to take from {source.id}. Unselected steps remain from
-        the current {target.id} checkpoint.
+        Review both candidates and write the combined hypothesis to save on the
+        current branch.
       </p>
-      <div className="flex max-h-[56vh] flex-col gap-2 overflow-auto pr-1">
-        {PARTS.map((part) => {
-          const checked = selected.includes(part.key)
-          return (
-            <div key={part.key} className="rounded-lg border border-[var(--line)] p-3">
-              <CheckRow
-                checked={checked}
-                onToggle={() =>
-                  setSelected((current) =>
-                    checked
-                      ? current.filter((item) => item !== part.key)
-                      : [...current, part.key],
-                  )
-                }
-                disabled={busy}
-              >
-                <span className="text-[11px] font-semibold">Use {source.id} {part.label}</span>
-              </CheckRow>
-              <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                <div>
-                  <SectionLabel>{target.id}</SectionLabel>
-                  <p className="mt-1 text-[10.5px] leading-relaxed text-[var(--mute)]">
-                    {target.steps[part.key]}
-                  </p>
-                </div>
-                <div>
-                  <SectionLabel>{source.id}</SectionLabel>
-                  <p className="mt-1 text-[10.5px] leading-relaxed text-[var(--ink-2)]">
-                    {source.steps[part.key]}
-                  </p>
-                </div>
-              </div>
-            </div>
-          )
-        })}
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="rounded-lg border border-[var(--line)] p-3">
+          <SectionLabel>{target.id}</SectionLabel>
+          <p className="mt-1 text-[11px] leading-relaxed text-[var(--mute)]">
+            {target.steps.hypothesis}
+          </p>
+        </div>
+        <div className="rounded-lg border border-[var(--line)] p-3">
+          <SectionLabel>{source.id}</SectionLabel>
+          <p className="mt-1 text-[11px] leading-relaxed text-[var(--ink-2)]">
+            {source.steps.hypothesis}
+          </p>
+        </div>
       </div>
+      <label className="mt-4 block">
+        <SectionLabel>Combined hypothesis</SectionLabel>
+        <textarea
+          rows={5}
+          value={hypothesis}
+          onChange={(event) => setHypothesis(event.target.value)}
+          disabled={busy}
+          className="field mt-1 w-full resize-y px-3 py-2 text-[12px] leading-relaxed"
+        />
+      </label>
       <div className="mt-4 flex justify-end gap-2 border-t border-[var(--line)] pt-3">
         <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>
           Cancel
@@ -520,10 +500,12 @@ function MergeModal({
         <Button
           variant="primary"
           size="sm"
-          disabled={busy || selected.length === 0}
-          onClick={() => void onMerge(selected)}
+          disabled={busy || !hypothesis.trim()}
+          onClick={() =>
+            void onMerge({ hypothesis: hypothesis.trim() })
+          }
         >
-          {busy ? <><Spinner /> Merging…</> : `Merge ${selected.length} step${selected.length === 1 ? "" : "s"}`}
+          {busy ? <><Spinner /> Merging…</> : "Save merged hypothesis"}
         </Button>
       </div>
     </ModalShell>

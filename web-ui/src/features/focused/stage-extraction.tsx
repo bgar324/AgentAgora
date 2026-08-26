@@ -3,10 +3,7 @@
 import { useState } from "react"
 import { Check, ChevronDown, Pencil } from "lucide-react"
 
-import {
-  parseResearchQuestions,
-  useFocusedPanel,
-} from "@/hooks/use-focused"
+import { useFocusedPanel } from "@/hooks/use-focused"
 import { useFocusedStore } from "@/store/focused"
 import { FACETS } from "@/types/focused"
 import type {
@@ -363,7 +360,6 @@ export function StageExtraction() {
   const [error, setError] = useState<string | null>(null)
   const [editingBrief, setEditingBrief] = useState(false)
   const [draftProblem, setDraftProblem] = useState("")
-  const [draftQuestions, setDraftQuestions] = useState("")
   const [perspectiveToRemove, setPerspectiveToRemove] = useState<{
     id: string
     name: string
@@ -414,20 +410,18 @@ export function StageExtraction() {
 
   const beginBriefEdit = () => {
     setDraftProblem(session.problem)
-    setDraftQuestions(session.research_questions.join("\n"))
     setEditingBrief(true)
   }
 
   const saveBrief = async () => {
     const problem = draftProblem.trim()
-    const questions = parseResearchQuestions(draftQuestions)
     if (problem.length < 3) {
       setError("Problem must be at least three characters.")
       return
     }
     setError(null)
     try {
-      await updateBrief(problem, questions)
+      await updateBrief(problem, session.research_questions)
       setEditingBrief(false)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save the brief")
@@ -500,20 +494,6 @@ export function StageExtraction() {
                     className="field w-full resize-none px-3 py-2 text-[13px] leading-relaxed"
                   />
                 </div>
-                <div>
-                  <SectionLabel htmlFor="brief-questions">
-                    Research questions
-                  </SectionLabel>
-                  <textarea
-                    id="brief-questions"
-                    value={draftQuestions}
-                    rows={5}
-                    disabled={busy === "Saving brief"}
-                    onChange={(event) => setDraftQuestions(event.target.value)}
-                    className="field w-full resize-none px-3 py-2 text-[13px] leading-relaxed"
-                    placeholder="One question per line"
-                  />
-                </div>
                 <p className="text-[11px] leading-relaxed text-[var(--mute)]">
                   {session.parent_investigation_id
                     ? "The research problem is shared by the workspace. Refine this child Investigation’s questions until its first paper search."
@@ -565,24 +545,12 @@ export function StageExtraction() {
                     </Button>
                   )}
                 </div>
-                {session.research_questions.length > 0 && (
-                  <ul className="mt-3 flex flex-col gap-1.5 border-t border-[var(--line)] pt-3">
-                    {session.research_questions.map((question, index) => (
-                      <li
-                        key={index}
-                        className="text-[13px] leading-snug text-[var(--ink-2)]"
-                      >
-                        {question}
-                      </li>
-                    ))}
-                  </ul>
-                )}
                 {!session.searched ? (
                   <>
                     <p className="mt-3 text-[12px] leading-relaxed text-[var(--mute)]">
                       {session.demo
                         ? "Load five search queries for the fixed antibiotic demo."
-                        : "Generate up to five search queries based on your problem and research questions. You can review them before searching."}
+                        : "Generate up to five search queries based on your problem. You can review them before searching."}
                     </p>
                     <Button
                       variant="primary"
@@ -729,7 +697,7 @@ export function StageExtraction() {
 
         {/* the clusters */}
         <div
-          className="flex h-full flex-col gap-3"
+          className="flex h-full flex-col gap-2.5"
           data-testid="cluster-results-surface"
         >
           {!session.searched ? (
@@ -802,7 +770,7 @@ export function StageExtraction() {
         <div className="ep-enter border-t border-[var(--line)] px-4 py-5 lg:px-6">
         <div className="mb-4">
           <div>
-            <h2 className="text-[14px] font-semibold tracking-[-0.01em]">
+            <h2 className="text-[14px] font-semibold">
               Perspective matrix ({session.perspectives.length})
             </h2>
           </div>
@@ -959,7 +927,7 @@ function UnassignedPapers() {
     .filter(Boolean)
 
   return (
-    <div className="ep-card-enter panel mb-2.5 px-4 py-3.5">
+    <div className="ep-card-enter panel px-4 py-3.5">
       <button
         type="button"
         className="flex w-full items-baseline gap-2.5 text-left"
@@ -1067,7 +1035,7 @@ function ClusterRow({ cluster, index }: { cluster: ClusterCard; index: number })
 
   return (
     <div
-      className="ep-card-enter ep-interactive-card panel mb-2.5 px-4 py-3.5"
+      className="ep-card-enter ep-interactive-card panel px-4 py-3.5"
       style={{ animationDelay: `${index * 42}ms` }}
     >
       <div
@@ -1075,7 +1043,7 @@ function ClusterRow({ cluster, index }: { cluster: ClusterCard; index: number })
         onClick={() => openClusterSet(open ? null : cluster.id)}
       >
         <div className="flex items-baseline gap-2.5">
-          <h3 className="text-[13px] font-semibold tracking-[-0.01em]">
+          <h3 className="text-[13px] font-semibold">
             {cluster.name}
           </h3>
           <span className="ml-auto shrink-0 text-[12px] font-medium text-[var(--mute)]">

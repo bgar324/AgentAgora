@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from datetime import UTC, datetime
@@ -10,6 +11,7 @@ from typing import Protocol
 
 from pydantic import ValidationError
 
+from agora.focused.migrations import LEGACY_SCHEMA_VERSION, migrate_v5_payloads
 from agora.focused.models import SessionState, WorkspaceState
 
 logger = logging.getLogger(__name__)
@@ -17,7 +19,6 @@ logger = logging.getLogger(__name__)
 
 class PersistenceConflict(RuntimeError):
     """A stale service instance attempted to overwrite a newer workspace."""
-
 
 
 class WorkspacePersistence(Protocol):
@@ -38,6 +39,7 @@ class WorkspacePersistence(Protocol):
     ) -> None: ...
 
     def delete(self, workspace_id: str, *, expected_revision: int) -> None: ...
+
 
 class FocusedPersistence:
     """Persist focused workspace snapshots with durable revision checks."""
@@ -69,6 +71,14 @@ class FocusedPersistence:
                     reason text not null,
                     quarantined_at text not null,
                     primary key(kind, record_id)
+                );
+                create table if not exists focused_workspace_archives(
+                    workspace_id text not null,
+                    schema_version integer not null,
+                    revision integer not null,
+                    payload text not null,
+                    archived_at text not null,
+                    primary key(workspace_id, schema_version)
                 );
                 """
             )
@@ -178,8 +188,106 @@ class FocusedPersistence:
                 current = next_parent
         return None
 
+    def _migrate_legacy_snapshots(self) -> None:
+        workspace_rows = self._connection.execute(
+            "select workspace_id, revision, payload from focused_workspaces"
+        ).fetchall()
+        investigation_rows = self._connection.execute(
+            "select investigation_id, workspace_id, payload from focused_investigations"
+        ).fetchall()
+        investigations_by_workspace: dict[str, dict[str, dict]] = {}
+        for row in investigation_rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            investigations_by_workspace.setdefault(row["workspace_id"], {})[
+                row["investigation_id"]
+            ] = payload
+
+        migrations: list[tuple] = []
+        for row in workspace_rows:
+            try:
+                raw_workspace = json.loads(row["payload"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            raw_investigations = investigations_by_workspace.get(
+                row["workspace_id"], {}
+            )
+            workspace, investigations, changed = migrate_v5_payloads(
+                raw_workspace,
+                raw_investigations,
+            )
+            if not changed:
+                continue
+            archive = json.dumps(
+                {
+                    "workspace": raw_workspace,
+                    "investigations": list(raw_investigations.values()),
+                },
+                separators=(",", ":"),
+            )
+            migrations.append(
+                (
+                    row["workspace_id"],
+                    row["revision"],
+                    archive,
+                    workspace,
+                    investigations,
+                )
+            )
+
+        if not migrations:
+            return
+        now = datetime.now(UTC).isoformat()
+        self._begin_write()
+        try:
+            for (
+                workspace_id,
+                revision,
+                archive,
+                workspace,
+                investigations,
+            ) in migrations:
+                self._connection.execute(
+                    "insert or ignore into focused_workspace_archives("
+                    "workspace_id,schema_version,revision,payload,archived_at"
+                    ") values(?,?,?,?,?)",
+                    (
+                        workspace_id,
+                        LEGACY_SCHEMA_VERSION,
+                        revision,
+                        archive,
+                        now,
+                    ),
+                )
+                self._connection.execute(
+                    "update focused_workspaces set payload=? "
+                    "where workspace_id=? and revision=?",
+                    (
+                        json.dumps(workspace, separators=(",", ":")),
+                        workspace_id,
+                        revision,
+                    ),
+                )
+                for investigation_id, payload in investigations.items():
+                    self._connection.execute(
+                        "update focused_investigations set payload=? "
+                        "where investigation_id=? and workspace_id=?",
+                        (
+                            json.dumps(payload, separators=(",", ":")),
+                            investigation_id,
+                            workspace_id,
+                        ),
+                    )
+            self._commit()
+        except Exception:
+            self._rollback()
+            raise
+
     def load(self) -> tuple[list[WorkspaceState], list[SessionState]]:
         with self._lock:
+            self._migrate_legacy_snapshots()
             workspace_rows = self._connection.execute(
                 "select workspace_id, revision, payload "
                 "from focused_workspaces order by rowid"

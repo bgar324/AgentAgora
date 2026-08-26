@@ -34,37 +34,6 @@ type SearchProgressResponse = {
   next: number
 }
 
-const WRAPPED_LINE_END =
-  /(?:[,;:]|\b(?:a|an|and|as|between|by|for|from|in|of|on|or|than|that|the|to|which|who|whose|with|without))$/i
-
-export function parseResearchQuestions(value: string): string[] {
-  const questions: string[] = []
-  let pending: string[] = []
-  const flush = () => {
-    const question = pending.join(" ").trim()
-    if (question) questions.push(question)
-    pending = []
-  }
-  for (const rawLine of value.split(/\r?\n/)) {
-    const trimmed = rawLine.trim()
-    const listPrefix = trimmed.match(/^(?:[-*•]|\d+[.)])\s+/)
-    const line = listPrefix ? trimmed.slice(listPrefix[0].length) : trimmed
-    if (!line) {
-      flush()
-      continue
-    }
-    if (pending.length > 0) {
-      const previous = pending[pending.length - 1]
-      const continuesPrevious =
-        WRAPPED_LINE_END.test(previous) || /^[a-z]/.test(line)
-      if (listPrefix || !continuesPrevious) flush()
-    }
-    pending.push(line)
-    if (/[?？][)"'\]]?$/.test(line)) flush()
-  }
-  flush()
-  return questions
-}
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api/focused/${path}`, {
@@ -426,7 +395,7 @@ export function useFocusedPanel() {
 
 
   const runRound = useCallback(
-    async (deliberationId: string, leadIid: number, facets: Facet[]) =>
+    async (deliberationId: string, leadIid: number, threadId: string) =>
       exclusive("Running focused round", async () => {
         const started = await api<{ generation: number }>(
           `sessions/${sessionId}/search-progress`,
@@ -466,7 +435,7 @@ export function useFocusedPanel() {
               method: "POST",
               body: JSON.stringify({
                 lead_iid: leadIid,
-                facets,
+                thread_id: threadId,
                 progress_generation: generation,
               }),
             },
@@ -526,23 +495,41 @@ export function useFocusedPanel() {
     [call, sessionId],
   )
 
+  const decideResolution = useCallback(
+    (
+      deliberationId: string,
+      roundN: number,
+      decision: "accept" | "edit" | "keep_open",
+      summary?: string,
+      note?: string,
+    ) =>
+      call(
+        "Reviewing Thread resolution",
+        `sessions/${sessionId}/deliberations/${deliberationId}/rounds/${roundN}/resolution`,
+        {
+          method: "PUT",
+          body: JSON.stringify({
+            decision,
+            summary: summary ?? null,
+            note: note ?? "",
+          }),
+        },
+      ),
+    [call, sessionId],
+  )
+
   const confirmHypothesis = useCallback(
     (
       deliberationId: string,
       hypothesis: HypothesisDev,
       mode: HypothesisConfirmationMode,
-      selectedParts?: HypothesisPart[],
     ) =>
       call(
         "Applying hypothesis",
         `sessions/${sessionId}/deliberations/${deliberationId}/hypothesis`,
         {
           method: "PUT",
-          body: JSON.stringify({
-            hypothesis,
-            mode,
-            selected_parts: selectedParts,
-          }),
+          body: JSON.stringify({ hypothesis, mode }),
         },
       ),
     [call, sessionId],
@@ -645,7 +632,7 @@ export function useFocusedPanel() {
     async (
       targetInvestigationId: string,
       sourceVersionId: string,
-      partsFromSource: HypothesisPart[],
+      hypothesis: HypothesisDev,
     ) => {
       if (!workspaceId) throw new Error("No active workspace.")
       return viewCall(
@@ -656,7 +643,7 @@ export function useFocusedPanel() {
           body: JSON.stringify({
             target_investigation_id: targetInvestigationId,
             source_version_id: sourceVersionId,
-            parts_from_source: partsFromSource,
+            hypothesis,
           }),
         },
       )
@@ -711,6 +698,128 @@ export function useFocusedPanel() {
     [sessionId],
   )
 
+  const dialogueCommand = useCallback(
+    async (label: string, path: string, body: Record<string, unknown>) =>
+      exclusive(label, async () => {
+        const started = await api<{ generation: number }>(
+          `sessions/${sessionId}/search-progress`,
+          { method: "POST" },
+        )
+        const generation = started.generation
+        searchProgressCleared()
+        let polling = true
+        let cursor = 0
+        const collect = async () => {
+          const progress = await api<SearchProgressResponse>(
+            `sessions/${sessionId}/search-progress?generation=${generation}&after=${cursor}`,
+          )
+          progress.items.forEach(searchProgressAdded)
+          cursor = progress.next
+        }
+        const poll = async () => {
+          while (polling) {
+            try {
+              await collect()
+            } catch {
+              // Progress is advisory; the command request reports failures.
+            }
+            if (polling) {
+              const { promise, resolve } = Promise.withResolvers<void>()
+              window.setTimeout(resolve, 500)
+              await promise
+            }
+          }
+        }
+        const progress = poll()
+        let view: WorkspaceView
+        try {
+          view = await requestView(
+            `sessions/${sessionId}/${path}`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                ...body,
+                progress_generation: generation,
+              }),
+            },
+            () => undefined,
+          )
+        } finally {
+          polling = false
+          await progress
+          try {
+            await collect()
+          } catch {
+            // The final command response remains authoritative.
+          }
+        }
+        workspaceViewSet(view)
+        return view.active
+      }),
+    [
+      exclusive,
+      requestView,
+      searchProgressAdded,
+      searchProgressCleared,
+      sessionId,
+      workspaceViewSet,
+    ],
+  )
+
+  const startDialogue = useCallback(
+    () => dialogueCommand("Starting deliberation", "dialogue/start", {}),
+    [dialogueCommand],
+  )
+
+  const selectDialogueDirections = useCallback(
+    (proposalIds: string[]) =>
+      dialogueCommand("Creating Working Document", "dialogue/selection", {
+        proposal_ids: proposalIds,
+      }),
+    [dialogueCommand],
+  )
+
+  const openDialogueThread = useCallback(
+    (threadId: string) =>
+      dialogueCommand("Discussing Thread", "dialogue/threads/open", {
+        thread_id: threadId,
+      }),
+    [dialogueCommand],
+  )
+
+  const messageDialogueThread = useCallback(
+    (threadId: string, message: string, replyTo?: string) =>
+      dialogueCommand("Sending message", "dialogue/messages", {
+        thread_id: threadId,
+        message,
+        reply_to: replyTo ?? null,
+      }),
+    [dialogueCommand],
+  )
+
+  const decideDialogueThread = useCallback(
+    (
+      resolutionId: string,
+      action: "close" | "edit_close" | "keep_open" | "request_evidence",
+      edits?: {
+        consensus?: string
+        disagreement?: string
+        open_question?: string
+      },
+    ) =>
+      dialogueCommand("Reviewing resolution", "dialogue/decisions", {
+        resolution_id: resolutionId,
+        action,
+        ...edits,
+      }),
+    [dialogueCommand],
+  )
+
+  const fetchDialogueReport = useCallback(
+    () => api<{ report: string }>(`sessions/${sessionId}/dialogue/report`),
+    [sessionId],
+  )
+
   return {
     loadWorkspace,
     deleteWorkspace,
@@ -726,6 +835,7 @@ export function useFocusedPanel() {
     completeDeliberation,
     rateDeliberation,
     confirmHypothesis,
+    decideResolution,
     saveHypothesis,
     createChildInvestigation,
     loadSession,
@@ -738,6 +848,12 @@ export function useFocusedPanel() {
     restoreHypothesis,
     sendChat,
     fetchPaper,
+    startDialogue,
+    selectDialogueDirections,
+    openDialogueThread,
+    messageDialogueThread,
+    decideDialogueThread,
+    fetchDialogueReport,
   }
 }
 

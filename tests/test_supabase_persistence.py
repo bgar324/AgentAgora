@@ -1,18 +1,22 @@
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from postgrest.exceptions import APIError
 
 from agora.config.settings import load_settings
 from agora.core.errors import ConfigurationError
 from agora.focused.importer import import_snapshots
+from agora.focused.models import DeliberationRound, HypothesisDev
 from agora.focused.persistence import FocusedPersistence
 from agora.focused.service import FocusedPanelService, SessionError
 from agora.focused.supabase_persistence import (
+    ARCHIVE_TABLE,
     QUARANTINE_TABLE,
     SNAPSHOT_TABLE,
     SupabaseFocusedPersistence,
@@ -91,6 +95,7 @@ class FakeSupabaseClient:
         self.rows: dict[str, dict[str, dict[str, Any]]] = {
             SNAPSHOT_TABLE: {},
             QUARANTINE_TABLE: {},
+            ARCHIVE_TABLE: {},
         }
 
     def table(self, name: str) -> FakeQuery:
@@ -131,6 +136,146 @@ def test_supabase_snapshot_round_trip_and_revision_conflict() -> None:
         FocusedPanelService(persistence=persistence(client)).workspace_view(
             root.workspace_id
         )
+
+
+def test_supabase_load_archives_and_migrates_v5_hypotheses(
+    legacy_v5_deliberation,
+) -> None:
+    async def go() -> None:
+        client = FakeSupabaseClient()
+        service = FocusedPanelService(persistence=persistence(client))
+        root = service.create_workspace(
+            problem="A legacy workspace",
+            research_questions=[],
+            demo=True,
+        ).active
+        state = await service.create_deliberation(root.id)
+        deliberation = state.deliberations[0]
+        candidate = HypothesisDev(hypothesis="A durable legacy candidate")
+        deliberation.rounds.append(
+            DeliberationRound(
+                n=1,
+                lead_iid=1,
+                facets=["scope"],
+                completed=True,
+            )
+        )
+        deliberation.hypothesis = candidate
+        deliberation.hypothesis_confirmed = False
+        await service.confirm_deliberation_hypothesis(
+            root.id,
+            deliberation.id,
+            candidate,
+        )
+        await service.save_deliberation_hypothesis(root.id, deliberation.id)
+
+        snapshot = client.rows[SNAPSHOT_TABLE][root.workspace_id]
+        legacy_payload = deepcopy(snapshot["payload"])
+        legacy_payload["workspace"]["schema_version"] = 5
+        version = legacy_payload["workspace"]["hypothesis_versions"][0]
+        version["steps"] = {
+            "problem": "legacy problem",
+            "previous_work": "legacy previous work",
+            "reasoning": "legacy reasoning",
+            "hypothesis": candidate.hypothesis,
+        }
+        version["step_sources"] = {
+            "problem": "H1",
+            "previous_work": "H1",
+            "reasoning": "H1",
+            "hypothesis": "H1",
+        }
+        legacy_payload["investigations"][0]["deliberations"] = [
+            legacy_v5_deliberation("persp-legacy")
+        ]
+        snapshot["payload"] = deepcopy(legacy_payload)
+
+        restored = FocusedPanelService(persistence=persistence(client))
+        view = restored.workspace_view(root.workspace_id)
+        assert view.workspace.schema_version == 6
+        assert view.workspace.hypothesis_versions[0].steps == candidate
+        assert view.workspace.hypothesis_versions[0].step_sources == {
+            "hypothesis": "H1"
+        }
+        migrated = view.active.deliberations[0]
+        migrated_round = migrated.rounds[0]
+        assert migrated_round.verdict is not None
+        assert migrated_round.verdict.facets == ["scope", "significance"]
+        assert [turn.kind.value for turn in migrated_round.turns] == [
+            "open",
+            "reply",
+        ]
+        assert migrated_round.turns[1].relation == "reply"
+        assert migrated_round.resolution is not None
+        assert migrated_round.resolution.consensus_points[0].facets == ["scope"]
+        assert migrated.completion_history[0].rounds[0].verdict is not None
+        archived = client.rows[ARCHIVE_TABLE][root.workspace_id]
+        assert archived["schema_version"] == 5
+        assert archived["payload"] == legacy_payload
+
+        FocusedPanelService(persistence=persistence(client))
+        assert len(client.rows[ARCHIVE_TABLE]) == 1
+
+    asyncio.run(go())
+
+
+def test_missing_archive_table_skips_row_without_mutation(
+    legacy_v5_deliberation,
+) -> None:
+    async def go() -> None:
+        client = FakeSupabaseClient()
+        service = FocusedPanelService(persistence=persistence(client))
+        root = service.create_workspace(
+            problem="A legacy workspace",
+            research_questions=[],
+            demo=True,
+        ).active
+        snapshot = client.rows[SNAPSHOT_TABLE][root.workspace_id]
+        legacy_payload = deepcopy(snapshot["payload"])
+        legacy_payload["workspace"]["schema_version"] = 5
+        legacy_payload["investigations"][0]["deliberations"] = [
+            legacy_v5_deliberation("persp-legacy")
+        ]
+        snapshot["payload"] = deepcopy(legacy_payload)
+
+        class MissingArchiveClient:
+            """The archives DDL has not been applied to the project."""
+
+            def table(self, name: str) -> Any:
+                if name == ARCHIVE_TABLE:
+                    raise_query = FakeQuery(client, name)
+                    raise_query.execute = lambda: (_ for _ in ()).throw(
+                        APIError(
+                            {
+                                "code": "PGRST205",
+                                "message": (
+                                    "Could not find the table "
+                                    "'public.focused_workspace_archives'"
+                                ),
+                            }
+                        )
+                    )
+                    return raise_query
+                return client.table(name)
+
+        degraded = SupabaseFocusedPersistence(client=MissingArchiveClient())
+        workspaces, investigations = degraded.load()
+        # The legacy workspace is hidden this boot, never crashed on,
+        # never quarantined, and its stored snapshot is untouched.
+        assert workspaces == []
+        assert investigations == []
+        assert client.rows[QUARANTINE_TABLE] == {}
+        assert client.rows[SNAPSHOT_TABLE][root.workspace_id]["payload"] == (
+            legacy_payload
+        )
+
+        # Once the DDL exists, the same stored row migrates normally.
+        restored = FocusedPanelService(persistence=persistence(client))
+        view = restored.workspace_view(root.workspace_id)
+        assert view.workspace.schema_version == 6
+        assert len(client.rows[ARCHIVE_TABLE]) == 1
+
+    asyncio.run(go())
 
 
 def test_supabase_snapshot_quarantines_malformed_rows() -> None:

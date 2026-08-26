@@ -95,6 +95,15 @@ const tokens = `
 }
 .focused .btn-ghost:hover:not(:disabled) { background: var(--hover); color: var(--ink); }
 .focused .btn-ghost:disabled { color: var(--mute); }
+.focused .btn-danger {
+  border: 1px solid color-mix(in srgb, var(--red) 45%, var(--line-strong));
+  color: var(--red);
+  background: var(--panel);
+}
+.focused .btn-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--red) 8%, var(--panel));
+}
+.focused .btn-danger:disabled { color: var(--mute); border-color: var(--line-strong); }
 .focused .btn-sm { height: 28px; padding: 0 10px; font-size: 12px; }
 .focused .btn-md { height: 32px; padding: 0 12px; font-size: 13px; }
 .focused input,

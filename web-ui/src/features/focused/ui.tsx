@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from "react"
 import { createPortal } from "react-dom"
+import { Crown, User } from "lucide-react"
 
 /** Design-system primitives — the only sanctioned building blocks for
  * Focused Panel surfaces. See ./DESIGN.md. */
@@ -25,7 +26,7 @@ export function Spinner({ className = "" }: { className?: string }) {
 }
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: "primary" | "outline" | "ghost"
+  variant?: "primary" | "outline" | "ghost" | "danger"
   size?: "sm" | "md"
 }
 
@@ -294,7 +295,7 @@ export function ModalShell({
             type="button"
             onClick={onClose}
             aria-label={`Close ${title}`}
-            className="shrink-0 text-[13px] text-[var(--mute)] hover:text-[var(--ink)]"
+            className="flex size-7 shrink-0 items-center justify-center rounded-lg text-[13px] text-[var(--mute)] transition-colors hover:bg-[var(--hover)] hover:text-[var(--ink)]"
           >
             ✕
           </button>
@@ -311,17 +312,20 @@ export function IdentityChip({
   color,
   name,
   selected = false,
+  lead = false,
   onClick,
 }: {
   color: string
   name: string
   selected?: boolean
+  lead?: boolean
   onClick?: () => void
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      title={lead ? "Lead Perspective" : undefined}
       className={`flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[12px] font-medium transition-colors ${
         onClick ? "hover:bg-[var(--hover)]" : "cursor-default"
       }`}
@@ -329,10 +333,23 @@ export function IdentityChip({
         selected ? { background: "var(--node)", color: "#fff" } : { color }
       }
     >
-      <span
-        className="size-1.5 rounded-full"
-        style={{ background: selected ? "#fff" : color }}
-      />
+      {lead ? (
+        <Crown
+          size={12}
+          strokeWidth={2}
+          className="-rotate-12 shrink-0"
+          aria-label="Lead"
+          style={{ color: selected ? "#fff" : color }}
+        />
+      ) : (
+        <User
+          size={12}
+          strokeWidth={2}
+          className="shrink-0"
+          aria-hidden="true"
+          style={{ color: selected ? "#fff" : color }}
+        />
+      )}
       {name}
     </button>
   )
