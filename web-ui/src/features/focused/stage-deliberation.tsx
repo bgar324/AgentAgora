@@ -8,7 +8,6 @@ import {
   useState,
   type CSSProperties,
 } from "react"
-import { Crown } from "lucide-react"
 import Markdown from "react-markdown"
 import {
   Background,
@@ -1015,24 +1014,13 @@ function PanelDrawer({
             {agents.map((agent) => {
               const perspective = perspectiveOf(agent)
               return (
-                <div key={agent.iid} className="flex items-center gap-1">
-                  <IdentityChip
-                    color={perspective?.color ?? "var(--ink-2)"}
-                    name={perspective?.name ?? agent.label}
-                    onClick={() => onOpenAgent(agent)}
-                  />
-                  {agent.iid === openerIid && (
-                    <span className="inline-flex items-center gap-1 rounded-full border border-[color-mix(in_srgb,var(--green)_35%,var(--line))] bg-[color-mix(in_srgb,var(--green)_8%,var(--panel))] px-2 py-0.5 text-[9.5px] font-semibold text-[var(--green)]">
-                      <Crown
-                        size={10}
-                        strokeWidth={2}
-                        className="-rotate-12"
-                        aria-hidden="true"
-                      />
-                      Lead
-                    </span>
-                  )}
-                </div>
+                <IdentityChip
+                  key={agent.iid}
+                  color={perspective?.color ?? "var(--ink-2)"}
+                  name={perspective?.name ?? agent.label}
+                  lead={agent.iid === openerIid}
+                  onClick={() => onOpenAgent(agent)}
+                />
               )
             })}
             {agents.length < 2 && (
@@ -1484,31 +1472,38 @@ function PanelDrawer({
                             </blockquote>
                           ))}
                           <div className="mt-2 flex flex-wrap gap-1">
-                            {thread.related.length > 0
-                              ? thread.related.map((link) => (
-                                  <span
-                                    key={link.perspective_name}
-                                    className="rounded-full border border-[var(--line)] px-1.5 py-0.5 text-[9.5px] font-medium text-[var(--ink-2)]"
-                                  >
-                                    {link.perspective_name}
-                                    {link.facets.length > 0
-                                      ? ` · ${link.facets
-                                          .map(
-                                            (facet) => FACET_META[facet].short,
-                                          )
-                                          .join(", ")}`
-                                      : ""}
-                                  </span>
-                                ))
-                              : thread.facets.map((facet) => (
-                                  <span
-                                    key={facet}
-                                    className="rounded-full border border-[var(--line)] px-1.5 py-0.5 text-[9.5px] font-medium"
-                                    style={{ color: FACET_META[facet].color }}
-                                  >
-                                    {FACET_META[facet].label} perspective
-                                  </span>
-                                ))}
+                            {thread.related.length > 0 &&
+                            new Set(
+                              thread.related.map((link) =>
+                                link.facets.join("|"),
+                              ),
+                            ).size > 1 ? (
+                              thread.related.map((link) => (
+                                <span
+                                  key={link.perspective_name}
+                                  className="rounded-full border border-[var(--line)] px-1.5 py-0.5 text-[9.5px] font-medium text-[var(--ink-2)]"
+                                >
+                                  {link.perspective_name}
+                                  {link.facets.length > 0
+                                    ? ` · ${link.facets
+                                        .map(
+                                          (facet) => FACET_META[facet].label,
+                                        )
+                                        .join(", ")}`
+                                    : ""}
+                                </span>
+                              ))
+                            ) : (
+                              thread.facets.map((facet) => (
+                                <span
+                                  key={facet}
+                                  className="rounded-full border border-[var(--line)] px-1.5 py-0.5 text-[9.5px] font-medium"
+                                  style={{ color: FACET_META[facet].color }}
+                                >
+                                  {FACET_META[facet].label}
+                                </span>
+                              ))
+                            )}
                           </div>
                         </button>
                       )
