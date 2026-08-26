@@ -528,6 +528,14 @@ def _question_core(question: str) -> str:
     return _lower_first(core) if core else "the question"
 
 
+def _sentence(text: str) -> str:
+    body = " ".join((text or "").split())
+    if not body:
+        return ""
+    body = body[0].upper() + body[1:]
+    return body if body.endswith((".", "?", "!")) else f"{body}."
+
+
 class DemoDialogueEngine:
     """Deterministic engine mirroring every LiveDialogueEngine entry point."""
 
@@ -667,8 +675,8 @@ class DemoDialogueEngine:
             Objective(
                 id=f"{dialogue.id}:objective:{index + 1}",
                 text=_clip(
-                    f"Test whether {refinement.profile.focus.lower()} "
-                    "explains the observed trade-off",
+                    "Test whether "
+                    f"{_lower_first(refinement.proposal.claim.text.rstrip('.'))}",
                     28,
                 ),
                 proposal_ids=[refinement.proposal_id],
@@ -845,48 +853,100 @@ class DemoDialogueEngine:
             section_id=section.id,
             section_version=section.version,
             current_text=section.text,
-            proposed_text=(f"{section.text} {resolution.consensus}".strip()),
+            proposed_text=(
+                f"{section.text} The effect holds under the narrower "
+                f"conditions established for {thread.title.lower()}."
+            ).strip(),
             reason="Fold the resolved Thread into the shared section.",
             observation_ids=list(resolution.observation_ids),
         )
 
     async def reflect(self, **kwargs) -> list[Reflection]:
+        from agora.schemas.deliberation import FacetRevision
+
         thread: Thread = kwargs["thread"]
         perspective_ids = kwargs["perspective_ids"]
         perspectives = kwargs["perspectives"]
-        return [
-            Reflection(
-                id=f"{perspective_id}:reflect:{thread.id}",
-                thread_id=thread.id,
-                perspective_id=perspective_id,
-                from_version=perspectives[perspective_id].version,
-                perspective_version=perspectives[perspective_id].version,
-                decision="unchanged",
-                reason=(
-                    "The resolution matches this Perspective's stated "
-                    "boundary; no facet changes."
-                ),
-                open_question=None,
-                facet_revisions=[],
-                profile=perspectives[perspective_id].profile,
+        marker = "narrowed to the conditions"
+        # One participant carries each Thread's narrowing into its own
+        # scope, and each Perspective narrows at most once, so
+        # Perspectives visibly evolve as Threads resolve without the text
+        # growing on every close.
+        revising = next(
+            (
+                perspective_id
+                for perspective_id in perspective_ids
+                if marker
+                not in _facet(perspectives[perspective_id].profile, "scope", "")
+            ),
+            None,
+        )
+        reflections: list[Reflection] = []
+        for perspective_id in perspective_ids:
+            state = perspectives[perspective_id]
+            profile = state.profile
+            if perspective_id != revising:
+                reflections.append(
+                    Reflection(
+                        id=f"{perspective_id}:reflect:{thread.id}",
+                        thread_id=thread.id,
+                        perspective_id=perspective_id,
+                        from_version=state.version,
+                        perspective_version=state.version,
+                        decision="unchanged",
+                        reason=(
+                            f"The resolution matches the {profile.focus} "
+                            "account; no facet changes."
+                        ),
+                        open_question=None,
+                        facet_revisions=[],
+                        profile=profile,
+                    )
+                )
+                continue
+            base = _facet(
+                profile, "scope", "The account holds under stated conditions."
             )
-            for perspective_id in perspective_ids
-        ]
+            narrowed = f"{base.rstrip('.')}, {marker} {thread.title.lower()} settled."
+            revised = profile.model_copy(
+                update={"facets": profile.facets.model_copy(update={"scope": narrowed})}
+            )
+            reflections.append(
+                Reflection(
+                    id=f"{perspective_id}:reflect:{thread.id}",
+                    thread_id=thread.id,
+                    perspective_id=perspective_id,
+                    from_version=state.version,
+                    perspective_version=state.version + 1,
+                    decision="revise",
+                    reason=(
+                        f"The resolution narrows where the {profile.focus} "
+                        "account applies."
+                    ),
+                    open_question=None,
+                    facet_revisions=[FacetRevision(facet="scope", text=narrowed)],
+                    profile=revised,
+                )
+            )
+        return reflections
 
     async def draft(self, **kwargs) -> str:
         thread: Thread = kwargs["thread"]
-        discussion: list[str] = kwargs["discussion"]
         observations: list[Observation] = kwargs["observations"]
-        marker = " [1]" if observations else ""
-        agreement = (
-            " The panel converged on the narrower boundary."
-            if len(discussion) > 2
-            else ""
+        cited = observations[:2]
+        if not cited:
+            # No cited evidence yet: leave the section as it stands rather
+            # than writing prose the record cannot support.
+            return ""
+        # Canonical DraftSection rule: write about the phenomenon; the
+        # discussion never becomes the subject of a sentence.
+        body = " ".join(
+            f"{_sentence(observation.text).rstrip('.')} [{index + 1}]."
+            for index, observation in enumerate(cited)
         )
         return (
-            f"{_clip(thread.question.rstrip('?'), 18)} remains the section's "
-            f"question; the discussion grounds it in the cited "
-            f"literature{marker}.{agreement}"
+            f"{body} What remains open is how far this holds beyond "
+            f"{thread.title.lower()}."
         )
 
     async def suggest_threads(
