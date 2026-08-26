@@ -141,7 +141,8 @@ Spinner. ModalShell(title, onClose): 640px/92vw, 48px minimum header,
 EmptyLine: 13px mute.
 EvidenceHighlight(label): amber evidence mark with a portal tooltip on hover
 and keyboard focus.
-IdentityChip(color, name, selected?) — dot + colored name; selected
+IdentityChip(color, name, selected?, lead?) — person icon + colored name,
+or a tilted crown when lead; selected
 fills --node with white text. ListRow(disabled?, onClick) — hover bg +
 border affordance. CheckRow(checked, onToggle) — 13px checklist row.
 
