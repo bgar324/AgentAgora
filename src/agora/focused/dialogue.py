@@ -512,6 +512,22 @@ def _clip(text: str, limit: int) -> str:
     return clipped.rstrip(".,;:") or text
 
 
+def _facet(profile: ResearcherProfile, name: str, fallback: str) -> str:
+    """A facet's abstract-grounded sentence, or a stated fallback."""
+    value = getattr(profile.facets, name, None)
+    text = " ".join((value or "").split())
+    return text or fallback
+
+
+def _lower_first(text: str) -> str:
+    return text[:1].lower() + text[1:] if text else text
+
+
+def _question_core(question: str) -> str:
+    core = " ".join(question.split()).strip().rstrip("?.!")
+    return _lower_first(core) if core else "the question"
+
+
 class DemoDialogueEngine:
     """Deterministic engine mirroring every LiveDialogueEngine entry point."""
 
@@ -535,12 +551,19 @@ class DemoDialogueEngine:
             ]
             markers = " ".join(f"[{index + 1}]" for index in range(len(evidence)))
             focus = item.profile.focus
+            explanation = _facet(
+                item.profile,
+                "explanation",
+                f"{focus} best explains the observed trade-off.",
+            )
+            approach = _facet(
+                item.profile,
+                "approach",
+                f"The {focus} literature ties the mechanism to the question.",
+            )
             claim = Claim(
                 id=f"{item.proposal_id}:v1:claim",
-                text=_clip(
-                    f"{focus} best explains the trade-off in {_clip(question, 12)}",
-                    30,
-                ),
+                text=_clip(explanation, 30),
             )
             proposals.append(
                 Proposal(
@@ -553,9 +576,10 @@ class DemoDialogueEngine:
                         id=f"{item.proposal_id}:v1:argument",
                         claim_id=claim.id,
                         reasoning=(
-                            f"The {focus} literature ties the mechanism "
-                            f"directly to the question {markers}."
-                        ).strip(),
+                            f"{approach.rstrip('.')} {markers}.".strip()
+                            if markers
+                            else approach
+                        ),
                         evidence=evidence,
                     ),
                 )
@@ -583,8 +607,9 @@ class DemoDialogueEngine:
                     proposal_version=1,
                     reviewer_id=assignment.reviewer_id,
                     response=(
-                        f"From the {reviewer.profile.focus} side this claim "
-                        "holds only under narrower conditions [1]."
+                        f"{_facet(reviewer.profile, 'scope', 'The claim needs narrower conditions.')} "
+                        f"[1] From the {reviewer.profile.focus} side, that "
+                        "narrows where this claim can hold."
                     ),
                     question=("Which boundary condition would falsify it first?"),
                     observation_ids=[observation.id for observation in observations],
@@ -613,7 +638,11 @@ class DemoDialogueEngine:
                     "The peer challenge names a boundary condition without "
                     "overturning the supporting evidence."
                 ),
-                open_question=("How does the effect shift at the population boundary?"),
+                open_question=(
+                    f"Where does the "
+                    f"{perspectives[proposal.perspective_id].profile.focus.lower()} "
+                    "account stop holding?"
+                ),
                 facet_revisions=[],
                 profile=perspectives[proposal.perspective_id].profile,
                 proposal=proposal,
@@ -721,9 +750,9 @@ class DemoDialogueEngine:
             author_id=assignment.perspective_id,
             kind="answer",
             text=(
-                f"From the {profile.focus} viewpoint, "
-                f"{_clip(thread.question, 14).lower()} resolves through our "
-                f"clustered findings{marker}."
+                f"{_facet(profile, 'explanation', f'The {profile.focus} evidence is direct.').rstrip('.')}"
+                f"{marker}. On {_question_core(thread.question)}, that is "
+                f"the condition {profile.focus} expects to govern."
             ),
             observation_ids=[observation.id for observation in cited],
             evidence_requests=[],
@@ -742,9 +771,11 @@ class DemoDialogueEngine:
             author_id=kwargs["perspective_id"],
             kind="reply",
             text=(
-                f"I said that because the {profile.focus} evidence points "
-                f"the other way{marker}; the disagreement is about scope, "
-                "not the data."
+                f"Because "
+                f"{_lower_first(_facet(profile, 'approach', f'the {profile.focus} evidence points the other way.')).rstrip('.')}"
+                f"{marker}. What separates us on "
+                f"{_question_core(thread.question)} is scope: "
+                f"{_lower_first(_facet(profile, 'scope', 'our clusters cover different populations.'))}"
             ),
             observation_ids=[observation.id for observation in cited],
             evidence_requests=[],
@@ -762,8 +793,8 @@ class DemoDialogueEngine:
             author_id=kwargs["perspective_id"],
             kind="reply",
             text=(
-                f"Updating my earlier point: the {profile.focus} account "
-                "narrows to the contested boundary raised here."
+                f"Narrowing my earlier point: "
+                f"{_lower_first(_facet(profile, 'scope', f'the {profile.focus} account holds under tighter conditions.'))}"
             ),
             observation_ids=list(previous.observation_ids),
             evidence_requests=[],
@@ -788,11 +819,14 @@ class DemoDialogueEngine:
             status="pending",
             thread_id=thread.id,
             consensus=(
-                "The panel agrees the claim holds inside the narrower "
-                "boundary the challengers named."
+                f"On {_question_core(thread.question)}, the panel converged "
+                "on the narrower conditions the challengers named."
             ),
             disagreement=None,
-            open_question=("How does the effect behave outside that boundary?"),
+            open_question=(
+                f"What evidence would extend {thread.title.lower()} beyond "
+                "those conditions?"
+            ),
             contribution_ids=[contribution.id for contribution in contributions],
             observation_ids=cited,
         )
@@ -867,6 +901,12 @@ class DemoDialogueEngine:
         unused_observations: list[str],
         n: int,
     ) -> list[ThreadDraft]:
+        # The demo panel converges: past five Threads total, no additional
+        # distinct question is warranted (the canonical prompt's own rule),
+        # so the investigation can actually reach the all-resolved state.
+        remaining = max(0, 5 - len(existing_questions))
+        if remaining == 0:
+            return []
         drafts = [
             ThreadDraft(
                 title=_clip(open_question.rstrip("?"), 6),
@@ -876,7 +916,7 @@ class DemoDialogueEngine:
             for open_question in open_questions
             if open_question not in existing_questions
         ]
-        return drafts[:n]
+        return drafts[: min(n, remaining)]
 
 
 # ---------------------------------------------------------------------------

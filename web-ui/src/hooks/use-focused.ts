@@ -698,72 +698,19 @@ export function useFocusedPanel() {
     [sessionId],
   )
 
+  // Dialogue commands render loading on their triggering button and rely
+  // on the authoritative WorkspaceView response alone; no advisory
+  // progress stream reaches the panel surfaces.
   const dialogueCommand = useCallback(
     async (label: string, path: string, body: Record<string, unknown>) =>
       exclusive(label, async () => {
-        const started = await api<{ generation: number }>(
-          `sessions/${sessionId}/search-progress`,
-          { method: "POST" },
-        )
-        const generation = started.generation
-        searchProgressCleared()
-        let polling = true
-        let cursor = 0
-        const collect = async () => {
-          const progress = await api<SearchProgressResponse>(
-            `sessions/${sessionId}/search-progress?generation=${generation}&after=${cursor}`,
-          )
-          progress.items.forEach(searchProgressAdded)
-          cursor = progress.next
-        }
-        const poll = async () => {
-          while (polling) {
-            try {
-              await collect()
-            } catch {
-              // Progress is advisory; the command request reports failures.
-            }
-            if (polling) {
-              const { promise, resolve } = Promise.withResolvers<void>()
-              window.setTimeout(resolve, 500)
-              await promise
-            }
-          }
-        }
-        const progress = poll()
-        let view: WorkspaceView
-        try {
-          view = await requestView(
-            `sessions/${sessionId}/${path}`,
-            {
-              method: "POST",
-              body: JSON.stringify({
-                ...body,
-                progress_generation: generation,
-              }),
-            },
-            () => undefined,
-          )
-        } finally {
-          polling = false
-          await progress
-          try {
-            await collect()
-          } catch {
-            // The final command response remains authoritative.
-          }
-        }
-        workspaceViewSet(view)
+        const view = await requestView(`sessions/${sessionId}/${path}`, {
+          method: "POST",
+          body: JSON.stringify(body),
+        })
         return view.active
       }),
-    [
-      exclusive,
-      requestView,
-      searchProgressAdded,
-      searchProgressCleared,
-      sessionId,
-      workspaceViewSet,
-    ],
+    [exclusive, requestView, sessionId],
   )
 
   const startDialogue = useCallback(
