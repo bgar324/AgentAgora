@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Check, ChevronDown, Pencil } from "lucide-react"
 
 import { useFocusedPanel } from "@/hooks/use-focused"
@@ -39,6 +39,27 @@ interface QueryCheckpoint {
   query: string
   retrieved: number | null
   stopped: boolean
+}
+
+function CountUp({ value }: { value: number }) {
+  const [shown, setShown] = useState(value === 0 ? 0 : -1)
+  useEffect(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setShown(value)
+      return
+    }
+    let frame = 0
+    const start = performance.now()
+    const duration = 600
+    const tick = (now: number) => {
+      const t = Math.min(1, (now - start) / duration)
+      setShown(Math.round(value * (1 - (1 - t) ** 3)))
+      if (t < 1) frame = requestAnimationFrame(tick)
+    }
+    frame = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(frame)
+  }, [value])
+  return <>{shown < 0 ? 0 : shown}</>
 }
 
 function queryCheckpoints(progress: SearchProgressItem[]): QueryCheckpoint[] {
@@ -133,11 +154,11 @@ function RetrievalProgressPanel({
         >
           Searched{" "}
           <span className="font-medium tabular-nums text-[var(--ink)]">
-            {retainedPapers}
+            <CountUp value={retainedPapers} />
           </span>{" "}
           {retainedPapers === 1 ? "paper" : "papers"}, created{" "}
           <span className="font-medium tabular-nums text-[var(--ink)]">
-            {createdCandidates}
+            <CountUp value={createdCandidates} />
           </span>{" "}
           {createdCandidates === 1 ? "Perspective" : "Perspectives"}.
         </p>
@@ -177,12 +198,14 @@ function RetrievalProgressPanel({
               return (
                 <li
                   key={checkpoint.sequence}
-                  className="relative min-h-5 pl-8"
+                  className="ep-card-enter relative min-h-5 pl-8"
                   data-testid="query-progress-step"
                 >
                   <span className="absolute left-0 top-0 grid size-5 place-items-center bg-[var(--panel)] text-[var(--ink-2)]">
                     {completed ? (
-                      <Check size={14} strokeWidth={1.8} aria-hidden />
+                      <span className="ep-fade-in grid place-items-center">
+                        <Check size={14} strokeWidth={1.8} aria-hidden />
+                      </span>
                     ) : checkpoint.stopped ? (
                       <span
                         className="size-1.5 rounded-full bg-[var(--mute)]"
@@ -234,7 +257,9 @@ function RetrievalProgressPanel({
                 />
               )}
               <span className="absolute left-0 top-0 grid size-5 place-items-center bg-[var(--panel)] text-[var(--ink-2)]">
-                <Check size={14} strokeWidth={1.8} aria-hidden />
+                <span className="ep-fade-in grid place-items-center">
+                  <Check size={14} strokeWidth={1.8} aria-hidden />
+                </span>
               </span>
               <details className="group" data-testid="searched-papers-details">
                 <summary className="flex cursor-pointer list-none items-center gap-2 text-[13px] leading-5 text-[var(--ink)] [&::-webkit-details-marker]:hidden">
@@ -291,7 +316,9 @@ function RetrievalProgressPanel({
               <li className="relative min-h-5 pl-8">
                 <span className="absolute left-0 top-0 grid size-5 place-items-center bg-[var(--panel)] text-[var(--ink-2)]">
                   {creationFinished ? (
-                    <Check size={14} strokeWidth={1.8} aria-hidden />
+                    <span className="ep-fade-in grid place-items-center">
+                      <Check size={14} strokeWidth={1.8} aria-hidden />
+                    </span>
                   ) : active ? (
                     <span data-testid="active-perspective-spinner">
                       <Spinner className="size-3.5" />
@@ -308,7 +335,7 @@ function RetrievalProgressPanel({
                     <p className="text-[13px] leading-relaxed text-[var(--ink)]">
                       Created{" "}
                       <span className="font-medium tabular-nums">
-                        {createdCandidates}
+                        <CountUp value={createdCandidates} />
                       </span>{" "}
                       Perspective{" "}
                       {createdCandidates === 1 ? "candidate" : "candidates"}
@@ -476,7 +503,7 @@ export function StageExtraction() {
       )}
       <div className="grid grid-cols-1 items-stretch gap-5 px-4 py-5 lg:grid-cols-[360px_1fr] lg:px-6">
         {/* the problem and the search */}
-        <div className="flex h-full flex-col gap-5">
+        <div className="flex h-full flex-col gap-2.5">
           <div className="ep-enter panel px-4 py-3.5">
             {editingBrief ? (
               <div className="flex flex-col gap-3">
