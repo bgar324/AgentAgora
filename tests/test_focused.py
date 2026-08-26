@@ -11,6 +11,7 @@ from agora.focused.demo_data import (
     DEMO_FACETS,
     DEMO_PAPERS,
     DEMO_RESEARCH_QUESTIONS,
+    DEMO_SHARED_GROUND,
 )
 from agora.focused.models import (
     FACETS,
@@ -135,6 +136,24 @@ def _thread_id(
     return next(issue.id for issue in deliberation.threads if facet in issue.facets)
 
 
+async def _accept_resolution(
+    service: FocusedPanelService,
+    session_id: str,
+    deliberation_id: str,
+) -> SessionState:
+    deliberation = next(
+        item
+        for item in service.get(session_id).deliberations
+        if item.id == deliberation_id
+    )
+    return await service.decide_thread_resolution(
+        session_id,
+        deliberation_id,
+        deliberation.rounds[-1].n,
+        decision="accept",
+    )
+
+
 async def _run_and_accept_rounds(
     service: FocusedPanelService,
     session_id: str,
@@ -150,6 +169,7 @@ async def _run_and_accept_rounds(
             lead_iid=lead_iid,
             thread_id=_thread_id(service, session_id, facet),
         )
+        state = await _accept_resolution(service, session_id, deliberation_id)
         deliberation = state.deliberations[0]
         if not deliberation.hypothesis_confirmed:
             assert deliberation.hypothesis is not None
@@ -490,7 +510,10 @@ def test_resolution_creates_unsettled_fallback_without_forced_conflict() -> None
         assert resolution.consensus_points
         assert not resolution.disagreement_points
         assert resolution.unsettled_points
-        assert "boundary" in resolution.unsettled_points[0].rationale.lower()
+        assert (
+            "did not test that agreement"
+            in resolution.unsettled_points[0].rationale.lower()
+        )
         assert resolution.consensus_points[0].citations == ["p1", "p2"]
         assert resolution.unsettled_points[0].citations == ["p1", "p2"]
 
@@ -545,20 +568,20 @@ def test_hypothesis_uses_consensus_only() -> None:
             summary="One shared boundary; other matters remain open.",
             consensus_points=[
                 DeliberationPoint(
-                    facet="scope",
+                    facets=["scope"],
                     text="Shared adult inpatient boundary",
                     citations=["paper"],
                 )
             ],
             disagreement_points=[
                 DeliberationPoint(
-                    facet="explanation",
+                    facets=["explanation"],
                     text="FORBIDDEN DISAGREEMENT CLAIM",
                 )
             ],
             unsettled_points=[
                 DeliberationPoint(
-                    facet="approach",
+                    facets=["approach"],
                     text="FORBIDDEN UNSETTLED CLAIM",
                 )
             ],
@@ -647,6 +670,7 @@ def test_full_facet_round_records_resolution_metrics_rating_and_child_branch() -
             deliberation_id,
             deliberation.hypothesis,
         )
+        state = await _accept_resolution(service, session_id, deliberation_id)
         state = await _run_and_accept_rounds(
             service,
             session_id,
@@ -850,7 +874,7 @@ def test_shared_ground_assent_fails_closed_without_provider() -> None:
     async def go() -> None:
         assent = await agents.assent_to_shared_ground(
             _perspective("Boundary", "bounded"),
-            "scope",
+            _scientific_thread("scope"),
             "The supported population is narrowly bounded.",
             ["Boundary: The population is bounded."],
             provider=None,
@@ -913,6 +937,7 @@ def test_child_research_starts_a_fresh_deliberation_cycle() -> None:
             deliberation_id,
             proposal,
         )
+        state = await _accept_resolution(service, session_id, deliberation_id)
         state = await _run_and_accept_rounds(
             service,
             session_id,
@@ -1026,6 +1051,7 @@ def test_child_research_starts_a_fresh_deliberation_cycle() -> None:
                 deliberation.id,
                 continued_deliberation.hypothesis,
             )
+        state = await _accept_resolution(service, parent.id, deliberation.id)
         state = await _run_and_accept_rounds(
             service,
             parent.id,
@@ -1103,6 +1129,7 @@ def test_demo_baseline_and_proposals_progress_across_rounds() -> None:
             deliberation_id,
             first_hypothesis,
         )
+        state = await _accept_resolution(service, session_id, deliberation_id)
         state = await service.run_round(
             session_id,
             deliberation_id,
@@ -1135,6 +1162,7 @@ def test_unchanged_consensus_does_not_create_pending_update(monkeypatch) -> None
             deliberation_id,
             candidate,
         )
+        state = await _accept_resolution(service, session_id, deliberation_id)
         applied = state.deliberations[0].applied_hypothesis
         assert applied is not None
 
@@ -1226,6 +1254,61 @@ def test_semantic_cosine_metric_records_all_facets_and_direction() -> None:
 
 def test_consensus_threads_propose_and_evolve_the_working_hypothesis() -> None:
     async def go() -> None:
+        service, session_id, deliberation_id, agent_iids = await _demo_panel()
+        deliberation = service.get(session_id).deliberations[0]
+        baseline = deliberation.baseline_hypothesis
+        assert baseline is not None
+
+        state = await service.run_round(
+            session_id,
+            deliberation_id,
+            lead_iid=agent_iids[0],
+            thread_id=_thread_id(service, session_id, "scope"),
+        )
+        deliberation = state.deliberations[0]
+        round_state = deliberation.rounds[0]
+        assert round_state.verdict is not None
+        assert round_state.verdict.status == "consensus"
+        assert deliberation.hypothesis is not None
+        hypothesis_text = deliberation.hypothesis.hypothesis
+        assert hypothesis_text != baseline.hypothesis
+        assert DEMO_SHARED_GROUND["scope"] in hypothesis_text
+        assert round_state.reflections
+        assert round_state.reflections[0].decision == "revised"
+
+        first_candidate = hypothesis_text
+        assert not deliberation.hypothesis_confirmed
+        state = await service.confirm_deliberation_hypothesis(
+            session_id,
+            deliberation_id,
+            deliberation.hypothesis,
+        )
+        state = await _accept_resolution(service, session_id, deliberation_id)
+        assert state.deliberations[0].hypothesis_confirmed
+
+        state = await service.run_round(
+            session_id,
+            deliberation_id,
+            lead_iid=agent_iids[0],
+            thread_id=_thread_id(service, session_id, "approach"),
+        )
+        evolved = state.deliberations[0]
+        assert len(evolved.rounds) == 2
+        assert evolved.hypothesis is not None
+        evolved_text = evolved.hypothesis.hypothesis
+        assert evolved_text != first_candidate
+        assert DEMO_SHARED_GROUND["approach"].rstrip(".") in evolved_text
+        # The significance ground was already incorporated in round 1; the
+        # overlapping segment must count as incorporated, not be re-appended.
+        significance = DEMO_SHARED_GROUND["significance"].rstrip(".")
+        assert evolved_text.count(significance) == 1
+        assert evolved.lead_perspective_id == deliberation.lead_perspective_id
+
+    asyncio.run(go())
+
+
+def test_already_incorporated_shared_ground_keeps_hypothesis_confirmed() -> None:
+    async def go() -> None:
         service = FocusedPanelService()
         state = service.create_workspace(
             problem=PROBLEM,
@@ -1253,33 +1336,30 @@ def test_consensus_threads_propose_and_evolve_the_working_hypothesis() -> None:
             first.id,
         )
         deliberation = state.deliberations[0]
+        baseline = deliberation.baseline_hypothesis
+        assert baseline is not None
+        # The fallback baseline template embeds every shared facet account, so
+        # panel ground derived from those facets is already incorporated.
         state = await service.run_round(
             state.id,
             deliberation.id,
             lead_iid=agent_iids[0],
             thread_id=_thread_id(service, state.id, "scope"),
         )
-
         deliberation = state.deliberations[0]
-        round_state = deliberation.rounds[0]
-        assert round_state.verdict is not None
-        assert round_state.verdict.status == "consensus"
-        assert deliberation.hypothesis is not None
-        hypothesis_text = " ".join(deliberation.hypothesis.model_dump().values())
-        assert "shared scope account" in hypothesis_text.lower()
-        assert "FORBIDDEN PROFILE DETAIL" not in hypothesis_text
-        assert round_state.metrics is not None
-        assert round_state.metrics.method == "unavailable:no-semantic-embedder"
+        first_round = deliberation.rounds[0]
+        assert first_round.verdict is not None
+        assert first_round.verdict.status == "consensus"
+        assert deliberation.hypothesis == baseline
+        assert deliberation.hypothesis_confirmed
+        assert first_round.reflections
+        assert first_round.reflections[0].decision == "unchanged"
+        assert round_metrics_unavailable(first_round)
+        assert "FORBIDDEN PROFILE DETAIL" not in deliberation.hypothesis.hypothesis
+        state = await _accept_resolution(service, state.id, deliberation.id)
 
-        first_candidate = deliberation.hypothesis.hypothesis
-        if not deliberation.hypothesis_confirmed:
-            state = await service.confirm_deliberation_hypothesis(
-                state.id,
-                deliberation.id,
-                deliberation.hypothesis,
-            )
-        assert state.deliberations[0].hypothesis_confirmed
-
+        # A restated-ground round must not corrupt the lead's facets: the next
+        # Thread still reaches consensus and the candidate stays stable.
         state = await service.run_round(
             state.id,
             deliberation.id,
@@ -1288,12 +1368,20 @@ def test_consensus_threads_propose_and_evolve_the_working_hypothesis() -> None:
         )
         evolved = state.deliberations[0]
         assert len(evolved.rounds) == 2
-        assert evolved.hypothesis is not None
-        assert evolved.hypothesis.hypothesis != first_candidate
-        assert "shared approach account" in evolved.hypothesis.hypothesis.lower()
-        assert evolved.lead_perspective_id == first.id
+        second_round = evolved.rounds[1]
+        assert second_round.verdict is not None
+        assert second_round.verdict.status == "consensus"
+        assert evolved.hypothesis == baseline
+        assert evolved.hypothesis_confirmed
 
     asyncio.run(go())
+
+
+def round_metrics_unavailable(round_state) -> bool:
+    return (
+        round_state.metrics is not None
+        and round_state.metrics.method == "unavailable:no-semantic-embedder"
+    )
 
 
 def test_edited_facets_are_not_misrepresented_as_abstract_provenance() -> None:
@@ -1451,6 +1539,18 @@ def test_round_hypothesis_can_be_rejected_accepted_or_edited(monkeypatch) -> Non
             == baseline
         )
 
+        # The rejected candidate keeps the scientific issue open; the
+        # researcher keeps the Thread available and re-discusses it.
+        deliberation = state.deliberations[0]
+        state = await service.decide_thread_resolution(
+            session_id,
+            deliberation_id,
+            deliberation.rounds[0].n,
+            decision="keep_open",
+            note="Rejected the proposal; the boundary is still contested.",
+        )
+        assert state.deliberations[0].rounds[0].resolution_decision == "kept_open"
+
         state = await service.run_round(
             session_id,
             deliberation_id,
@@ -1465,6 +1565,7 @@ def test_round_hypothesis_can_be_rejected_accepted_or_edited(monkeypatch) -> Non
             second.hypothesis,
         )
         assert state.deliberations[0].rounds[1].hypothesis_decision == "accepted"
+        state = await _accept_resolution(service, session_id, deliberation_id)
 
         state = await service.run_round(
             session_id,
@@ -1613,5 +1714,218 @@ def test_round_progress_reports_stages_and_live_turns() -> None:
         assert [item["exchange_n"] for item in check_items] == [1, 2]
         assert all(item["proposed_shared_ground"] for item in check_items)
         assert [item["unanimous"] for item in check_items] == [False, True]
+
+    asyncio.run(go())
+
+
+def test_resolution_review_gates_rounds_and_closes_threads() -> None:
+    async def go() -> None:
+        service, session_id, deliberation_id, agent_iids = await _demo_panel()
+        state = await service.run_round(
+            session_id,
+            deliberation_id,
+            lead_iid=agent_iids[0],
+            thread_id=_thread_id(service, session_id, "scope"),
+        )
+        deliberation = state.deliberations[0]
+        round_n = deliberation.rounds[0].n
+        assert deliberation.rounds[0].resolution_decision is None
+        assert deliberation.hypothesis is not None
+        state = await service.confirm_deliberation_hypothesis(
+            session_id,
+            deliberation_id,
+            deliberation.hypothesis,
+        )
+
+        with pytest.raises(SessionError, match="Review the completed Thread"):
+            await service.run_round(
+                session_id,
+                deliberation_id,
+                lead_iid=agent_iids[0],
+                thread_id=_thread_id(service, session_id, "explanation"),
+            )
+        with pytest.raises(SessionError, match="Review the completed Thread"):
+            await service.complete_deliberation(session_id, deliberation_id)
+        with pytest.raises(SessionError, match="needs its summary"):
+            await service.decide_thread_resolution(
+                session_id,
+                deliberation_id,
+                round_n,
+                decision="edit",
+            )
+
+        state = await service.decide_thread_resolution(
+            session_id,
+            deliberation_id,
+            round_n,
+            decision="edit",
+            summary="Researcher synthesis of the Thread.",
+            note="Tightened the claim to the measured population.",
+        )
+        round_state = state.deliberations[0].rounds[0]
+        assert round_state.resolution_decision == "edited"
+        assert round_state.resolution is not None
+        assert round_state.resolution.summary == "Researcher synthesis of the Thread."
+        assert round_state.resolution_note == (
+            "Tightened the claim to the measured population."
+        )
+
+        with pytest.raises(SessionError, match="already closed"):
+            await service.decide_thread_resolution(
+                session_id,
+                deliberation_id,
+                round_n,
+                decision="accept",
+            )
+
+        state = await service.run_round(
+            session_id,
+            deliberation_id,
+            lead_iid=agent_iids[0],
+            thread_id=_thread_id(service, session_id, "explanation"),
+        )
+        assert len(state.deliberations[0].rounds) == 2
+
+    asyncio.run(go())
+
+
+def test_open_questions_become_suggested_threads() -> None:
+    async def go() -> None:
+        service, session_id, deliberation_id, agent_iids = await _demo_panel()
+        before_ids = {
+            thread.id for thread in service.get(session_id).deliberations[0].threads
+        }
+        state = await service.run_round(
+            session_id,
+            deliberation_id,
+            lead_iid=agent_iids[0],
+            thread_id=_thread_id(service, session_id, "scope"),
+        )
+        deliberation = state.deliberations[0]
+        suggested = [
+            thread for thread in deliberation.threads if thread.source_round == 1
+        ]
+        assert suggested
+        assert len(suggested) <= 2
+        assert all(thread.id not in before_ids for thread in suggested)
+        question_texts = {
+            question.question for question in deliberation.recommended_questions
+        }
+        assert all(thread.question in question_texts for thread in suggested)
+        assert all(thread.title for thread in suggested)
+
+        state = await _accept_resolution(service, session_id, deliberation_id)
+        deliberation = state.deliberations[0]
+        if not deliberation.hypothesis_confirmed:
+            assert deliberation.hypothesis is not None
+            state = await service.confirm_deliberation_hypothesis(
+                session_id,
+                deliberation_id,
+                deliberation.hypothesis,
+            )
+        state = await service.run_round(
+            session_id,
+            deliberation_id,
+            lead_iid=agent_iids[0],
+            thread_id=suggested[0].id,
+        )
+        second_round = state.deliberations[0].rounds[1]
+        assert second_round.completed
+        assert second_round.thread_id == suggested[0].id
+
+    asyncio.run(go())
+
+
+def test_every_participant_reflects_after_a_thread() -> None:
+    async def go() -> None:
+        service, session_id, deliberation_id, agent_iids = await _demo_panel()
+        state = await service.run_round(
+            session_id,
+            deliberation_id,
+            lead_iid=agent_iids[0],
+            thread_id=_thread_id(service, session_id, "scope"),
+        )
+        round_state = state.deliberations[0].rounds[0]
+        assert [
+            reflection.agent_iid for reflection in round_state.reflections
+        ] == agent_iids
+        assert all(
+            reflection.decision == "revised" for reflection in round_state.reflections
+        )
+        versions = {agent.iid: agent.facet_version for agent in state.agents}
+        assert all(versions[iid] == 2 for iid in agent_iids)
+
+    asyncio.run(go())
+
+
+def test_completion_synthesizes_the_final_document() -> None:
+    async def go() -> None:
+        service, session_id, deliberation_id, agent_iids = await _demo_panel()
+        state = await service.run_round(
+            session_id,
+            deliberation_id,
+            lead_iid=agent_iids[0],
+            thread_id=_thread_id(service, session_id, "scope"),
+        )
+        state = await _accept_resolution(service, session_id, deliberation_id)
+        deliberation = state.deliberations[0]
+        first_round = deliberation.rounds[0]
+        first_thread = next(
+            thread
+            for thread in deliberation.threads
+            if thread.id == first_round.thread_id
+        )
+        assert deliberation.hypothesis is not None
+        state = await service.confirm_deliberation_hypothesis(
+            session_id,
+            deliberation_id,
+            deliberation.hypothesis,
+        )
+
+        state = await service.run_round(
+            session_id,
+            deliberation_id,
+            lead_iid=agent_iids[0],
+            thread_id=_thread_id(service, session_id, "explanation"),
+        )
+        deliberation = state.deliberations[0]
+        second_thread = next(
+            thread
+            for thread in deliberation.threads
+            if thread.id == deliberation.rounds[1].thread_id
+        )
+        state = await service.decide_thread_resolution(
+            session_id,
+            deliberation_id,
+            deliberation.rounds[1].n,
+            decision="keep_open",
+            note="The mechanism still needs a decisive comparison.",
+        )
+        deliberation = state.deliberations[0]
+        if not deliberation.hypothesis_confirmed:
+            assert deliberation.hypothesis is not None
+            state = await service.confirm_deliberation_hypothesis(
+                session_id,
+                deliberation_id,
+                deliberation.hypothesis,
+            )
+        state = await service.save_deliberation_hypothesis(
+            session_id,
+            deliberation_id,
+        )
+        state = await service.complete_deliberation(session_id, deliberation_id)
+
+        document = state.deliberations[0].document
+        assert document is not None
+        assert document.title == PROBLEM
+        assert [section.thread_id for section in document.sections] == [first_thread.id]
+        assert document.sections[0].title == first_thread.title
+        proposal = first_round.hypothesis_proposal
+        assert proposal is not None
+        assert document.sections[0].hypothesis == proposal.hypothesis
+        assert first_round.resolution is not None
+        assert document.sections[0].explanation == first_round.resolution.summary
+        # The kept-open Thread stays a live scientific issue.
+        assert second_thread.question in document.open_questions
 
     asyncio.run(go())

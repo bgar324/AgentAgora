@@ -26,6 +26,7 @@ class FocusedTask(StrEnum):
     judge_thread = "judge_thread"
     assent_shared_ground = "assent_shared_ground"
     summarize_thread = "summarize_thread"
+    synthesize_document = "synthesize_document"
     reflect_on_round = "reflect_on_round"
     develop_hypothesis = "develop_hypothesis"
     develop_hypothesis_from_consensus = "develop_hypothesis_from_consensus"
@@ -50,6 +51,7 @@ TASK_ROLES: Final = MappingProxyType(
         FocusedTask.judge_thread: FocusedModelRole.evaluation,
         FocusedTask.assent_shared_ground: FocusedModelRole.reasoning,
         FocusedTask.summarize_thread: FocusedModelRole.evaluation,
+        FocusedTask.synthesize_document: FocusedModelRole.evaluation,
         FocusedTask.reflect_on_round: FocusedModelRole.reasoning,
         FocusedTask.develop_hypothesis: FocusedModelRole.reasoning,
         FocusedTask.develop_hypothesis_from_consensus: FocusedModelRole.evaluation,

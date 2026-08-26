@@ -85,6 +85,8 @@ DEMO_RETRIEVAL_DELAY_SECONDS = 1.05
 MAX_SEARCH_PROGRESS_EVENTS = 192
 MIN_DELIBERATION_EXCHANGES = 2
 MAX_DELIBERATION_EXCHANGES = 3
+MAX_SUGGESTED_THREADS_PER_ROUND = 2
+MAX_DELIBERATION_THREADS = 10
 SearchProgressKind = Literal[
     "query_started",
     "query_completed",
@@ -96,6 +98,15 @@ SearchProgressKind = Literal[
     "round_turn",
     "round_check",
 ]
+
+
+def _question_thread_title(question: str) -> str:
+    """Derive a concise Thread title from an open research question."""
+    words = question.strip().rstrip("?？").split()
+    title = " ".join(words[:8])
+    if not title:
+        return "Open question"
+    return (title[:1].upper() + title[1:])[:200]
 
 
 @dataclass(frozen=True)
@@ -2277,6 +2288,11 @@ class FocusedPanelService:
                     thread.model_copy(deep=True) for thread in deliberation.threads
                 ],
                 selected_question_ids=list(deliberation.selected_question_ids),
+                document=(
+                    deliberation.document.model_copy(deep=True)
+                    if deliberation.document is not None
+                    else None
+                ),
                 rating=(
                     deliberation.rating.model_copy(deep=True)
                     if deliberation.rating is not None
@@ -2340,6 +2356,7 @@ class FocusedPanelService:
         deliberation.lead_perspective_id = None
         deliberation.baseline_hypothesis = None
         deliberation.selected_question_ids = []
+        deliberation.document = None
         deliberation.threads = []
         deliberation.agent_iids = [
             self._new_panel_agent(session, perspectives[perspective_id]).iid
@@ -2717,6 +2734,7 @@ class FocusedPanelService:
                 question=thread.question,
                 context=thread.context,
                 facets=thread.facets,
+                related=[link.model_copy(deep=True) for link in thread.related],
                 perspective_names=thread.perspective_names,
                 hypothesis_fragments=self._canonical_hypothesis_fragments(
                     baseline,
@@ -2982,6 +3000,15 @@ class FocusedPanelService:
                 "Apply or edit the pending shared-ground update before "
                 "starting another Thread."
             )
+        if (
+            deliberation.rounds
+            and deliberation.rounds[-1].completed
+            and deliberation.rounds[-1].resolution_decision is None
+        ):
+            raise SessionError(
+                "Review the completed Thread's resolution before "
+                "starting another Thread."
+            )
 
         if deliberation.rounds and not deliberation.rounds[-1].completed:
             deliberation.rounds.pop()
@@ -3054,7 +3081,7 @@ class FocusedPanelService:
                 turn=turn,
             )
 
-        primary_facet = selected[0]
+        primary_facet = selected[0] if selected else None
         final_verdict: ThreadVerdict | None = None
         for exchange_n in range(1, MAX_DELIBERATION_EXCHANGES + 1):
             prior_turns = [
@@ -3250,7 +3277,8 @@ class FocusedPanelService:
                 provider=self._provider_for(session),
                 shared_ground=(
                     "; ".join(DEMO_SHARED_GROUND[facet] for facet in selected)
-                    if state.clustering is not None
+                    if selected
+                    and state.clustering is not None
                     and state.clustering.method == "demo_seeds"
                     else None
                 ),
@@ -3412,25 +3440,45 @@ class FocusedPanelService:
                 ]
         round_state.resolution = resolution
 
-        report(5, "lead_revision", "Updating the lead Perspective.")
+        report(5, "lead_revision", "Updating the affected Perspectives.")
         consensus_resolution = RoundResolution(
             summary=resolution.summary,
             consensus_points=[
                 point.model_copy(deep=True) for point in resolution.consensus_points
             ],
         )
-        reflection, updated = await agents.reflect_on_round(
+        reflection_tasks = []
+        ordered_iids = [
             lead_iid,
-            lead_profile,
-            selected,
-            consensus_resolution,
-            provider=self._provider_for(session),
-            demo=self._demo(session),
-        )
-        lead_agent.facets = updated
-        if reflection.decision == "revised":
-            lead_agent.facet_version += 1
-        round_state.reflections.append(reflection)
+            *(iid for iid in participant_iids if iid != lead_iid),
+        ]
+        try:
+            async with asyncio.TaskGroup() as task_group:
+                for iid in ordered_iids:
+                    agent, profile = self._agent_view(state, iid)
+                    reflection_tasks.append(
+                        (
+                            agent,
+                            task_group.create_task(
+                                agents.reflect_on_round(
+                                    iid,
+                                    profile,
+                                    selected,
+                                    consensus_resolution,
+                                    provider=self._provider_for(session),
+                                    demo=self._demo(session),
+                                )
+                            ),
+                        )
+                    )
+        except* Exception as errors:  # noqa: BLE001
+            raise errors.exceptions[0]
+        for agent, task in reflection_tasks:
+            reflection, updated = task.result()
+            agent.facets = updated
+            if reflection.decision == "revised":
+                agent.facet_version += 1
+            round_state.reflections.append(reflection)
 
         after = self._facet_snapshot(state, participant_iids)
         _, revised = self._agent_view(state, lead_iid)
@@ -3546,10 +3594,83 @@ class FocusedPanelService:
                 )
             )
         deliberation.recommended_questions.extend(new_questions)
+        # Kat's F→J→D loop: a Resolution's open questions re-enter the
+        # deliberation as suggested Threads the researcher may start next.
+        existing_thread_questions = {
+            " ".join(thread.question.casefold().split())
+            for thread in deliberation.threads
+        }
+        panel_names = [
+            self._agent_view(state, iid)[0].label for iid in participant_iids
+        ]
+        for question in new_questions[:MAX_SUGGESTED_THREADS_PER_ROUND]:
+            identity = " ".join(question.question.casefold().split())
+            if identity in existing_thread_questions:
+                continue
+            if len(deliberation.threads) >= MAX_DELIBERATION_THREADS:
+                break
+            existing_thread_questions.add(identity)
+            deliberation.threads.append(
+                DeliberationThread(
+                    id=f"{deliberation.id}-thread-{len(deliberation.threads) + 1}",
+                    title=_question_thread_title(question.question),
+                    question=question.question,
+                    context=question.rationale[:2000],
+                    facets=list(dict.fromkeys(question.facets))[:4],
+                    related=[],
+                    perspective_names=panel_names,
+                    hypothesis_fragments=[],
+                    source_round=round_state.n,
+                )
+            )
         deliberation.questions_generated = True
         round_state.completed = True
         report(7, "saving", "Saving the completed Thread.")
 
+        return self._save_state(state)
+
+    @_serialized_session_mutation
+    async def decide_thread_resolution(
+        self,
+        session_id: str,
+        deliberation_id: str,
+        round_n: int,
+        *,
+        decision: Literal["accept", "edit", "keep_open"],
+        summary: str | None = None,
+        note: str = "",
+    ) -> SessionState:
+        """Researcher review of a completed Thread's Resolution.
+
+        Accept closes the Thread as synthesized, edit closes it with the
+        researcher's own synthesis, and keep-open leaves the Thread available
+        for another discussion.
+        """
+        session = self._require(session_id)
+        state = session.state
+        deliberation = self._deliberation(state, deliberation_id)
+        self._require_open_deliberation(deliberation)
+        round_state = next(
+            (item for item in deliberation.rounds if item.n == round_n),
+            None,
+        )
+        if round_state is None or not round_state.completed:
+            raise SessionError("Review a completed Thread.", status=404)
+        if round_state.resolution is None:
+            raise SessionError("This Thread has no resolution to review.")
+        if round_state.resolution_decision in {"accepted", "edited"}:
+            raise SessionError("This Thread's resolution is already closed.")
+        if decision == "edit":
+            edited = (summary or "").strip()
+            if not edited:
+                raise SessionError("An edited resolution needs its summary.")
+            round_state.resolution.summary = edited[:2000]
+            round_state.resolution_decision = "edited"
+        elif decision == "accept":
+            round_state.resolution_decision = "accepted"
+        else:
+            round_state.resolution_decision = "kept_open"
+        round_state.resolution_note = note.strip()[:2000]
         return self._save_state(state)
 
     @_serialized_session_mutation
@@ -3567,6 +3688,11 @@ class FocusedPanelService:
         if not deliberation.rounds or not deliberation.rounds[-1].completed:
             raise SessionError(
                 "Complete a focused round before ending the deliberation."
+            )
+        if deliberation.rounds[-1].resolution_decision is None:
+            raise SessionError(
+                "Review the completed Thread's resolution before "
+                "ending the deliberation."
             )
         selected = (
             deliberation.selected_question_ids
@@ -3606,6 +3732,27 @@ class FocusedPanelService:
             raise SessionError(
                 "Save the current hypothesis before ending the deliberation."
             )
+        open_questions = [
+            question.question
+            for question in deliberation.recommended_questions
+            if question.status == "open"
+        ]
+        unsettled_threads = [
+            thread.question
+            for thread in deliberation.threads
+            if not any(
+                round_state.thread_id == thread.id
+                and round_state.resolution_decision in {"accepted", "edited"}
+                for round_state in deliberation.rounds
+            )
+        ]
+        deliberation.document = await agents.synthesize_document(
+            state.problem,
+            deliberation.threads,
+            deliberation.rounds,
+            list(dict.fromkeys([*open_questions, *unsettled_threads])),
+            provider=self._provider_for(session),
+        )
         deliberation.completed_at = utcnow()
         deliberation.final_hypothesis_version_id = state.applied_hypothesis_version_id
         return self._save_state(state)

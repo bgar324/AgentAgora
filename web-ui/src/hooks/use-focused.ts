@@ -526,6 +526,29 @@ export function useFocusedPanel() {
     [call, sessionId],
   )
 
+  const decideResolution = useCallback(
+    (
+      deliberationId: string,
+      roundN: number,
+      decision: "accept" | "edit" | "keep_open",
+      summary?: string,
+      note?: string,
+    ) =>
+      call(
+        "Reviewing Thread resolution",
+        `sessions/${sessionId}/deliberations/${deliberationId}/rounds/${roundN}/resolution`,
+        {
+          method: "PUT",
+          body: JSON.stringify({
+            decision,
+            summary: summary ?? null,
+            note: note ?? "",
+          }),
+        },
+      ),
+    [call, sessionId],
+  )
+
   const confirmHypothesis = useCallback(
     (
       deliberationId: string,
@@ -721,6 +744,7 @@ export function useFocusedPanel() {
     completeDeliberation,
     rateDeliberation,
     confirmHypothesis,
+    decideResolution,
     saveHypothesis,
     createChildInvestigation,
     loadSession,

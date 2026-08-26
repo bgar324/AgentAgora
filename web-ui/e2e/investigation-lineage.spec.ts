@@ -69,7 +69,7 @@ async function applyHypothesisChanges(
     name: "Apply hypothesis changes?",
   })
   await expect(confirmation).toBeVisible()
-  await confirmation.getByRole("button", { name: /Apply \d+ parts?/ }).click()
+  await confirmation.getByRole("button", { name: "Apply proposal" }).click()
   await expect(confirmation).toHaveCount(0)
 }
 
@@ -94,6 +94,7 @@ type RoundApiState = {
     id: string
     lead_perspective_id: string | null
     threads: Array<{ id: string; facets: string[] }>
+    rounds: Array<{ n: number }>
     hypothesis: unknown
     hypothesis_confirmed: boolean
   }>
@@ -109,6 +110,29 @@ async function requestJson(
   expect(response.ok(), `${method.toUpperCase()} ${path}`).toBeTruthy()
   const payload = await response.json()
   return payload.active ?? payload
+}
+
+async function acceptResolutionApi(
+  request: APIRequestContext,
+  investigationId: string,
+  deliberationId: string,
+  roundN: number,
+) {
+  return requestJson(
+    request,
+    `/api/focused/sessions/${investigationId}/deliberations/${deliberationId}/rounds/${roundN}/resolution`,
+    "put",
+    { decision: "accept", summary: null, note: "" },
+  )
+}
+
+async function acceptThreadResolution(page: Page, roundN: number) {
+  const review = page.getByTestId(`thread-${roundN}-resolution-review`)
+  await expect(review).toContainText("Awaiting your decision")
+  await review.getByRole("button", { name: "Accept resolution" }).click()
+  await expect(
+    page.getByTestId(`thread-${roundN}-resolution-decision`),
+  ).toContainText("Resolution accepted")
 }
 async function prepareConsensusCheckpoint(
   request: APIRequestContext,
@@ -177,6 +201,14 @@ async function prepareConsensusCheckpoint(
     "post",
     { lead_iid: state.agents[0].iid, thread_id: thread.id },
   )
+  const preparedRound = state.deliberations[0].rounds.at(-1)
+  if (!preparedRound) throw new Error("Expected a completed round.")
+  state = await acceptResolutionApi(
+    request,
+    investigationId,
+    deliberation.id,
+    preparedRound.n,
+  )
   const candidate = state.deliberations[0].hypothesis
   expect(candidate).toBeTruthy()
   if (!apply) return state
@@ -215,6 +247,14 @@ async function runAndApplyRound(
     "post",
     { lead_iid: lead.iid, thread_id: thread.id },
   )
+  const completedRound = state.deliberations[0].rounds.at(-1)
+  if (!completedRound) throw new Error("Expected a completed round.")
+  state = await acceptResolutionApi(
+    request,
+    investigationId,
+    deliberation.id,
+    completedRound.n,
+  )
   const current = state.deliberations[0]
   if (current.hypothesis_confirmed) return state
   return requestJson(
@@ -231,6 +271,7 @@ test.beforeEach(async ({ page }) => {
 })
 
 test("joins wrapped lines into complete research questions", async ({ page }) => {
+  await page.getByRole("checkbox", { name: "Demo mode" }).uncheck()
   await page
     .getByRole("textbox", { name: "Research questions" })
     .fill(
@@ -796,6 +837,7 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   )
   await page.getByRole("button", { name: "Save hypothesis" }).click()
   await expect(page.getByText("Saved H1", { exact: true })).toBeVisible()
+  await acceptThreadResolution(page, 1)
   await page.keyboard.press("Escape")
   await expect(page.locator('[data-testid^="round-result-node-"]')).toHaveCount(0)
   await expect(page.getByTestId("saved-hypothesis-node-H1")).toHaveCount(0)
@@ -874,12 +916,16 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   await expect(page.getByText("Working hypothesis", { exact: true })).toBeVisible()
   await expect(page.getByText("Update ready", { exact: true })).toBeVisible()
   await applySharedGround(page)
+  await acceptThreadResolution(page, 1)
+  await expect(
+    page.getByRole("button", { name: /From Thread 1/ }).first(),
+  ).toBeVisible()
   for (const [thread, round] of [
     [/Targeting without delayed cure/, 2],
     [/Acute benefit versus ecological harm/, 3],
     [/Mechanism of downstream harm/, 4],
   ] as const) {
-    await page.getByRole("button", { name: thread }).click()
+    await page.getByRole("button", { name: thread }).first().click()
     await page.getByRole("button", { name: "Start Thread" }).click()
     await expect(
       page
@@ -889,6 +935,7 @@ test("continues an open question on the existing canvas", async ({ page }) => {
     if (await page.getByText("Update ready", { exact: true }).isVisible()) {
       await applySharedGround(page)
     }
+    await acceptThreadResolution(page, round)
   }
   await page.getByRole("button", { name: "Save hypothesis" }).click()
   await expect(page.getByText("Saved H2", { exact: true })).toBeVisible()
@@ -965,6 +1012,15 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   const sourceQuestionId = String(completed.recommended_questions[0].id)
   expect(completed.selected_question_ids).toEqual([sourceQuestionId])
   expect(completed.recommended_questions[0].selected_for_followup).toBe(true)
+  expect(completed.document).toBeTruthy()
+  expect(
+    completed.document.sections.map((section: { title: string }) => section.title),
+  ).toEqual([
+    "Targeting without delayed cure",
+    "Acute benefit versus ecological harm",
+    "Mechanism of downstream harm",
+  ])
+  expect(completed.document.open_questions.length).toBeGreaterThan(0)
 
   await page.keyboard.press("Escape")
   await expect(page.getByTestId("saved-hypothesis-node-H2")).toBeVisible()
@@ -981,6 +1037,12 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   const endedDrawer = page.getByRole("dialog", { name: "Focused panel" })
   const updateScores = endedDrawer.getByRole("button", { name: "Update scores" })
   await expect(updateScores).toBeVisible()
+  const documentSection = endedDrawer.getByTestId("deliberation-document")
+  await expect(documentSection).toBeVisible()
+  await expect(documentSection).toContainText("Final document")
+  await expect(documentSection).toContainText("Hypotheses")
+  await expect(documentSection).toContainText("H1.")
+  await expect(documentSection).toContainText("Open questions")
   const scoreActionLayout = await updateScores.evaluate((element) => ({
     whiteSpace: getComputedStyle(element).whiteSpace,
     height: element.getBoundingClientRect().height,
@@ -1102,7 +1164,7 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   await expect(conversation).toBeVisible()
   await expect(
     drawer.getByText(
-      "Complete a round before reviewing and ending the deliberation.",
+      "Complete a Thread before reviewing and ending the deliberation.",
       { exact: true },
     ),
   ).toBeVisible()
@@ -1144,7 +1206,7 @@ test("continues an open question on the existing canvas", async ({ page }) => {
     drawer.getByRole("combobox", { name: /Status for/ }),
   ).toHaveCount(0)
   await expect(
-    drawer.locator('[data-hypothesis-part="problem"]'),
+    drawer.locator('[data-hypothesis-part="hypothesis"]'),
   ).toContainText("Not established yet.")
   await page.keyboard.press("Escape")
   await expect(drawer).toHaveCount(0)
@@ -1332,7 +1394,7 @@ test("edits an applied hypothesis without reusing pending-update semantics", asy
   const boundaryThread = page.getByRole("button", {
     name: /Acute benefit versus ecological harm.*Thread 1/,
   })
-  await expect(page.getByText("1/3 discussed", { exact: true })).toBeVisible()
+  await expect(page.getByText("1/4 discussed", { exact: true })).toBeVisible()
   await expect(boundaryThread).toBeEnabled()
   await boundaryThread.click()
   await expect(boundaryThread).toHaveAttribute("aria-pressed", "true")
@@ -1556,6 +1618,12 @@ test("keeps repeated questions distinct while promoting the selected follow-up",
       lead_iid: state.agents[0].iid,
       thread_id: state.deliberations[0].threads[0].id,
     },
+  )
+  state = await acceptResolutionApi(
+    page.request,
+    rootId,
+    deliberation.id,
+    2,
   )
   const repeated = state.deliberations[0].recommended_questions.filter(
     (question: { question: string }) =>

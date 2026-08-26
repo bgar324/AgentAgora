@@ -137,7 +137,9 @@ def test_supabase_snapshot_round_trip_and_revision_conflict() -> None:
         )
 
 
-def test_supabase_load_archives_and_migrates_v5_hypotheses() -> None:
+def test_supabase_load_archives_and_migrates_v5_hypotheses(
+    legacy_v5_deliberation,
+) -> None:
     async def go() -> None:
         client = FakeSupabaseClient()
         service = FocusedPanelService(persistence=persistence(client))
@@ -182,6 +184,9 @@ def test_supabase_load_archives_and_migrates_v5_hypotheses() -> None:
             "reasoning": "H1",
             "hypothesis": "H1",
         }
+        legacy_payload["investigations"][0]["deliberations"] = [
+            legacy_v5_deliberation("persp-legacy")
+        ]
         snapshot["payload"] = deepcopy(legacy_payload)
 
         restored = FocusedPanelService(persistence=persistence(client))
@@ -191,6 +196,18 @@ def test_supabase_load_archives_and_migrates_v5_hypotheses() -> None:
         assert view.workspace.hypothesis_versions[0].step_sources == {
             "hypothesis": "H1"
         }
+        migrated = view.active.deliberations[0]
+        migrated_round = migrated.rounds[0]
+        assert migrated_round.verdict is not None
+        assert migrated_round.verdict.facets == ["scope", "significance"]
+        assert [turn.kind.value for turn in migrated_round.turns] == [
+            "open",
+            "reply",
+        ]
+        assert migrated_round.turns[1].relation == "reply"
+        assert migrated_round.resolution is not None
+        assert migrated_round.resolution.consensus_points[0].facets == ["scope"]
+        assert migrated.completion_history[0].rounds[0].verdict is not None
         archived = client.rows[ARCHIVE_TABLE][root.workspace_id]
         assert archived["schema_version"] == 5
         assert archived["payload"] == legacy_payload

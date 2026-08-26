@@ -183,9 +183,13 @@ class Turn(BaseModel):
 
 
 class ThreadVerdict(BaseModel):
-    """Moderator finding for one scientific Thread."""
+    """Moderator finding for one scientific Thread.
 
-    facets: list[Facet] = Field(min_length=1, max_length=4)
+    ``facets`` is traceability metadata: it names the Perspective facets the
+    finding touches. It never constrains what the Thread may discuss.
+    """
+
+    facets: list[Facet] = Field(default_factory=list, max_length=4)
     status: Literal["consensus", "disagreement", "unsettled"]
     summary: str
     proposed_shared_ground: str = ""
@@ -226,21 +230,37 @@ class ModeratorCheck(BaseModel):
 
 
 class DeliberationPoint(BaseModel):
-    facets: list[Facet] = Field(min_length=1, max_length=4)
+    facets: list[Facet] = Field(default_factory=list, max_length=4)
     text: str
     rationale: str = ""
     perspective_names: list[str] = Field(default_factory=list)
     citations: list[str] = Field(default_factory=list)
 
 
+class ThreadPerspectiveLink(BaseModel):
+    """Which fragments of one Perspective a Thread relates to (traceability)."""
+
+    perspective_name: str = Field(min_length=1, max_length=200)
+    facets: list[Facet] = Field(default_factory=list, max_length=4)
+
+
 class DeliberationThread(BaseModel):
+    """One scientific issue, disagreement, or open question under deliberation.
+
+    The ``question`` drives the discussion. ``related`` and ``facets`` are the
+    representation/traceability layer: they surface where Perspectives differ
+    and what changed afterward, but never determine the conversation.
+    """
+
     id: str
     title: str = Field(min_length=1, max_length=200)
     question: str = Field(min_length=1, max_length=1000)
     context: str = Field(default="", max_length=2000)
-    facets: list[Facet] = Field(min_length=1, max_length=4)
+    facets: list[Facet] = Field(default_factory=list, max_length=4)
+    related: list[ThreadPerspectiveLink] = Field(default_factory=list)
     perspective_names: list[str] = Field(default_factory=list)
     hypothesis_fragments: list[str] = Field(default_factory=list)
+    source_round: int | None = Field(default=None, ge=1)
 
 
 class RoundResolution(BaseModel):
@@ -298,7 +318,7 @@ class DeliberationRound(BaseModel):
     n: int
     lead_iid: int
     participant_iids: list[int] = Field(default_factory=list)
-    facets: list[Facet] = Field(min_length=1, max_length=4)
+    facets: list[Facet] = Field(default_factory=list, max_length=4)
     thread_id: str | None = None
     turns: list[Turn] = Field(default_factory=list)
     verdict: ThreadVerdict | None = None
@@ -311,6 +331,8 @@ class DeliberationRound(BaseModel):
     hypothesis_decision: HypothesisDecision | None = None
     moderator_checks: list[ModeratorCheck] = Field(default_factory=list)
     stop_reason: Literal["unanimous", "exchange_limit"] | None = None
+    resolution_decision: Literal["accepted", "edited", "kept_open"] | None = None
+    resolution_note: str = Field(default="", max_length=2000)
 
 
 QuestionStatus = Literal["open", "investigating", "addressed", "archived"]
@@ -340,6 +362,27 @@ class RecommendedQuestion(BaseModel):
         return self
 
 
+class DocumentSection(BaseModel):
+    """One resolved Thread rendered as a substantive research section."""
+
+    thread_id: str | None = None
+    title: str = Field(min_length=1, max_length=200)
+    hypothesis: str = Field(min_length=1, max_length=4000)
+    explanation: str = Field(default="", max_length=4000)
+
+
+class DeliberationDocument(BaseModel):
+    """The researcher-approved outcome of deliberation.
+
+    Resolved Threads contribute hypotheses and explanations; unresolved
+    scientific issues remain as open questions.
+    """
+
+    title: str = Field(min_length=1, max_length=4000)
+    sections: list[DocumentSection] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
+
+
 class DeliberationCompletion(BaseModel):
     archived_at: datetime = Field(default_factory=utcnow)
     reason: Literal["completed", "restarted"] = "completed"
@@ -353,6 +396,7 @@ class DeliberationCompletion(BaseModel):
     threads: list[DeliberationThread] = Field(default_factory=list)
     baseline_hypothesis: HypothesisDev | None = None
     selected_question_ids: list[str] = Field(default_factory=list)
+    document: DeliberationDocument | None = None
     rating: DeliberationRating | None = None
     rounds: list[DeliberationRound] = Field(default_factory=list)
     recommended_questions: list[RecommendedQuestion] = Field(default_factory=list)
@@ -392,6 +436,7 @@ class DeliberationState(BaseModel):
     lead_perspective_id: str | None = None
     baseline_hypothesis: HypothesisDev | None = None
     selected_question_ids: list[str] = Field(default_factory=list)
+    document: DeliberationDocument | None = None
     rounds: list[DeliberationRound] = Field(default_factory=list)
     revised_perspective: Perspective | None = None
     hypothesis: HypothesisDev | None = None
@@ -703,13 +748,30 @@ class DeliberationThreadDraft(BaseModel):
     title: str
     question: str
     context: str
-    facets: list[Facet]
+    related: list[ThreadPerspectiveLink] = Field(
+        default_factory=list,
+        description="Per-Perspective fragments this Thread relates to.",
+    )
+    facets: list[Facet] = Field(default_factory=list, max_length=4)
     perspective_names: list[str] = Field(default_factory=list)
     hypothesis_fragments: list[str] = Field(default_factory=list)
 
 
 class DeliberationThreads(BaseModel):
     threads: list[DeliberationThreadDraft] = Field(default_factory=list)
+
+
+class DocumentSectionDraft(BaseModel):
+    thread_title: str = Field(description="The resolved Thread's topic title.")
+    hypothesis: str = Field(description="The hypothesis this Thread supports.")
+    explanation: str = Field(
+        description="Why the hypothesis is warranted, without the transcript."
+    )
+
+
+class DocumentDraft(BaseModel):
+    sections: list[DocumentSectionDraft] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
 
 
 class ReflectionDraft(BaseModel):

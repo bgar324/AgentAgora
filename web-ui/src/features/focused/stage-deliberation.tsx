@@ -729,6 +729,7 @@ function PanelDrawer({
     runRound,
     completeDeliberation,
     confirmHypothesis,
+    decideResolution,
     saveHypothesis,
     switchInvestigation,
     updateQuestionStatus,
@@ -831,6 +832,17 @@ function PanelDrawer({
     })
   }
 
+  const decideRoundResolution = (
+    roundN: number,
+    decision: "accept" | "edit" | "keep_open",
+    summary?: string,
+    note?: string,
+  ) => {
+    void act(() =>
+      decideResolution(active.id, roundN, decision, summary, note),
+    )
+  }
+
   const initializePanel = () => {
     const leadPerspectiveId =
       leadSelection || active.lead_perspective_id || agents[0]?.perspective_id
@@ -922,6 +934,12 @@ function PanelDrawer({
       .filter((round) => round.completed && round.thread_id)
       .map((round) => round.thread_id),
   ).size
+  const pendingReviewRound =
+    active.completed_at === null
+      ? (active.rounds.find(
+          (round) => round.completed && round.resolution_decision === null,
+        ) ?? null)
+      : null
   const selectedLeadId =
     leadSelection ||
     active.lead_perspective_id ||
@@ -1031,6 +1049,10 @@ function PanelDrawer({
                   round.completed &&
                   index === active.rounds.length - 1
                 }
+                reviewable={active.completed_at === null}
+                onDecide={(decision, summary, note) =>
+                  decideRoundResolution(round.n, decision, summary, note)
+                }
                 onPrompt={(prompt) => {
                   setMessage(prompt)
                   window.requestAnimationFrame(() =>
@@ -1040,6 +1062,56 @@ function PanelDrawer({
               />
             ))}
           </div>
+          {active.document && (
+            <section
+              className="ep-card-enter mt-5 rounded-xl border border-[var(--line)] bg-[var(--bg)] p-4"
+              data-testid="deliberation-document"
+            >
+              <SectionLabel>Final document</SectionLabel>
+              <h2 className="mt-1 text-[14px] font-semibold tracking-[-0.01em] text-[var(--ink)]">
+                {active.document.title}
+              </h2>
+              <div className="mt-3">
+                <div className="text-[11px] font-semibold text-[var(--ink-2)]">
+                  Hypotheses
+                </div>
+                <div className="mt-1.5 flex flex-col gap-2">
+                  {active.document.sections.map((section, index) => (
+                    <div
+                      key={section.thread_id ?? section.title}
+                      className="rounded-lg border border-[var(--line)] bg-[var(--panel)] p-3"
+                    >
+                      <div className="text-[11.5px] font-semibold text-[var(--ink)]">
+                        {section.title}
+                      </div>
+                      <p className="mt-1 text-[11.5px] leading-relaxed text-[var(--ink)]">
+                        <span className="font-semibold">H{index + 1}.</span>{" "}
+                        {section.hypothesis}
+                      </p>
+                      {section.explanation && (
+                        <p className="mt-1 text-[11px] leading-relaxed text-[var(--ink-2)]">
+                          <span className="font-semibold">Explanation.</span>{" "}
+                          {section.explanation}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {active.document.open_questions.length > 0 && (
+                <div className="mt-3">
+                  <div className="text-[11px] font-semibold text-[var(--ink-2)]">
+                    Open questions
+                  </div>
+                  <ol className="mt-1 list-decimal pl-5 text-[11px] leading-relaxed text-[var(--ink-2)]">
+                    {active.document.open_questions.map((question) => (
+                      <li key={question}>{question}</li>
+                    ))}
+                  </ol>
+                </div>
+              )}
+            </section>
+          )}
           {(active.chat.length > 0 || pendingChat) && (
             <section
               className="mt-5 border-t border-[var(--line)] pt-4"
@@ -1288,8 +1360,10 @@ function PanelDrawer({
                       Each Thread centers one scientific disagreement or open
                       question. The conversation advances through challenges,
                       replies, evidence, and refinement. Scope, Explanation,
-                      Approach, and Significance remain lenses each Perspective
-                      brings to the Thread.
+                      Approach, and Significance are each Perspective&apos;s
+                      representation: they surface where Perspectives differ and
+                      record what changed after each Thread, without setting the
+                      agenda.
                     </p>
                   </div>
                 )}
@@ -1375,6 +1449,11 @@ function PanelDrawer({
                                 }}
                               >
                                 {thread.title}
+                                {thread.source_round !== null && (
+                                  <span className="ml-2 rounded-full border border-[var(--line)] px-1.5 py-0.5 text-[9px] font-medium text-[var(--mute)]">
+                                    From Thread {thread.source_round}
+                                  </span>
+                                )}
                               </div>
                               <p className="mt-1 text-[11.5px] leading-relaxed text-[var(--ink-2)]">
                                 {thread.question}
@@ -1398,15 +1477,31 @@ function PanelDrawer({
                             </blockquote>
                           ))}
                           <div className="mt-2 flex flex-wrap gap-1">
-                            {thread.facets.map((facet) => (
-                              <span
-                                key={facet}
-                                className="rounded-full border border-[var(--line)] px-1.5 py-0.5 text-[9.5px] font-medium"
-                                style={{ color: FACET_META[facet].color }}
-                              >
-                                {FACET_META[facet].label} perspective
-                              </span>
-                            ))}
+                            {thread.related.length > 0
+                              ? thread.related.map((link) => (
+                                  <span
+                                    key={link.perspective_name}
+                                    className="rounded-full border border-[var(--line)] px-1.5 py-0.5 text-[9.5px] font-medium text-[var(--ink-2)]"
+                                  >
+                                    {link.perspective_name}
+                                    {link.facets.length > 0
+                                      ? ` · ${link.facets
+                                          .map(
+                                            (facet) => FACET_META[facet].short,
+                                          )
+                                          .join(", ")}`
+                                      : ""}
+                                  </span>
+                                ))
+                              : thread.facets.map((facet) => (
+                                  <span
+                                    key={facet}
+                                    className="rounded-full border border-[var(--line)] px-1.5 py-0.5 text-[9.5px] font-medium"
+                                    style={{ color: FACET_META[facet].color }}
+                                  >
+                                    {FACET_META[facet].label} perspective
+                                  </span>
+                                ))}
                           </div>
                         </button>
                       )
@@ -1414,7 +1509,13 @@ function PanelDrawer({
                   </div>
                 )}
 
-                <div className="mt-3 flex justify-end border-t border-[var(--line)] pt-3">
+                <div className="mt-3 flex items-center justify-end gap-3 border-t border-[var(--line)] pt-3">
+                  {pendingReviewRound && (
+                    <span className="text-[10.5px] text-[var(--amber)]">
+                      Review Thread {pendingReviewRound.n}&apos;s resolution
+                      first.
+                    </span>
+                  )}
                   <Button
                     variant="primary"
                     size="md"
@@ -1422,7 +1523,8 @@ function PanelDrawer({
                       !!busy ||
                       agents.length < 2 ||
                       openerIid == null ||
-                      selectedThreadId === null
+                      selectedThreadId === null ||
+                      pendingReviewRound !== null
                     }
                     onClick={startRound}
                   >
@@ -1649,12 +1751,22 @@ function RoundRecord({
   thread,
   showPrompts = false,
   onPrompt,
+  reviewable = false,
+  onDecide,
 }: {
   round: DeliberationRound
   thread?: DeliberationThread
   showPrompts?: boolean
   onPrompt?: (prompt: string) => void
+  reviewable?: boolean
+  onDecide?: (
+    decision: "accept" | "edit" | "keep_open",
+    summary?: string,
+    note?: string,
+  ) => void
 }) {
+  const [editingResolution, setEditingResolution] = useState(false)
+  const [resolutionDraft, setResolutionDraft] = useState("")
   const exchangeNumbers = Array.from(
     new Set(round.turns.map((turn) => turn.exchange_n ?? 1)),
   )
@@ -1747,6 +1859,98 @@ function RoundRecord({
       {round.resolution && (
         <div data-testid={`round-${round.n}-summary`}>
           <ResolutionCard resolution={round.resolution} />
+        </div>
+      )}
+      {round.completed &&
+        round.resolution &&
+        round.resolution_decision === null &&
+        reviewable &&
+        onDecide && (
+          <div
+            className="mt-3 rounded-lg border border-[var(--amber)] bg-[var(--panel)] px-3 py-2.5"
+            data-testid={`thread-${round.n}-resolution-review`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <SectionLabel>Thread review</SectionLabel>
+              <span className="text-[10px] font-semibold text-[var(--amber)]">
+                Awaiting your decision
+              </span>
+            </div>
+            <p className="mt-1 text-[11px] leading-relaxed text-[var(--ink-2)]">
+              Accept the moderator synthesis to close this Thread, edit it in
+              your own words, or keep the Thread open for another discussion.
+            </p>
+            {editingResolution ? (
+              <div className="mt-2">
+                <textarea
+                  value={resolutionDraft}
+                  onChange={(event) => setResolutionDraft(event.target.value)}
+                  rows={3}
+                  aria-label="Edited Thread resolution"
+                  className="w-full rounded-lg border border-[var(--line-strong)] bg-[var(--bg)] px-2.5 py-2 text-[11.5px] leading-relaxed text-[var(--ink)]"
+                />
+                <div className="mt-2 flex gap-2">
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    disabled={!resolutionDraft.trim()}
+                    onClick={() => {
+                      onDecide("edit", resolutionDraft.trim())
+                      setEditingResolution(false)
+                    }}
+                  >
+                    Save edited resolution
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setEditingResolution(false)}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-2 flex flex-wrap gap-2">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => onDecide("accept")}
+                >
+                  Accept resolution
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setResolutionDraft(round.resolution?.summary ?? "")
+                    setEditingResolution(true)
+                  }}
+                >
+                  Edit resolution
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onDecide("keep_open")}
+                >
+                  Keep Thread open
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
+      {round.resolution_decision !== null && (
+        <div
+          className="mt-2 text-[10.5px] text-[var(--mute)]"
+          data-testid={`thread-${round.n}-resolution-decision`}
+        >
+          {round.resolution_decision === "accepted"
+            ? "Resolution accepted — Thread closed."
+            : round.resolution_decision === "edited"
+              ? "Resolution edited by you — Thread closed."
+              : "Thread kept open for another discussion."}
+          {round.resolution_note ? ` ${round.resolution_note}` : ""}
         </div>
       )}
 

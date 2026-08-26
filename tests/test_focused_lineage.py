@@ -218,6 +218,12 @@ def test_completion_allows_one_finished_round() -> None:
                 deliberation.id,
                 deliberation.hypothesis,
             )
+        state = await service.decide_thread_resolution(
+            state.id,
+            deliberation.id,
+            state.deliberations[0].rounds[-1].n,
+            decision="accept",
+        )
         state = await service.save_deliberation_hypothesis(
             state.id,
             deliberation.id,
@@ -722,6 +728,12 @@ def test_repeated_unsettled_round_does_not_duplicate_open_question() -> None:
                 lead_iid=agent_iids[0],
                 thread_id=_thread_id(service, state.id, "scope"),
             )
+            state = await service.decide_thread_resolution(
+                state.id,
+                deliberation.id,
+                state.deliberations[0].rounds[-1].n,
+                decision="keep_open",
+            )
             current = state.deliberations[0]
             if not current.hypothesis_confirmed:
                 assert current.hypothesis is not None
@@ -809,7 +821,7 @@ def test_round_batches_independent_agent_calls(monkeypatch) -> None:
             thread_id=_thread_id(service, state.id, "scope"),
         )
 
-        assert peak == {"answer": 2, "reflection": 1, "post": 3}
+        assert peak == {"answer": 2, "reflection": 3, "post": 3}
 
     asyncio.run(go())
 
@@ -881,7 +893,27 @@ def test_concurrent_round_requests_serialize_without_detached_side_effects(
         assert not second_round.done()
 
         release.set()
-        await asyncio.gather(first_round, second_round)
+        await first_round
+        # The serialized second request lands after the first Thread completed
+        # and deterministically hits the researcher-review gate.
+        with pytest.raises(SessionError, match="Review the completed Thread"):
+            await second_round
+        rounds = service.get(state.id).deliberations[0].rounds
+        assert [round_state.n for round_state in rounds] == [1]
+        assert rounds[0].completed
+
+        await service.decide_thread_resolution(
+            state.id,
+            deliberation.id,
+            rounds[0].n,
+            decision="accept",
+        )
+        await service.run_round(
+            state.id,
+            deliberation.id,
+            lead_iid=agent_iids[0],
+            thread_id=_thread_id(service, state.id, "explanation"),
+        )
         rounds = service.get(state.id).deliberations[0].rounds
         assert [round_state.n for round_state in rounds] == [1, 2]
         assert all(round_state.completed for round_state in rounds)
@@ -1091,6 +1123,7 @@ def test_workspace_and_lineage_reload_from_sqlite(tmp_path) -> None:
 
 def test_v5_sqlite_snapshot_is_archived_and_migrated_without_data_loss(
     tmp_path,
+    legacy_v5_deliberation,
 ) -> None:
     async def go() -> None:
         connection = sqlite3.connect(
@@ -1123,6 +1156,8 @@ def test_v5_sqlite_snapshot_is_archived_and_migrated_without_data_loss(
             row["investigation_id"]: _as_legacy_v5(json.loads(row["payload"]))
             for row in investigation_rows
         }
+        root_payload = legacy_investigations[root.id]
+        root_payload["deliberations"] = [legacy_v5_deliberation("persp-legacy")]
         legacy_archive = {
             "workspace": legacy_workspace,
             "investigations": list(legacy_investigations.values()),
@@ -1146,6 +1181,34 @@ def test_v5_sqlite_snapshot_is_archived_and_migrated_without_data_loss(
         assert view.workspace.hypothesis_versions[0].step_sources == {
             "hypothesis": "H1"
         }
+
+        migrated = view.active.deliberations[0]
+        assert migrated.baseline_hypothesis == HypothesisDev(
+            hypothesis="H legacy before"
+        )
+        migrated_round = migrated.rounds[0]
+        assert migrated_round.verdict is not None
+        assert migrated_round.verdict.facets == ["scope", "significance"]
+        assert migrated_round.verdict.status == "consensus"
+        assert migrated_round.verdict.consensus == "Adults in inpatient care."
+        assert migrated_round.verdict.supporting == ["Lead", "Other"]
+        assert migrated_round.verdict.evidence == {
+            "Lead": ["p1"],
+            "Other": ["p2"],
+        }
+        assert [turn.kind.value for turn in migrated_round.turns] == ["open", "reply"]
+        assert migrated_round.turns[1].relation == "reply"
+        assert migrated_round.moderator_checks[0].verdict.facets == ["scope"]
+        assert migrated_round.resolution is not None
+        assert migrated_round.resolution.consensus_points[0].facets == ["scope"]
+        assert migrated_round.resolution.unsettled_points[0].facets == ["significance"]
+        assert migrated_round.hypothesis_before == HypothesisDev(
+            hypothesis="H legacy before"
+        )
+        assert migrated.chat[0].kind.value == "user"
+        archived_round = migrated.completion_history[0].rounds[0]
+        assert archived_round.verdict is not None
+        assert archived_round.verdict.facets == ["scope", "significance"]
 
         archive_row = connection.execute(
             "select payload from focused_workspace_archives "

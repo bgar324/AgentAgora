@@ -146,14 +146,34 @@ export interface DeliberationPoint {
   citations: string[]
 }
 
+export interface ThreadPerspectiveLink {
+  perspective_name: string
+  facets: Facet[]
+}
+
 export interface DeliberationThread {
   id: string
   title: string
   question: string
   context: string
   facets: Facet[]
+  related: ThreadPerspectiveLink[]
   perspective_names: string[]
   hypothesis_fragments: string[]
+  source_round: number | null
+}
+
+export interface DocumentSection {
+  thread_id: string | null
+  title: string
+  hypothesis: string
+  explanation: string
+}
+
+export interface DeliberationDocument {
+  title: string
+  sections: DocumentSection[]
+  open_questions: string[]
 }
 
 export interface RoundResolution {
@@ -212,6 +232,7 @@ export interface DeliberationCompletion {
   threads: DeliberationThread[]
   baseline_hypothesis: HypothesisDev | null
   selected_question_ids: string[]
+  document: DeliberationDocument | null
   rating: DeliberationRating | null
   rounds: DeliberationRound[]
   recommended_questions: RecommendedQuestion[]
@@ -241,6 +262,8 @@ export interface DeliberationRound {
   hypothesis_decision: HypothesisDecision | null
   moderator_checks: ModeratorCheck[]
   stop_reason: "unanimous" | "exchange_limit" | null
+  resolution_decision: "accepted" | "edited" | "kept_open" | null
+  resolution_note: string
 }
 
 export type QuestionStatus =
@@ -270,6 +293,7 @@ export interface DeliberationState {
   lead_perspective_id: string | null
   baseline_hypothesis: HypothesisDev | null
   selected_question_ids: string[]
+  document: DeliberationDocument | null
   rounds: DeliberationRound[]
   revised_perspective: Perspective | null
   hypothesis: HypothesisDev | null

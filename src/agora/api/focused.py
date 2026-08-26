@@ -137,6 +137,12 @@ class RoundRequest(BaseModel):
     progress_generation: int | None = Field(default=None, ge=1)
 
 
+class ResolutionDecisionRequest(BaseModel):
+    decision: Literal["accept", "edit", "keep_open"]
+    summary: str | None = Field(default=None, max_length=2000)
+    note: str = Field(default="", max_length=2000)
+
+
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     deliberation_id: str
@@ -486,6 +492,29 @@ async def run_round(
             lead_iid=request.lead_iid,
             thread_id=request.thread_id,
             progress_generation=request.progress_generation,
+        ),
+    )
+
+
+@focused_router.put(
+    "/sessions/{session_id}/deliberations/{deliberation_id}/rounds/{round_n}/resolution"
+)
+async def decide_thread_resolution(
+    session_id: str,
+    deliberation_id: str,
+    round_n: int,
+    request: ResolutionDecisionRequest,
+    service: Service,
+) -> WorkspaceView:
+    return await _acall_view(
+        service,
+        service.decide_thread_resolution(
+            session_id,
+            deliberation_id,
+            round_n,
+            decision=request.decision,
+            summary=request.summary,
+            note=request.note,
         ),
     )
 
