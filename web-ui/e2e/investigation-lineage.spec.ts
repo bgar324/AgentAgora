@@ -6,7 +6,10 @@ import {
 } from "@playwright/test"
 
 async function startWorkspace(page: Page) {
-  await page.goto("/focused")
+  // These tests exercise the Thread board, which the notepad surface
+  // replaced as the default. `?surface=threads` is the rollback path and
+  // survives the app's own `?workspace=` write.
+  await page.goto("/focused?surface=threads")
   await expect(page.getByRole("heading", { name: "Hypothesis Studio" })).toBeVisible()
   await expect(page.getByRole("spinbutton", { name: "Panel size" })).toHaveCount(0)
   await page.getByRole("button", { name: "Begin" }).click()
@@ -1231,7 +1234,7 @@ test("promotes and merges versioned hypotheses through the workspace map", async
     false,
   )
   expect(pendingRoot.deliberations[0].hypothesis_confirmed).toBe(false)
-  await page.goto(`/focused?workspace=${workspaceId}`)
+  await page.goto(`/focused?workspace=${workspaceId}&surface=threads`)
   await page.getByRole("button", { name: "Join" }).click()
   await applySharedGround(page)
   await expect(page.getByText("Applied, not saved", { exact: true })).toBeVisible()
@@ -1251,7 +1254,7 @@ test("promotes and merges versioned hypotheses through the workspace map", async
     "post",
   )
   const childId = childView.id as string
-  await page.goto(`/focused?workspace=${workspaceId}`)
+  await page.goto(`/focused?workspace=${workspaceId}&surface=threads`)
   await page.getByRole("button", { name: "Investigation map" }).click()
   await expect(page.getByTestId(`investigation-node-${childId}`)).toContainText(
     "Inherits H1",
@@ -1314,7 +1317,7 @@ test("promotes and merges versioned hypotheses through the workspace map", async
 test("allows ending after one completed area", async ({ page }) => {
   const { rootId, workspaceId } = await startWorkspace(page)
   await prepareConsensusCheckpoint(page.request, rootId, false)
-  await page.goto(`/focused?workspace=${workspaceId}`)
+  await page.goto(`/focused?workspace=${workspaceId}&surface=threads`)
   await page.getByRole("button", { name: "Join" }).click()
   await applySharedGround(page)
   await page.getByRole("button", { name: "Save hypothesis" }).click()
@@ -1364,7 +1367,7 @@ test("shows a direct agent reply in the panel conversation", async ({ page }) =>
   })
 
 
-  await page.goto(`/focused?workspace=${workspaceId}`)
+  await page.goto(`/focused?workspace=${workspaceId}&surface=threads`)
   await page.getByRole("button", { name: "Join" }).click()
   await page
     .getByRole("combobox", { name: "Message recipient" })
@@ -1396,7 +1399,7 @@ test("edits an applied hypothesis without reusing pending-update semantics", asy
 }) => {
   const { rootId, workspaceId } = await startWorkspace(page)
   await prepareConsensusCheckpoint(page.request, rootId, false)
-  await page.goto(`/focused?workspace=${workspaceId}`)
+  await page.goto(`/focused?workspace=${workspaceId}&surface=threads`)
   await page.getByRole("button", { name: "Join" }).click()
   await applySharedGround(page)
   const boundaryThread = page.getByRole("button", {
@@ -1666,7 +1669,7 @@ test("keeps repeated questions distinct while promoting the selected follow-up",
     { selected_question_ids: [repeated[1].id] },
   )
 
-  await page.goto(`/focused?workspace=${workspaceId}`)
+  await page.goto(`/focused?workspace=${workspaceId}&surface=threads`)
   await expect(
     page
       .locator('[data-testid^="research-problem-node-"]')

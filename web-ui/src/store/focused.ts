@@ -109,7 +109,9 @@ function workspaceViewPatch(
     session: active,
     sessionId: active.id,
     stage: activeChanged
-      ? active.deliberations.length > 0 || active.dialogue !== null
+      ? active.deliberations.length > 0 ||
+        active.dialogue !== null ||
+        active.notepad !== null
         ? "deliberation"
         : "extraction"
       : state.stage,

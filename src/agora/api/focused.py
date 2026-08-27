@@ -88,12 +88,21 @@ def _guard_view(
 # --- request schemas ---------------------------------------------------------
 
 
+class PositionRequest(BaseModel):
+    framing: str = Field(default="", max_length=4000)
+    prior: str = Field(default="", max_length=4000)
+    method: str = Field(default="", max_length=4000)
+    expected: str = Field(default="", max_length=4000)
+
+
 class CreateWorkspaceRequest(BaseModel):
     problem: str = Field(min_length=3, max_length=4000)
     research_questions: list[ResearchQuestion] = Field(
         default_factory=list,
         max_length=20,
     )
+    position: PositionRequest | None = None
+    arm: Literal["baseline", "guided"] = "guided"
     demo: bool = True
 
 
@@ -205,6 +214,42 @@ class DialogueDecisionRequest(BaseModel):
     progress_generation: int | None = Field(default=None, ge=1)
 
 
+NotepadPartName = Literal["framing", "prior", "method", "expected"]
+
+
+class NotepadEditRequest(BaseModel):
+    part: NotepadPartName
+    text: str = Field(default="", max_length=4000)
+
+
+class NotepadVersionRequest(BaseModel):
+    copy_current: bool = True
+
+
+class NotepadParticipantRequest(BaseModel):
+    perspective_id: str = Field(min_length=1, max_length=200)
+    participating: bool
+
+
+class NotepadDiscussRequest(BaseModel):
+    turns: int = Field(default=4, ge=1, le=8)
+
+
+class NotepadAskRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=4000)
+
+
+class NotepadSummarizeRequest(BaseModel):
+    part: NotepadPartName
+
+
+class NotepadDecisionRequest(BaseModel):
+    proposal_id: str = Field(min_length=1, max_length=200)
+    action: Literal["approve", "edit", "reject"]
+    text: str | None = Field(default=None, max_length=4000)
+    reason: str = Field(default="", max_length=2000)
+
+
 class DialogueContinuationRequest(BaseModel):
     resolution_id: str = Field(min_length=1, max_length=200)
 
@@ -220,6 +265,8 @@ async def create_workspace(
         lambda: service.create_workspace(
             problem=request.problem,
             research_questions=request.research_questions,
+            position=(request.position.model_dump() if request.position else None),
+            arm=request.arm,
             demo=request.demo,
         )
     )
@@ -636,6 +683,111 @@ async def dialogue_report(
     service: Service,
 ) -> dict[str, str]:
     return _guard(lambda: {"report": service.dialogue_report(session_id)})
+
+
+@focused_router.post("/sessions/{session_id}/notepad/start")
+async def start_notepad(session_id: str, service: Service) -> WorkspaceView:
+    return await _acall_view(service, service.start_notepad(session_id))
+
+
+@focused_router.patch("/sessions/{session_id}/notepad/part")
+async def edit_notepad_part(
+    session_id: str, request: NotepadEditRequest, service: Service
+) -> WorkspaceView:
+    return await _acall_view(
+        service,
+        service.edit_notepad_part(session_id, part=request.part, text=request.text),
+    )
+
+
+@focused_router.post("/sessions/{session_id}/notepad/versions")
+async def add_notepad_version(
+    session_id: str, request: NotepadVersionRequest, service: Service
+) -> WorkspaceView:
+    return await _acall_view(
+        service,
+        service.add_notepad_version(session_id, copy_current=request.copy_current),
+    )
+
+
+@focused_router.put("/sessions/{session_id}/notepad/versions/{version_id}")
+async def switch_notepad_version(
+    session_id: str, version_id: str, service: Service
+) -> WorkspaceView:
+    return await _acall_view(
+        service, service.switch_notepad_version(session_id, version_id=version_id)
+    )
+
+
+@focused_router.delete("/sessions/{session_id}/notepad/versions/{version_id}")
+async def delete_notepad_version(
+    session_id: str, version_id: str, service: Service
+) -> WorkspaceView:
+    return await _acall_view(
+        service, service.delete_notepad_version(session_id, version_id=version_id)
+    )
+
+
+@focused_router.put("/sessions/{session_id}/notepad/participants")
+async def set_notepad_participant(
+    session_id: str, request: NotepadParticipantRequest, service: Service
+) -> WorkspaceView:
+    return await _acall_view(
+        service,
+        service.set_notepad_participant(
+            session_id,
+            perspective_id=request.perspective_id,
+            participating=request.participating,
+        ),
+    )
+
+
+@focused_router.post("/sessions/{session_id}/notepad/discuss")
+async def discuss_notepad(
+    session_id: str, request: NotepadDiscussRequest, service: Service
+) -> WorkspaceView:
+    return await _acall_view(
+        service, service.discuss_notepad(session_id, turns=request.turns)
+    )
+
+
+@focused_router.post("/sessions/{session_id}/notepad/messages")
+async def ask_notepad(
+    session_id: str, request: NotepadAskRequest, service: Service
+) -> WorkspaceView:
+    return await _acall_view(
+        service, service.ask_notepad(session_id, message=request.message)
+    )
+
+
+@focused_router.post("/sessions/{session_id}/notepad/summaries")
+async def summarize_notepad(
+    session_id: str, request: NotepadSummarizeRequest, service: Service
+) -> WorkspaceView:
+    return await _acall_view(
+        service, service.summarize_notepad(session_id, part=request.part)
+    )
+
+
+@focused_router.post("/sessions/{session_id}/notepad/decisions")
+async def decide_notepad_proposal(
+    session_id: str, request: NotepadDecisionRequest, service: Service
+) -> WorkspaceView:
+    return await _acall_view(
+        service,
+        service.decide_notepad_proposal(
+            session_id,
+            proposal_id=request.proposal_id,
+            action=request.action,
+            text=request.text,
+            reason=request.reason,
+        ),
+    )
+
+
+@focused_router.delete("/sessions/{session_id}/notepad/chat")
+async def clear_notepad_chat(session_id: str, service: Service) -> WorkspaceView:
+    return await _acall_view(service, service.clear_notepad_chat(session_id))
 
 
 @focused_router.put(

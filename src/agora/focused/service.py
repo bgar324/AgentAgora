@@ -48,6 +48,7 @@ from agora.focused.models import (
     HypothesisVersion,
     InvestigationSummary,
     ModeratorCheck,
+    NotepadDoc,
     Perspective,
     QuestionReach,
     QuestionStatus,
@@ -788,6 +789,8 @@ class FocusedPanelService:
         *,
         problem: str,
         research_questions: list[str],
+        position: dict[str, str] | None = None,
+        arm: str = "guided",
         demo: bool,
     ) -> WorkspaceView:
         clean_problem = problem.strip()
@@ -806,6 +809,8 @@ class FocusedPanelService:
             workspace_id=workspace_id,
             problem=clean_problem,
             research_questions=clean_questions,
+            position=NotepadDoc(**(position or {})),
+            arm="baseline" if arm == "baseline" else "guided",
             demo=demo or self._provider is None,
         )
         workspace = WorkspaceState(
@@ -4163,6 +4168,132 @@ class FocusedPanelService:
             return dialogue_module.synthesize_report(session.state)
         except dialogue_module.DialogueError as error:
             raise SessionError(str(error)) from error
+
+    # ------------------------------------------------------------------
+    # Group-chat stage over the four-part notepad
+    # ------------------------------------------------------------------
+
+    def _notepad_call(self, session_id: str, run):
+        from agora.focused import notepad as notepad_module
+
+        session = self._require(session_id)
+        try:
+            run(notepad_module, session.state)
+        except notepad_module.NotepadError as error:
+            raise SessionError(str(error)) from error
+        return self._save_state(session.state)
+
+    @_serialized_session_mutation
+    async def start_notepad(self, session_id: str) -> SessionState:
+        """Open the group chat, seeding v1 from the input screen."""
+        return self._notepad_call(
+            session_id, lambda mod, state: mod.start_notepad(state)
+        )
+
+    @_serialized_session_mutation
+    async def edit_notepad_part(
+        self, session_id: str, *, part: str, text: str
+    ) -> SessionState:
+        """Researcher edit. Never reviewed."""
+        return self._notepad_call(
+            session_id,
+            lambda mod, state: mod.edit_part(state, part=part, text=text),
+        )
+
+    @_serialized_session_mutation
+    async def add_notepad_version(
+        self, session_id: str, *, copy_current: bool
+    ) -> SessionState:
+        return self._notepad_call(
+            session_id,
+            lambda mod, state: mod.add_version(state, copy_current=copy_current),
+        )
+
+    @_serialized_session_mutation
+    async def switch_notepad_version(
+        self, session_id: str, *, version_id: str
+    ) -> SessionState:
+        return self._notepad_call(
+            session_id,
+            lambda mod, state: mod.switch_version(state, version_id=version_id),
+        )
+
+    @_serialized_session_mutation
+    async def delete_notepad_version(
+        self, session_id: str, *, version_id: str
+    ) -> SessionState:
+        return self._notepad_call(
+            session_id,
+            lambda mod, state: mod.delete_version(state, version_id=version_id),
+        )
+
+    @_serialized_session_mutation
+    async def set_notepad_participant(
+        self, session_id: str, *, perspective_id: str, participating: bool
+    ) -> SessionState:
+        return self._notepad_call(
+            session_id,
+            lambda mod, state: mod.set_in_chat(
+                state,
+                perspective_id=perspective_id,
+                participating=participating,
+            ),
+        )
+
+    @_serialized_session_mutation
+    async def clear_notepad_chat(self, session_id: str) -> SessionState:
+        return self._notepad_call(session_id, lambda mod, state: mod.clear_chat(state))
+
+    @_serialized_session_mutation
+    async def discuss_notepad(self, session_id: str, *, turns: int) -> SessionState:
+        """Bounded round of agent turns; the arm decides grounding."""
+        return self._notepad_call(
+            session_id,
+            lambda mod, state: mod.discuss(
+                state, turns=turns, guided=state.arm == "guided"
+            ),
+        )
+
+    @_serialized_session_mutation
+    async def ask_notepad(self, session_id: str, *, message: str) -> SessionState:
+        return self._notepad_call(
+            session_id,
+            lambda mod, state: mod.ask(
+                state, message=message, guided=state.arm == "guided"
+            ),
+        )
+
+    @_serialized_session_mutation
+    async def summarize_notepad(self, session_id: str, *, part: str) -> SessionState:
+        """Guided arm proposes; baseline copies straight in."""
+        return self._notepad_call(
+            session_id,
+            lambda mod, state: mod.summarize(
+                state, part=part, guided=state.arm == "guided"
+            ),
+        )
+
+    @_serialized_session_mutation
+    async def decide_notepad_proposal(
+        self,
+        session_id: str,
+        *,
+        proposal_id: str,
+        action: str,
+        text: str | None = None,
+        reason: str = "",
+    ) -> SessionState:
+        """approve / edit / reject, with the reason recorded on reject."""
+        return self._notepad_call(
+            session_id,
+            lambda mod, state: mod.decide_proposal(
+                state,
+                proposal_id=proposal_id,
+                action=action,
+                text=text,
+                reason=reason,
+            ),
+        )
 
     @_serialized_session_mutation
     async def chat(
