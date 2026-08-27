@@ -201,6 +201,45 @@ test("the guided arm cites evidence and gates the notepad behind review", async 
   )
 })
 
+test("the edit draft opens from your latest wording, not a frozen copy", async ({
+  page,
+}) => {
+  await notepadWorkspace(page, "guided")
+  await openGroupChat(page)
+  await page.getByRole("button", { name: /Let agents discuss/ }).click()
+  await expect(page.getByTestId("notepad-conversation")).toContainText("[1]", {
+    timeout: 30_000,
+  })
+  await page.getByLabel("Which part the summary goes to").selectOption("prior")
+  await page.getByRole("button", { name: /Summarize so far/ }).click()
+
+  const proposal = page.getByTestId("notepad-proposal")
+  await expect(proposal).toBeVisible({ timeout: 30_000 })
+
+  // Type after the card is already on screen, then take the edit path.
+  const typed = `${POSITION.prior} Typed after the card appeared.`
+  await page.getByTestId("notepad-part-prior").fill(typed)
+  await expect(proposal).toContainText("Typed after the card appeared.", {
+    timeout: 15_000,
+  })
+
+  await proposal.getByRole("button", { name: "Edit", exact: true }).click()
+  // The draft is created when the editor opens, so it carries the newer
+  // wording; a draft frozen at first render would clobber it on accept.
+  await expect(proposal.getByLabel("Your wording")).toHaveValue(
+    /Typed after the card appeared\./,
+  )
+  await proposal
+    .getByRole("button", { name: /Accept with this wording/ })
+    .click()
+
+  await expect(proposal).toBeHidden({ timeout: 30_000 })
+  await expect(page.getByTestId("notepad-part-prior")).toHaveValue(
+    /Typed after the card appeared\./,
+  )
+})
+
+
 test("approving after your own edit keeps both", async ({ page }) => {
   await notepadWorkspace(page, "guided")
   await openGroupChat(page)

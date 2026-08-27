@@ -247,12 +247,14 @@ function ProposalCard({
   busy: string | null
 }) {
   const focused = useFocusedPanel()
-  const [editing, setEditing] = useState(false)
   // What the panel contributes, apart from the wording it was raised
   // against. Approval folds this onto whatever the part says at that moment.
   const addition = proposal.addition || proposal.proposed_text
   const merged = live ? `${live} ${addition}` : addition
-  const [text, setText] = useState(merged)
+  // One state, not an `editing` flag beside a draft string: the draft is
+  // created when the editor opens, so it can never hold wording from
+  // before the researcher's latest edit to this part.
+  const [draft, setDraft] = useState<string | null>(null)
   const [reason, setReason] = useState("")
   const [error, setError] = useState<string | null>(null)
   const deciding = busy === "Recording your decision"
@@ -324,21 +326,21 @@ function ProposalCard({
           {`Cites ${proposal.citations.join(", ")}`}
         </p>
       ) : null}
-      {editing ? (
+      {draft !== null ? (
         <div className="mt-2.5 space-y-2">
           <textarea
-            value={text}
+            value={draft}
             rows={4}
             aria-label="Your wording"
-            onChange={(event) => setText(event.target.value)}
+            onChange={(event) => setDraft(event.target.value)}
             className="field w-full resize-none rounded-lg px-3 py-2 text-[12.5px] leading-relaxed"
           />
           <div className="flex items-center gap-2">
             <Button
               variant="primary"
               size="sm"
-              disabled={busy !== null || !text.trim()}
-              onClick={() => decide("edit", { text: text.trim() })}
+              disabled={busy !== null || !draft.trim()}
+              onClick={() => decide("edit", { text: draft.trim() })}
             >
               {deciding ? <Spinner /> : null}Accept with this wording
             </Button>
@@ -346,7 +348,7 @@ function ProposalCard({
               variant="ghost"
               size="sm"
               disabled={busy !== null}
-              onClick={() => setEditing(false)}
+              onClick={() => setDraft(null)}
             >
               Cancel
             </Button>
@@ -366,7 +368,7 @@ function ProposalCard({
             variant="outline"
             size="sm"
             disabled={busy !== null}
-            onClick={() => setEditing(true)}
+            onClick={() => setDraft(merged)}
           >
             Edit
           </Button>
