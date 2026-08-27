@@ -21,7 +21,6 @@ import {
 import { StageExtraction } from "./stage-extraction"
 import { StageDeliberation } from "./stage-deliberation"
 import { StageNotepad } from "./stage-notepad"
-import { PanelIntroDialog, StageDialogue } from "./stage-dialogue"
 import { WorkspaceMap } from "./workspace-map"
 import {
   Button,
@@ -54,7 +53,6 @@ export function FocusedWorkspace() {
   )
   const [integrationInvited, setIntegrationInvited] = useState<string[]>([])
   const [integrationError, setIntegrationError] = useState<string | null>(null)
-  const [panelIntroOpen, setPanelIntroOpen] = useState(false)
   const focused = useFocusedPanel()
   const loadWorkspace = focused.loadWorkspace
   useEffect(() => {
@@ -132,17 +130,9 @@ export function FocusedWorkspace() {
   const hasInvestigationBranches = investigations.length > 1
   const activeScreen = hasInvestigationBranches ? workspaceScreen : "detail"
 
-  const usesDialogue = session.deliberations.length === 0
-  // The notepad surface replaces the Thread board. Rollback is a flag flip:
-  // `NEXT_PUBLIC_FOCUSED_SURFACE=threads`, or `?surface=threads` to compare
-  // the two without a redeploy.
-  const surface =
-    (typeof window !== "undefined"
-      ? new URLSearchParams(window.location.search).get("surface")
-      : null) ??
-    process.env.NEXT_PUBLIC_FOCUSED_SURFACE ??
-    "notepad"
-  const usesNotepad = usesDialogue && surface !== "threads"
+  // One surface. Legacy workspaces that already carry `deliberations` still
+  // render the old panel; everything new goes to the document stage.
+  const usesDocument = session.deliberations.length === 0
 
   const toggleStage = () => {
     setActionError(null)
@@ -150,17 +140,11 @@ export function FocusedWorkspace() {
       stageSet("extraction")
       return
     }
-    if (usesNotepad) {
-      // The notepad surface carries its own opening step.
+    if (usesDocument && !isResearchBranch) {
+      // The document stage carries its own opening step. A research branch
+      // falls through instead: Continue means "take these Perspectives back
+      // to the parent panel", which is the block below.
       stageSet("deliberation")
-      return
-    }
-    if (usesDialogue && !isResearchBranch) {
-      if (session.dialogue !== null) {
-        stageSet("deliberation")
-        return
-      }
-      setPanelIntroOpen(true)
       return
     }
     if (session.parent_investigation_id && session.origin_question_id) {
@@ -376,24 +360,13 @@ export function FocusedWorkspace() {
         <WorkspaceMap />
       ) : stage === "extraction" ? (
         <StageExtraction />
-      ) : usesNotepad ? (
+      ) : usesDocument ? (
         <StageNotepad session={session} />
-      ) : usesDialogue ? (
-        <StageDialogue />
       ) : (
         <StageDeliberation />
       )}
 
       <PaperModal />
-      {panelIntroOpen && (
-        <PanelIntroDialog
-          onClose={() => setPanelIntroOpen(false)}
-          onStarted={() => {
-            setPanelIntroOpen(false)
-            stageSet("deliberation")
-          }}
-        />
-      )}
       {integrationOptions && (
         <InvitePerspectivesDialog
           perspectives={integrationOptions}
@@ -652,7 +625,15 @@ const DEMO_POSITION: NotepadDoc = {
 function StartScreen() {
   const [problem, setProblem] = useState(DEMO_PROBLEM)
   const [position, setPosition] = useState<NotepadDoc>(DEMO_POSITION)
-  const [arm, setArm] = useState<"baseline" | "guided">("guided")
+  // The study arm is assigned by whoever runs the session, through the link
+  // they send (`?arm=baseline`). A participant must never pick their own
+  // condition: self-selection destroys random assignment, and naming the
+  // manipulation on screen invites them to perform it.
+  const arm =
+    (typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("arm") === "baseline"
+      ? "baseline"
+      : "guided") satisfies "baseline" | "guided"
   const [demo, setDemo] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [starting, setStarting] = useState(false)
@@ -722,34 +703,6 @@ function StartScreen() {
                 />
               </div>
             ))}
-          </div>
-          <div>
-            <SectionLabel>Panel</SectionLabel>
-            <div className="mt-1.5 flex items-center gap-1.5">
-              {(["guided", "baseline"] as const).map((option) => (
-                <button
-                  key={option}
-                  type="button"
-                  aria-pressed={arm === option}
-                  onClick={() => setArm(option)}
-                  className="rounded-md border px-2.5 py-1 text-[12px] transition-colors"
-                  style={{
-                    borderColor:
-                      arm === option ? "var(--line-strong)" : "var(--line)",
-                    color: arm === option ? "var(--ink)" : "var(--mute)",
-                  }}
-                >
-                  {option === "guided"
-                    ? "Perspective-guided"
-                    : "Unguided baseline"}
-                </button>
-              ))}
-            </div>
-            <p className="mt-1.5 text-[11px] leading-relaxed text-[var(--mute)]">
-              {arm === "guided"
-                ? "Agents argue from their cluster's evidence and propose notepad changes you review."
-                : "Agents argue from their own description, and summaries append without review."}
-            </p>
           </div>
           <label className="flex items-center gap-2 text-[13px] text-[var(--ink-2)]">
             <input

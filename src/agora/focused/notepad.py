@@ -201,7 +201,7 @@ def clear_chat(state: SessionState) -> NotepadState:
         NotepadTurn(
             id=_new_id("turn"),
             role="system",
-            text="Chat cleared. The notepad is unchanged.",
+            text="Chat cleared. The document is unchanged.",
         )
     )
     return notepad

@@ -68,7 +68,7 @@ async function notepadWorkspace(page: Page, arm: "baseline" | "guided") {
 
 async function openGroupChat(page: Page) {
   await page.getByRole("button", { name: "Continue", exact: true }).click()
-  await page.getByRole("button", { name: /Open the group chat/ }).click()
+  await page.getByRole("button", { name: /Open the discussion/ }).click()
   await expect(page.getByTestId("notepad-conversation")).toBeVisible({
     timeout: 30_000,
   })
@@ -86,14 +86,42 @@ test("the input screen collects the problem and a four-part position", async ({
   ]) {
     await expect(page.getByLabel(label, { exact: true })).toBeVisible()
   }
-  // The arm is a visible choice, and only one is active at a time.
-  const guided = page.getByRole("button", { name: "Perspective-guided" })
-  const baseline = page.getByRole("button", { name: "Unguided baseline" })
-  await expect(guided).toHaveAttribute("aria-pressed", "true")
-  await baseline.click()
-  await expect(baseline).toHaveAttribute("aria-pressed", "true")
-  await expect(guided).toHaveAttribute("aria-pressed", "false")
+  // The participant is never shown their condition, let alone offered a
+  // choice of it: self-selection would destroy random assignment, and
+  // naming the manipulation invites them to perform it.
+  await expect(
+    page.getByRole("button", { name: "Perspective-guided" }),
+  ).toHaveCount(0)
+  await expect(
+    page.getByRole("button", { name: "Unguided baseline" }),
+  ).toHaveCount(0)
+  await expect(page.getByText(/propose notepad changes you review/)).toHaveCount(
+    0,
+  )
 })
+
+// One test per case: a fresh context starts with empty localStorage, so the
+// workspace-restore effect cannot race a mid-test clear.
+for (const [query, expected] of [
+  ["", "guided"],
+  ["?arm=baseline", "baseline"],
+  ["?arm=nonsense", "guided"],
+] as const) {
+  test(`the session link assigns ${expected} for "${query || "no query"}"`, async ({
+    page,
+  }) => {
+    await page.goto(`/focused${query}`)
+    await page.getByRole("button", { name: "Begin" }).click()
+    await expect(page).toHaveURL(/workspace=[a-f0-9]+/)
+    const workspaceId = new URL(page.url()).searchParams.get("workspace")
+    const view = await requestJson(
+      page.request,
+      `/api/focused/workspaces/${workspaceId}`,
+      "get",
+    )
+    expect(view.arm).toBe(expected)
+  })
+}
 
 test("three columns carry the notepad, the chat, and the Perspectives", async ({
   page,
@@ -353,13 +381,13 @@ test("the baseline arm cites nothing and offers one blind append", async ({
   await expect(proposal).toBeVisible({ timeout: 30_000 })
   // One button, no diff, no reason, no evidence: Youngseung's single seam.
   await expect(
-    proposal.getByRole("button", { name: "Copy into the notepad" }),
+    proposal.getByRole("button", { name: "Copy into the document" }),
   ).toBeVisible()
   await expect(proposal.getByRole("button")).toHaveCount(1)
   await expect(proposal).not.toContainText("Cites")
 
   await proposal
-    .getByRole("button", { name: "Copy into the notepad" })
+    .getByRole("button", { name: "Copy into the document" })
     .click()
   await expect(proposal).toBeHidden({ timeout: 30_000 })
   await expect(page.getByTestId("notepad-part-framing")).not.toHaveValue(
@@ -367,7 +395,7 @@ test("the baseline arm cites nothing and offers one blind append", async ({
   )
 })
 
-test("a reload lands back in the group chat", async ({ page }) => {
+test("a reload lands back in the discussion", async ({ page }) => {
   const { workspaceId } = await notepadWorkspace(page, "guided")
   await openGroupChat(page)
   await page.goto(`/focused?workspace=${workspaceId}`)
@@ -380,10 +408,19 @@ test("a reload lands back in the group chat", async ({ page }) => {
   )
 })
 
-test("the rollback flag still serves the Thread board", async ({ page }) => {
+test("there is one surface: no flag reaches the old Thread board", async ({
+  page,
+}) => {
   const { workspaceId } = await notepadWorkspace(page, "guided")
+  // The rollback route is gone, so a stale link lands on the document stage
+  // rather than a second, competing surface.
   await page.goto(`/focused?workspace=${workspaceId}&surface=threads`)
   await page.getByRole("button", { name: "Continue", exact: true }).click()
-  await expect(page.getByRole("dialog", { name: "Set up the panel" })).toBeVisible()
-  await expect(page.getByTestId("notepad-panel")).toHaveCount(0)
+  // The document stage's own opening step, not a Thread-board intro dialog.
+  await expect(
+    page.getByRole("button", { name: /Open the discussion/ }),
+  ).toBeVisible({ timeout: 30_000 })
+  await expect(
+    page.getByRole("dialog", { name: "Set up the panel" }),
+  ).toHaveCount(0)
 })
