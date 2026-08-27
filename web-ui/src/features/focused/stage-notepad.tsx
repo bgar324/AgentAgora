@@ -237,16 +237,22 @@ function TurnRow({
 
 function ProposalCard({
   proposal,
+  live,
   guided,
   busy,
 }: {
   proposal: NotepadProposal
+  live: string
   guided: boolean
   busy: string | null
 }) {
   const focused = useFocusedPanel()
   const [editing, setEditing] = useState(false)
-  const [text, setText] = useState(proposal.proposed_text)
+  // What the panel contributes, apart from the wording it was raised
+  // against. Approval folds this onto whatever the part says at that moment.
+  const addition = proposal.addition || proposal.proposed_text
+  const merged = live ? `${live} ${addition}` : addition
+  const [text, setText] = useState(merged)
   const [reason, setReason] = useState("")
   const [error, setError] = useState<string | null>(null)
   const deciding = busy === "Recording your decision"
@@ -298,13 +304,15 @@ function ProposalCard({
       <SectionLabel>
         {`Proposed for ${NOTEPAD_LABELS[proposal.part]} - your review`}
       </SectionLabel>
-      {proposal.current_text ? (
+      {/* The notepad stays editable while this sits here, so the diff reads
+          the live wording: approval folds the addition onto it. */}
+      {live ? (
         <p className="mt-1.5 text-[12px] leading-relaxed text-[var(--mute)] line-through">
-          {proposal.current_text}
+          {live}
         </p>
       ) : null}
       <p className="mt-1 text-[12.5px] leading-relaxed">
-        {proposal.proposed_text}
+        {live ? `${live} ${addition}` : addition}
       </p>
       {proposal.reason ? (
         <p className="mt-1.5 text-[12px] leading-relaxed text-[var(--ink-2)]">
@@ -409,6 +417,9 @@ function ConversationColumn({
   }, [session.perspectives])
 
   const pending = notepad.proposals.filter((item) => item.status === "pending")
+  const liveDoc =
+    notepad.versions.find((item) => item.id === notepad.active_version_id)
+      ?.doc ?? notepad.versions[0]?.doc
   const guard = (action: Promise<unknown>) => {
     setError(null)
     action.catch((cause) =>
@@ -486,6 +497,7 @@ function ConversationColumn({
           <ProposalCard
             key={proposal.id}
             proposal={proposal}
+            live={liveDoc?.[proposal.part] ?? ""}
             guided={guided}
             busy={busy}
           />

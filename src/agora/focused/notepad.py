@@ -521,6 +521,7 @@ def summarize(
                 author_label="Summary",
                 current_text=current,
                 proposed_text=proposed,
+                addition=summary,
             )
         )
         return notepad
@@ -534,6 +535,7 @@ def summarize(
             author_label="Panel summary",
             current_text=current,
             proposed_text=proposed,
+            addition=summary,
             reason=(
                 f"The discussion bears on {NOTEPAD_LABELS[part]}; this folds "
                 "what the panel settled into that part."
@@ -591,24 +593,31 @@ def decide_proposal(
         )
         return notepad
 
-    accepted = (
-        proposal.proposed_text
-        if action == "approve"
-        else " ".join((text or "").split())
-    )
+    live = getattr(version.doc, proposal.part)
+    rebased = live != proposal.current_text
+    if action == "approve":
+        # The notepad stays editable while a proposal is pending, so the
+        # researcher's newer wording wins and the panel's addition folds
+        # onto it. Writing proposal.proposed_text here would silently
+        # restore the text the proposal was raised against.
+        addition = proposal.addition or proposal.proposed_text
+        accepted = f"{live} {addition}".strip() if live else addition
+    else:
+        accepted = " ".join((text or "").split())
     if not accepted:
         raise NotepadError("An edited proposal requires replacement text.")
     setattr(version.doc, proposal.part, accepted)
     proposal.status = "accepted" if action == "approve" else "edited"
     proposal.decided_text = accepted
+    if action == "approve":
+        detail = "folded into your newer wording" if rebased else "as proposed"
+    else:
+        detail = "researcher wording"
     notepad.turns.append(
         NotepadTurn(
             id=_new_id("turn"),
             role="system",
-            text=(
-                f"{NOTEPAD_LABELS[proposal.part]} updated in {version.name}"
-                f" ({'as proposed' if action == 'approve' else 'researcher wording'})."
-            ),
+            text=f"{NOTEPAD_LABELS[proposal.part]} updated in {version.name} ({detail}).",
         )
     )
     return notepad

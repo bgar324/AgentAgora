@@ -201,6 +201,41 @@ test("the guided arm cites evidence and gates the notepad behind review", async 
   )
 })
 
+test("approving after your own edit keeps both", async ({ page }) => {
+  await notepadWorkspace(page, "guided")
+  await openGroupChat(page)
+  await page.getByRole("button", { name: /Let agents discuss/ }).click()
+  await expect(page.getByTestId("notepad-conversation")).toContainText("[1]", {
+    timeout: 30_000,
+  })
+  await page.getByLabel("Which part the summary goes to").selectOption("prior")
+  await page.getByRole("button", { name: /Summarize so far/ }).click()
+
+  const proposal = page.getByTestId("notepad-proposal")
+  await expect(proposal).toBeVisible({ timeout: 30_000 })
+
+  // Keep typing while the card waits: the notepad is always editable.
+  const edit = `${POSITION.prior} And my own qualification.`
+  await page.getByTestId("notepad-part-prior").fill(edit)
+  // The card's diff follows the live wording rather than a frozen copy.
+  await expect(proposal).toContainText("And my own qualification.", {
+    timeout: 15_000,
+  })
+
+  await proposal.getByRole("button", { name: "Approve", exact: true }).click()
+  await expect(proposal).toBeHidden({ timeout: 30_000 })
+
+  const prior = page.getByTestId("notepad-part-prior")
+  // Both survive: approval folds the panel's addition onto the newer text
+  // instead of restoring the wording the proposal was raised against.
+  await expect(prior).toHaveValue(/And my own qualification\./)
+  await expect(prior).toHaveValue(/The discussion so far/)
+  await expect(page.getByTestId("notepad-conversation")).toContainText(
+    "folded into your newer wording",
+  )
+})
+
+
 test("editing a proposal lands the researcher's wording verbatim", async ({
   page,
 }) => {

@@ -245,6 +245,99 @@ def test_only_the_guided_seam_carries_a_reason_and_its_evidence() -> None:
     asyncio.run(go())
 
 
+def test_approving_after_your_own_edit_keeps_both() -> None:
+    """The notepad is editable while a proposal is pending.
+
+    Writing the proposal's frozen text here would silently restore the
+    wording it was raised against, discarding the researcher's edit.
+    """
+
+    async def go() -> None:
+        for arm in ("guided", "baseline"):
+            service, session_id = await _panel(arm)
+            await service.discuss_notepad(session_id, turns=4)
+            await service.summarize_notepad(session_id, part="prior")
+            notepad = service.get(session_id).notepad
+            assert notepad is not None
+            proposal_id = notepad.pending_proposals()[0].id
+
+            edit = f"{POSITION['prior']} And my own qualification."
+            await service.edit_notepad_part(session_id, part="prior", text=edit)
+            await service.decide_notepad_proposal(
+                session_id, proposal_id=proposal_id, action="approve"
+            )
+
+            final = _active_doc(service, session_id).prior
+            assert "And my own qualification." in final, arm
+            assert "The discussion so far" in final, arm
+            # The stale prefix is not pasted back in a second time.
+            assert final.count(POSITION["prior"]) == 1, arm
+            notepad = service.get(session_id).notepad
+            assert notepad is not None
+            assert any(
+                "folded into your newer wording" in turn.text
+                for turn in notepad.turns
+                if turn.role == "system"
+            ), arm
+
+    asyncio.run(go())
+
+
+def test_approving_without_an_edit_appends_as_proposed() -> None:
+    async def go() -> None:
+        service, session_id = await _panel("guided")
+        await service.discuss_notepad(session_id, turns=4)
+        await service.summarize_notepad(session_id, part="prior")
+        notepad = service.get(session_id).notepad
+        assert notepad is not None
+        await service.decide_notepad_proposal(
+            session_id,
+            proposal_id=notepad.pending_proposals()[0].id,
+            action="approve",
+        )
+        final = _active_doc(service, session_id).prior
+        assert final.startswith(POSITION["prior"])
+        assert "The discussion so far" in final
+        notepad = service.get(session_id).notepad
+        assert notepad is not None
+        assert any(
+            "as proposed" in turn.text
+            for turn in notepad.turns
+            if turn.role == "system"
+        )
+
+    asyncio.run(go())
+
+
+def test_switching_versions_leaves_a_pending_proposal_decidable() -> None:
+    """A proposal names its version, so a fork cannot orphan it."""
+
+    async def go() -> None:
+        service, session_id = await _panel("guided")
+        await service.discuss_notepad(session_id, turns=4)
+        await service.summarize_notepad(session_id, part="expected")
+        notepad = service.get(session_id).notepad
+        assert notepad is not None
+        proposal = notepad.pending_proposals()[0]
+        v1_id = proposal.version_id
+
+        await service.add_notepad_version(session_id, copy_current=True)
+        await service.decide_notepad_proposal(
+            session_id, proposal_id=proposal.id, action="approve"
+        )
+
+        notepad = service.get(session_id).notepad
+        assert notepad is not None
+        v1 = next(item for item in notepad.versions if item.id == v1_id)
+        v2 = next(item for item in notepad.versions if item.id != v1_id)
+        # The decision lands on the version it was raised against, not on
+        # whichever version happens to be open.
+        assert "The discussion so far" in v1.doc.expected
+        assert v2.doc.expected == POSITION["expected"]
+
+    asyncio.run(go())
+
+
 def test_editing_a_proposal_lands_the_researchers_wording_verbatim() -> None:
     async def go() -> None:
         service, session_id = await _panel("guided")

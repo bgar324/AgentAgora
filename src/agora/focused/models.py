@@ -597,6 +597,11 @@ class NotepadProposal(BaseModel):
     author_label: str = ""
     current_text: str = Field(default="", max_length=4000)
     proposed_text: str = Field(max_length=4000)
+    # What this proposal contributes, apart from the text it was raised
+    # against. The notepad is editable while a proposal is pending, so
+    # approval re-bases the addition onto the live wording instead of
+    # restoring a stale absolute string over the researcher's newer edit.
+    addition: str = Field(default="", max_length=4000)
     reason: str = Field(default="", max_length=2000)
     citations: list[str] = Field(default_factory=list)
     status: Literal["pending", "accepted", "edited", "rejected"] = "pending"

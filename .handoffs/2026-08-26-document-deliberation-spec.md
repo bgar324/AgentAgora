@@ -38,14 +38,23 @@ Borrowed from the LangChain HITL middleware Kat referenced, because a small fixe
 
 | Verb | Meaning | Implemented by |
 |---|---|---|
-| **Approve** | Take the proposal as written. | `apply_suggestion(action="accept")` |
-| **Edit** | Take it in my wording. | `apply_suggestion(action="edit", text=…)` |
-| **Reject** | Don't take it, and here is why. | `apply_suggestion(action="reject")` + reason recorded |
+| **Approve** | Take the proposal as written, folded onto the current wording. | `decide_proposal(action="approve")` (Kat's `apply_suggestion(action="accept")` shape) |
+| **Edit** | Take it in my wording. | `decide_proposal(action="edit", text=…)` |
+| **Reject** | Don't take it, and here is why. | `decide_proposal(action="reject", reason=…)` |
 | **Ask** | Reply to the proposing Perspective instead of deciding. | existing contribution/reply path |
 
 Today the product uses three different vocabularies for the same shape: `accept / edit / keep_open / request_evidence` on resolutions, `apply / edit / reject` on hypotheses, and status transitions on questions. Collapsing to these four, used identically on every surface, is the single largest legibility win available and costs no engine changes.
 
-**Rejection is not silent.** The reason is recorded on the suggestion and returned to the panel as context, so a later proposal differs. This is the `reject` + feedback pattern from the middleware, and it is the part our current auto-accept path throws away entirely.
+**Rejection is not silent.** The reason lands on `NotepadProposal.decision_reason` and is read back into the chat, so the panel has it as context and a later proposal can differ. This is the `reject` + feedback pattern from the middleware, and it is the part our current auto-accept path throws away entirely.
+
+A correction to an earlier draft of this spec: Kat's `Suggestion.reason` is the *proposer's* justification, and `apply_suggestion(action="reject")` returns the suggestion marked rejected with no `Revision` and nowhere to put the researcher's words. So a rejection reason cannot ride on her `Suggestion` as written. We carry a distinct `decision_reason` field. If the notepad ever moves onto her `Suggestion` type directly, that needs a new field and a migration - open item §8.7.
+
+**Stale proposals re-base; they are never auto-rejected.** The notepad is editable while a proposal is pending, so by the time the researcher decides, the wording the proposal was raised against is often gone. Two rules follow:
+
+1. A proposal stores its **addition** (what the panel contributes), not only an absolute `proposed_text`. Approving appends the addition to whatever the part says at that moment, and the chat says it was *folded into your newer wording*. Writing the frozen text would silently discard the researcher's edit; that was a real defect, and `test_approving_after_your_own_edit_keeps_both` pins it for both arms.
+2. The review card renders the **live** wording in its diff, not the frozen `current_text`, so the researcher never reviews a strikethrough of text that no longer exists.
+
+Kat's `apply_suggestion` takes the opposite position: it raises when `section.version != suggestion.section_version`, which under "always editable" invalidates every pending Suggestion the moment a human types. Adopting her function for this surface therefore requires either re-basing before the call or relaxing that guard - open item §8.8.
 
 **Policy, not blanket review.** Following the middleware's `interrupt_on` model: agent writes to the document always require a decision; agent conversation turns never do. The researcher's own edits are never reviewed.
 
@@ -170,6 +179,8 @@ Nouns a first-time researcher must learn: **notepad, part, version, proposal, Pe
 4. Does the experimental arm keep clustering in the retrieval step? The baseline mockup drops it, and if only one arm has it, retrieval quality confounds the deliberation comparison.
 5. The summary needs a target part. Shipped answer: the researcher picks it next to `Summarize so far`, defaulting to Framing. The alternative is letting the panel choose, which hides a decision inside an agent.
 6. Turn-taking is not guidance. A speaker's second turn answers the previous speaker by name in **both** arms, because identical repeated text was a rendering defect, not a manipulation. Only the baseline's turns stay uncited and never reference the notepad.
+7. **Where does a rejection reason live if we adopt `Suggestion`?** `Suggestion.reason` is already the proposer's. Options: add `decision_reason` to `Suggestion` (schema change plus migration), or keep decisions in a separate record and leave `Suggestion` immutable. We currently do the latter on our own type. Your call which one the canonical schema should carry.
+8. **Should `apply_suggestion` keep raising on `section_version` drift?** Under "always editable" that fires constantly. We re-base instead. If the guard is load-bearing for the document path, the notepad needs to stay on its own type; if not, relaxing it to a re-base would let both surfaces share one function.
 
 ---
 

@@ -678,6 +678,7 @@ export interface NotepadProposal {
   author_id: string
   author_label: string
   current_text: string
+  addition: string
   proposed_text: string
   reason: string
   citations: string[]
