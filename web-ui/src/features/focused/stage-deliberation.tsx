@@ -625,6 +625,7 @@ export function StageDeliberation() {
               await generatePerspective(
                 clusterId,
                 null,
+                undefined,
                 invitedPerspectiveIds,
               )
               setAddPerspectiveOpen(false)

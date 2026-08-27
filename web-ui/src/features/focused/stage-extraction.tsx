@@ -5,7 +5,7 @@ import { Check, ChevronDown, Pencil } from "lucide-react"
 
 import { useFocusedPanel } from "@/hooks/use-focused"
 import { useFocusedStore } from "@/store/focused"
-import { FACETS } from "@/types/focused"
+import { FACETS, NOTEPAD_LABELS, NOTEPAD_PARTS } from "@/types/focused"
 import type {
   ClusterCard,
   Facet,
@@ -611,6 +611,32 @@ export function StageExtraction() {
             )}
           </div>
 
+          {/* Read-only recap of Step 1: the same four parts the Document
+              shows in Step 3, visible while queries are chosen because they
+              are what the suggestions are drawn from. */}
+          {NOTEPAD_PARTS.some((part) => session.position[part].trim()) && (
+            <section
+              className="ep-enter panel px-4 py-3.5"
+              aria-label="Your position"
+            >
+              <SectionLabel>Your position</SectionLabel>
+              <dl className="mt-2 space-y-2">
+                {NOTEPAD_PARTS.filter((part) =>
+                  session.position[part].trim(),
+                ).map((part) => (
+                  <div key={part}>
+                    <dt className="text-[11px] font-medium text-[var(--ink-2)]">
+                      {NOTEPAD_LABELS[part]}
+                    </dt>
+                    <dd className="mt-0.5 text-[12px] leading-relaxed text-[var(--mute)]">
+                      {session.position[part]}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+          )}
+
           {session.searched && session.searched_queries.length > 0 && (
             <section
               aria-label="Queries searched"
@@ -1041,14 +1067,26 @@ function ClusterRow({ cluster, index }: { cluster: ClusterCard; index: number })
     (paper) => paper && !representativeIds.has(paper.id),
   )
 
+  // Youngseung's baseline lets the researcher author the persona before
+  // building it. The cluster supplies the prefill; these two fields are the
+  // researcher's own wording, and they win over the derived framing.
+  const [job, setJob] = useState<string | null>(null)
+  const [description, setDescription] = useState<string | null>(null)
+  const jobValue = job ?? cluster.name
+  const descriptionValue = description ?? cluster.blurb
+
   const generate = async () => {
     setGenerationError(null)
-    const payload = facets
     try {
-      await generatePerspective(cluster.id, payload)
+      await generatePerspective(cluster.id, facets, {
+        name: jobValue,
+        description: descriptionValue,
+      })
     } catch (cause) {
       setGenerationError(
-        cause instanceof Error ? cause.message : "Could not add this Perspective.",
+        cause instanceof Error
+          ? cause.message
+          : "Could not add this Perspective.",
       )
     }
   }
@@ -1103,6 +1141,7 @@ function ClusterRow({ cluster, index }: { cluster: ClusterCard; index: number })
                     {editing === key ? (
                       <input
                         autoFocus
+                        aria-label={`${FACET_META[key].label} evidence`}
                         className="field w-full max-w-[54ch] px-2.5 py-1 text-[13px]"
                         defaultValue={evidence.text}
                         onBlur={(event) => {
@@ -1228,6 +1267,45 @@ function ClusterRow({ cluster, index }: { cluster: ClusterCard; index: number })
                 )}
               </div>
             )}
+            {!inMatrix && !integrated && (
+              <div className="mt-3 space-y-2.5 border-t border-[var(--line)] pt-3">
+                <SectionLabel>This Perspective</SectionLabel>
+                <div>
+                  <label
+                    htmlFor={`persona-job-${cluster.id}`}
+                    className="text-[11px] font-medium text-[var(--ink-2)]"
+                  >
+                    Job
+                  </label>
+                  <input
+                    id={`persona-job-${cluster.id}`}
+                    value={jobValue}
+                    disabled={busy !== null}
+                    onChange={(event) => setJob(event.target.value)}
+                    className="field mt-1 w-full rounded-lg px-3 py-1.5 text-[12.5px]"
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor={`persona-description-${cluster.id}`}
+                    className="text-[11px] font-medium text-[var(--ink-2)]"
+                  >
+                    Description
+                  </label>
+                  <textarea
+                    id={`persona-description-${cluster.id}`}
+                    value={descriptionValue}
+                    rows={2}
+                    disabled={busy !== null}
+                    onChange={(event) => setDescription(event.target.value)}
+                    className="field mt-1 min-h-14 w-full resize-none rounded-lg px-3 py-2 text-[12.5px] leading-relaxed [field-sizing:content]"
+                  />
+                </div>
+                <p className="text-[10.5px] leading-relaxed text-[var(--mute)]">
+                  Drafted from this cluster. Edit either field before building.
+                </p>
+              </div>
+            )}
             <Button
               variant={inMatrix ? "outline" : "primary"}
               size="sm"
@@ -1242,16 +1320,16 @@ function ClusterRow({ cluster, index }: { cluster: ClusterCard; index: number })
             >
               {pendingPerspective ? (
                 <>
-                  <Spinner /> Adding to matrix…
+                  <Spinner /> Building…
                 </>
               ) : inMatrix ? (
                 <>
-                  <span aria-hidden>✓</span> Added to matrix
+                  <span aria-hidden>✓</span> Built
                 </>
               ) : !complete ? (
                 "Complete all four areas"
               ) : (
-                "Add to matrix"
+                "Build this Perspective"
               )}
             </Button>
             {generationError && (

@@ -125,7 +125,7 @@ export function FocusedWorkspace() {
     session.origin_question_id !== null
   const branchIntegrated = session.integrated_into_parent_at !== null
   const canDeliberate =
-    !branchIntegrated && matrixCount >= (isResearchBranch ? 1 : 2)
+    !branchIntegrated && matrixCount >= 1
 
   const hasInvestigationBranches = investigations.length > 1
   const activeScreen = hasInvestigationBranches ? workspaceScreen : "detail"
@@ -311,9 +311,7 @@ export function FocusedWorkspace() {
                 : stage === "extraction" && !canDeliberate
                   ? branchIntegrated
                     ? "This research branch already continues on the parent Canvas"
-                    : isResearchBranch
-                      ? "Add at least one Perspective first"
-                      : "Generate at least two Perspectives first"
+                    : "Build at least one Perspective first"
                   : undefined
             }
           >

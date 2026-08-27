@@ -50,9 +50,9 @@ async function searchDemoLiterature(page: Page) {
 
 async function addPerspective(page: Page, name: string) {
   await page.getByRole("heading", { name, exact: true }).click()
-  await page.getByRole("button", { name: "Add to matrix" }).click()
+  await page.getByRole("button", { name: "Build this Perspective" }).click()
   await expect(
-    page.getByRole("button", { name: /Added to matrix/ }),
+    page.getByRole("button", { name: /Built/ }),
   ).toBeVisible()
   await expect(
     page.getByRole("button", { name: `Remove ${name} from the matrix` }),
@@ -526,15 +526,15 @@ test("keeps other matrix additions available while one loads", async ({ page }) 
   )
 
   await page.getByRole("heading", { name: "Resistance ecology" }).click()
-  await page.getByRole("button", { name: "Add to matrix", exact: true }).click()
+  await page.getByRole("button", { name: "Build this Perspective", exact: true }).click()
   await firstResponseReady.promise
   await expect(
-    page.getByRole("button", { name: /Adding to matrix/ }),
+    page.getByRole("button", { name: /Building/ }),
   ).toBeVisible()
 
   await page.getByRole("heading", { name: "Host and microbiome" }).click()
   const secondAdd = page.getByRole("button", {
-    name: "Add to matrix",
+    name: "Build this Perspective",
     exact: true,
   })
   await expect(secondAdd).toBeEnabled()
@@ -614,7 +614,7 @@ test("returns from a blocked research branch to its parent panel", async ({
     },
   )
   await page.getByRole("heading", { name: nextCluster.name }).click()
-  await page.getByRole("button", { name: "Add to matrix", exact: true }).click()
+  await page.getByRole("button", { name: "Build this Perspective", exact: true }).click()
   await responseReady.promise
   await expect(backToPanel).toBeDisabled()
   releaseResponse.resolve()
@@ -690,7 +690,7 @@ test("continues an open question on the existing canvas", async ({ page }) => {
     }),
   ).toBeVisible()
   await page.keyboard.press("Escape")
-  await page.getByRole("button", { name: "Add to matrix" }).click()
+  await page.getByRole("button", { name: "Build this Perspective" }).click()
   await expect(
     page.getByRole("button", {
       name: "Remove Resistance ecology from the matrix",
@@ -1707,11 +1707,14 @@ test("allows a focused panel with more than three Perspectives", async ({ page }
     "xpath=ancestor::div[contains(@class, 'panel')][1]",
   )
   await sixthCard.getByRole("button", { name: "Add text", exact: true }).click()
-  const missingFacetInput = sixthCard.getByRole("textbox")
+  // Scoped by label: the card also holds the persona Job and Description.
+  const missingFacetInput = sixthCard.getByRole("textbox", {
+    name: /evidence$/,
+  })
   await missingFacetInput.fill("Why this cluster matters")
   await missingFacetInput.press("Enter")
   await expect(
-    sixthCard.getByRole("button", { name: "Add to matrix", exact: true }),
+    sixthCard.getByRole("button", { name: "Build this Perspective", exact: true }),
   ).toBeVisible()
   await page.unroute(workspaceRoute)
   for (const cluster of state.clusters.slice(0, 5)) {
