@@ -237,3 +237,110 @@ def test_every_part_reaches_the_query_prompt(monkeypatch, part: str) -> None:
 
     asyncio.run(go())
     assert POSITION[part] in captured["user"]
+
+
+def _second_cluster(service: FocusedPanelService, session_id: str) -> None:
+    state = service.get(session_id)
+    state.papers.append(
+        ExpPaper(
+            id="p2",
+            title="Microbiome recovery after therapy",
+            abstract="Diversity recovery remains incomplete.",
+            abstract_sentences=["Diversity recovery remains incomplete."],
+        )
+    )
+    state.clusters.append(
+        ClusterCard(
+            id="cluster-2",
+            name="Host and microbiome",
+            blurb="Treats the patient's microbial ecology as an outcome.",
+            facets=[
+                FacetEvidence(
+                    facet=facet,
+                    text="Diversity recovery remains incomplete.",
+                    paper_id="p2",
+                    sentence_index=0,
+                    sentence="Diversity recovery remains incomplete.",
+                )
+                for facet in FACETS
+            ],
+            paper_ids=["p2"],
+            representative_paper_ids=["p2"],
+        )
+    )
+
+
+def test_a_perspective_built_later_joins_the_discussion() -> None:
+    """His spec: the dashed box builds one "which joins the chat on return"."""
+
+    async def go() -> None:
+        service, session_id = _seeded_service()
+        await service.generate_perspective(session_id, cluster_id="cluster-1")
+        await service.start_notepad(session_id)
+        notepad = service.get(session_id).notepad
+        assert notepad is not None
+        assert len(notepad.in_chat) == 1
+
+        _second_cluster(service, session_id)
+        await service.generate_perspective(session_id, cluster_id="cluster-2")
+
+        state = service.get(session_id)
+        assert state.notepad is not None
+        built = [p.id for p in state.perspectives]
+        # Both take part; the newcomer is not silently excluded.
+        assert state.notepad.in_chat == built
+
+    asyncio.run(go())
+
+
+def test_the_newcomer_speaks_in_the_next_round() -> None:
+    async def go() -> None:
+        service, session_id = _seeded_service()
+        await service.generate_perspective(session_id, cluster_id="cluster-1")
+        await service.start_notepad(session_id)
+        _second_cluster(service, session_id)
+        await service.generate_perspective(
+            session_id, cluster_id="cluster-2", name="Host and microbiome"
+        )
+        await service.discuss_notepad(session_id, turns=2)
+        notepad = service.get(session_id).notepad
+        assert notepad is not None
+        speakers = {
+            turn.author_label for turn in notepad.turns if turn.role == "perspective"
+        }
+        assert "Host and microbiome" in speakers
+
+    asyncio.run(go())
+
+
+def test_removing_a_perspective_drops_it_from_the_discussion() -> None:
+    async def go() -> None:
+        service, session_id = _seeded_service()
+        await service.generate_perspective(session_id, cluster_id="cluster-1")
+        await service.start_notepad(session_id)
+        _second_cluster(service, session_id)
+        await service.generate_perspective(session_id, cluster_id="cluster-2")
+        state = service.get(session_id)
+        doomed = state.perspectives[1].id
+
+        await service.remove_perspective(session_id, doomed)
+
+        state = service.get(session_id)
+        assert state.notepad is not None
+        # No dead ids left on the roster.
+        assert doomed not in state.notepad.in_chat
+        assert all(
+            any(p.id == item for p in state.perspectives)
+            for item in state.notepad.in_chat
+        )
+
+    asyncio.run(go())
+
+
+def test_building_before_the_discussion_opens_touches_no_roster() -> None:
+    async def go() -> None:
+        service, session_id = _seeded_service()
+        await service.generate_perspective(session_id, cluster_id="cluster-1")
+        assert service.get(session_id).notepad is None
+
+    asyncio.run(go())

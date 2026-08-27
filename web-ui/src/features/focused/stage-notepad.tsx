@@ -671,11 +671,13 @@ function PerspectivesColumn({
   notepad,
   busy,
   onCollapse,
+  onBuildAnother,
 }: {
   session: SessionState
   notepad: NotepadState
   busy: string | null
   onCollapse: () => void
+  onBuildAnother: () => void
 }) {
   return (
     <section
@@ -702,12 +704,22 @@ function PerspectivesColumn({
             busy={busy}
           />
         ))}
-        <div className="rounded-xl border border-dashed border-[var(--line)] px-3 py-2.5">
-          <p className="text-[11px] text-[var(--mute)]">
-            Build a new one from a cluster on the search step. It joins the
-            chat when you return.
-          </p>
-        </div>
+        {/* "A dashed box at the bottom leads to building a new one, which
+            joins the chat on return." */}
+        <button
+          type="button"
+          data-testid="notepad-build-perspective"
+          onClick={onBuildAnother}
+          className="w-full rounded-xl border border-dashed border-[var(--line)] px-3 py-2.5 text-left transition-colors hover:border-[var(--line-strong)]"
+        >
+          <span className="flex items-center gap-1.5 text-[12.5px] font-medium">
+            <Plus size={12} strokeWidth={2.2} aria-hidden />
+            Build another Perspective
+          </span>
+          <span className="mt-0.5 block text-[11px] leading-relaxed text-[var(--mute)]">
+            Opens the papers step. It joins the discussion when you return.
+          </span>
+        </button>
       </div>
     </section>
   )
@@ -720,6 +732,7 @@ function PerspectivesColumn({
 export function StageNotepad({ session }: { session: SessionState }) {
   const focused = useFocusedPanel()
   const busy = useFocusedStore((s) => s.busy)
+  const stageSet = useFocusedStore((s) => s.stageSet)
   const [collapsed, setCollapsed] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const notepad = session.notepad
@@ -791,6 +804,7 @@ export function StageNotepad({ session }: { session: SessionState }) {
           notepad={notepad}
           busy={busy}
           onCollapse={() => setCollapsed(true)}
+          onBuildAnother={() => stageSet("extraction")}
         />
       )}
     </main>
