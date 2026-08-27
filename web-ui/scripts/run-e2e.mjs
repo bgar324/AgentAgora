@@ -13,9 +13,13 @@ const command = process.platform === "win32" ? "pnpm.cmd" : "pnpm"
 let exitCode = 1
 try {
   exitCode = await new Promise((resolve, reject) => {
-    const child = spawn(command, ["exec", "playwright", "test"], {
-      stdio: "inherit",
-    })
+    // Forward filters (`-g`, a spec path) so a targeted run still gets the
+    // tracked-config restore below; a direct `playwright test` would not.
+    const child = spawn(
+      command,
+      ["exec", "playwright", "test", ...process.argv.slice(2)],
+      { stdio: "inherit" },
+    )
     child.once("error", reject)
     child.once("exit", (code) => resolve(code ?? 1))
   })

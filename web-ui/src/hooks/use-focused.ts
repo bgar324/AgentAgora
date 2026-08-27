@@ -9,6 +9,7 @@ import type {
   HypothesisConfirmationMode,
   HypothesisDev,
   HypothesisPart,
+  NotepadDoc,
   PaperDetail,
   Perspective,
   DeliberationRating,
@@ -169,12 +170,15 @@ export function useFocusedPanel() {
       problem: string,
       researchQuestions: string[],
       demo: boolean,
+      study?: { position?: NotepadDoc; arm?: "baseline" | "guided" },
     ) => {
       const view = await viewCall("Starting Investigation", "workspaces", {
         method: "POST",
         body: JSON.stringify({
           problem,
           research_questions: researchQuestions,
+          position: study?.position ?? null,
+          arm: study?.arm ?? "guided",
           demo,
         }),
       })
@@ -713,6 +717,121 @@ export function useFocusedPanel() {
     [exclusive, requestView, sessionId],
   )
 
+  // Notepad stage. Every command returns the authoritative WorkspaceView;
+  // loading lives on the triggering control.
+  const notepadCall = useCallback(
+    (label: string, path: string, init?: RequestInit) =>
+      exclusive(label, async () => {
+        const view = await requestView(
+          `sessions/${sessionId}/notepad/${path}`,
+          init,
+        )
+        return view.active
+      }),
+    [exclusive, requestView, sessionId],
+  )
+
+  const startNotepad = useCallback(
+    () => notepadCall("Opening the group chat", "start", { method: "POST" }),
+    [notepadCall],
+  )
+
+  const editNotepadPart = useCallback(
+    (part: string, text: string) =>
+      notepadCall("Saving the notepad", "part", {
+        method: "PATCH",
+        body: JSON.stringify({ part, text }),
+      }),
+    [notepadCall],
+  )
+
+  const addNotepadVersion = useCallback(
+    (copyCurrent: boolean) =>
+      notepadCall("Starting a version", "versions", {
+        method: "POST",
+        body: JSON.stringify({ copy_current: copyCurrent }),
+      }),
+    [notepadCall],
+  )
+
+  const switchNotepadVersion = useCallback(
+    (versionId: string) =>
+      notepadCall("Switching version", `versions/${versionId}`, {
+        method: "PUT",
+      }),
+    [notepadCall],
+  )
+
+  const deleteNotepadVersion = useCallback(
+    (versionId: string) =>
+      notepadCall("Deleting version", `versions/${versionId}`, {
+        method: "DELETE",
+      }),
+    [notepadCall],
+  )
+
+  const setNotepadParticipant = useCallback(
+    (perspectiveId: string, participating: boolean) =>
+      notepadCall("Updating the chat", "participants", {
+        method: "PUT",
+        body: JSON.stringify({
+          perspective_id: perspectiveId,
+          participating,
+        }),
+      }),
+    [notepadCall],
+  )
+
+  const discussNotepad = useCallback(
+    (turns: number) =>
+      notepadCall("Agents discussing", "discuss", {
+        method: "POST",
+        body: JSON.stringify({ turns }),
+      }),
+    [notepadCall],
+  )
+
+  const askNotepad = useCallback(
+    (message: string) =>
+      notepadCall("Sending", "messages", {
+        method: "POST",
+        body: JSON.stringify({ message }),
+      }),
+    [notepadCall],
+  )
+
+  const summarizeNotepad = useCallback(
+    (part: string) =>
+      notepadCall("Summarizing", "summaries", {
+        method: "POST",
+        body: JSON.stringify({ part }),
+      }),
+    [notepadCall],
+  )
+
+  const decideNotepadProposal = useCallback(
+    (
+      proposalId: string,
+      action: "approve" | "edit" | "reject",
+      extra?: { text?: string; reason?: string },
+    ) =>
+      notepadCall("Recording your decision", "decisions", {
+        method: "POST",
+        body: JSON.stringify({
+          proposal_id: proposalId,
+          action,
+          text: extra?.text ?? null,
+          reason: extra?.reason ?? "",
+        }),
+      }),
+    [notepadCall],
+  )
+
+  const clearNotepadChat = useCallback(
+    () => notepadCall("Clearing the chat", "chat", { method: "DELETE" }),
+    [notepadCall],
+  )
+
   const startDialogue = useCallback(
     () => dialogueCommand("Starting deliberation", "dialogue/start", {}),
     [dialogueCommand],
@@ -812,6 +931,17 @@ export function useFocusedPanel() {
     decideDialogueThread,
     continueDialogueFromResolution,
     fetchDialogueReport,
+    startNotepad,
+    editNotepadPart,
+    addNotepadVersion,
+    switchNotepadVersion,
+    deleteNotepadVersion,
+    setNotepadParticipant,
+    discussNotepad,
+    askNotepad,
+    summarizeNotepad,
+    decideNotepadProposal,
+    clearNotepadChat,
   }
 }
 

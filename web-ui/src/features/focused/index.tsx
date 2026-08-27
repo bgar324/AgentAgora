@@ -9,10 +9,18 @@ import {
   useFocusedPanel,
 } from "@/hooks/use-focused"
 import { useFocusedStore } from "@/store/focused"
-import type { PaperDetail, Perspective } from "@/types/focused"
+import {
+  NOTEPAD_LABELS,
+  NOTEPAD_PARTS,
+  type NotepadDoc,
+  type NotepadPart,
+  type PaperDetail,
+  type Perspective,
+} from "@/types/focused"
 
 import { StageExtraction } from "./stage-extraction"
 import { StageDeliberation } from "./stage-deliberation"
+import { StageNotepad } from "./stage-notepad"
 import { PanelIntroDialog, StageDialogue } from "./stage-dialogue"
 import { WorkspaceMap } from "./workspace-map"
 import {
@@ -125,11 +133,26 @@ export function FocusedWorkspace() {
   const activeScreen = hasInvestigationBranches ? workspaceScreen : "detail"
 
   const usesDialogue = session.deliberations.length === 0
+  // The notepad surface replaces the Thread board. Rollback is a flag flip:
+  // `NEXT_PUBLIC_FOCUSED_SURFACE=threads`, or `?surface=threads` to compare
+  // the two without a redeploy.
+  const surface =
+    (typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("surface")
+      : null) ??
+    process.env.NEXT_PUBLIC_FOCUSED_SURFACE ??
+    "notepad"
+  const usesNotepad = usesDialogue && surface !== "threads"
 
   const toggleStage = () => {
     setActionError(null)
     if (stage === "deliberation") {
       stageSet("extraction")
+      return
+    }
+    if (usesNotepad) {
+      // The notepad surface carries its own opening step.
+      stageSet("deliberation")
       return
     }
     if (usesDialogue && !isResearchBranch) {
@@ -353,6 +376,8 @@ export function FocusedWorkspace() {
         <WorkspaceMap />
       ) : stage === "extraction" ? (
         <StageExtraction />
+      ) : usesNotepad ? (
+        <StageNotepad session={session} />
       ) : usesDialogue ? (
         <StageDialogue />
       ) : (
@@ -604,11 +629,30 @@ function ResetDialog({
   )
 }
 
+const PART_HINTS: Record<NotepadPart, string> = {
+  framing: "How you are framing the problem.",
+  prior: "What is already known, and where it stops.",
+  method: "How you would go about it.",
+  expected: "What you expect to find, and why it would matter.",
+}
+
 const DEMO_PROBLEM =
   "Should antibiotics be prescribed broadly? I suspect the faster cure trades off against resistance and gut-flora harm."
 
+const DEMO_POSITION: NotepadDoc = {
+  framing: "Prescribing breadth is an evolutionary-pressure problem, not a dosing problem.",
+  prior:
+    "Cohort work links broad-spectrum days to resistance, but rarely prices the acute benefit against it.",
+  method:
+    "Compare severity-matched cohorts on resistome carriage and time-to-cure, measured the same way at every site.",
+  expected:
+    "Narrower first-line holds outcomes outside sepsis, and the harm horizon runs past the treated infection.",
+}
+
 function StartScreen() {
   const [problem, setProblem] = useState(DEMO_PROBLEM)
+  const [position, setPosition] = useState<NotepadDoc>(DEMO_POSITION)
+  const [arm, setArm] = useState<"baseline" | "guided">("guided")
   const [demo, setDemo] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [starting, setStarting] = useState(false)
@@ -618,7 +662,7 @@ function StartScreen() {
     setStarting(true)
     setError(null)
     try {
-      await createWorkspace(problem.trim(), [], demo)
+      await createWorkspace(problem.trim(), [], demo, { position, arm })
     } catch (err) {
       setError(err instanceof Error ? err.message : "failed to start")
     } finally {
@@ -634,7 +678,8 @@ function StartScreen() {
             Hypothesis Studio
           </h1>
           <p className="mt-1.5 text-[13px] leading-relaxed text-[var(--ink-2)]">
-            Search, extract perspectives, and run a panel.
+            Write the problem and your position. A panel of Perspectives
+            discusses it with you.
           </p>
         </div>
 
@@ -650,6 +695,61 @@ function StartScreen() {
               className="field w-full resize-none px-3 py-2.5 text-[13px] leading-relaxed placeholder:text-[var(--mute)]"
               placeholder="Jot down the question or hunch you're exploring."
             />
+          </div>
+
+          <div className="space-y-3">
+            <SectionLabel>Your position, in four parts</SectionLabel>
+            {NOTEPAD_PARTS.map((part) => (
+              <div key={part}>
+                <label
+                  htmlFor={`position-${part}`}
+                  className="text-[11px] font-medium text-[var(--ink-2)]"
+                >
+                  {NOTEPAD_LABELS[part]}
+                </label>
+                <textarea
+                  id={`position-${part}`}
+                  value={position[part]}
+                  rows={2}
+                  onChange={(event) =>
+                    setPosition((current) => ({
+                      ...current,
+                      [part]: event.target.value,
+                    }))
+                  }
+                  className="field mt-1 w-full resize-none px-3 py-2 text-[12.5px] leading-relaxed placeholder:text-[var(--mute)]"
+                  placeholder={PART_HINTS[part]}
+                />
+              </div>
+            ))}
+          </div>
+          <div>
+            <SectionLabel>Panel</SectionLabel>
+            <div className="mt-1.5 flex items-center gap-1.5">
+              {(["guided", "baseline"] as const).map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  aria-pressed={arm === option}
+                  onClick={() => setArm(option)}
+                  className="rounded-md border px-2.5 py-1 text-[12px] transition-colors"
+                  style={{
+                    borderColor:
+                      arm === option ? "var(--line-strong)" : "var(--line)",
+                    color: arm === option ? "var(--ink)" : "var(--mute)",
+                  }}
+                >
+                  {option === "guided"
+                    ? "Perspective-guided"
+                    : "Unguided baseline"}
+                </button>
+              ))}
+            </div>
+            <p className="mt-1.5 text-[11px] leading-relaxed text-[var(--mute)]">
+              {arm === "guided"
+                ? "Agents argue from their cluster's evidence and propose notepad changes you review."
+                : "Agents argue from their own description, and summaries append without review."}
+            </p>
           </div>
           <label className="flex items-center gap-2 text-[13px] text-[var(--ink-2)]">
             <input

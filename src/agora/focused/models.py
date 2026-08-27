@@ -560,6 +560,94 @@ DialogueStage = Literal["opening", "selection", "deliberation"]
 DialogueWaiting = Literal["proposal_selection", "resolution_decision"]
 
 
+NotepadPart = Literal["framing", "prior", "method", "expected"]
+
+# Youngseung's baseline notepad: the researcher's position in four parts,
+# written on the input screen and editable throughout the discussion.
+NOTEPAD_PARTS: list[NotepadPart] = ["framing", "prior", "method", "expected"]
+NOTEPAD_LABELS: dict[NotepadPart, str] = {
+    "framing": "Framing",
+    "prior": "Previous work",
+    "method": "Methodology",
+    "expected": "Expected results",
+}
+
+
+class NotepadDoc(BaseModel):
+    """One four-part position. `v1` holds what the input screen captured."""
+
+    framing: str = Field(default="", max_length=4000)
+    prior: str = Field(default="", max_length=4000)
+    method: str = Field(default="", max_length=4000)
+    expected: str = Field(default="", max_length=4000)
+
+
+class NotepadProposal(BaseModel):
+    """A panel-proposed change to one notepad part, awaiting the researcher.
+
+    Mirrors the canonical Suggestion decision shape (accept / edit /
+    reject) so the deliberation record stays comparable, while targeting a
+    notepad part rather than a document section.
+    """
+
+    id: str
+    version_id: str
+    part: NotepadPart
+    author_id: str
+    author_label: str = ""
+    current_text: str = Field(default="", max_length=4000)
+    proposed_text: str = Field(max_length=4000)
+    reason: str = Field(default="", max_length=2000)
+    citations: list[str] = Field(default_factory=list)
+    status: Literal["pending", "accepted", "edited", "rejected"] = "pending"
+    decided_text: str | None = Field(default=None, max_length=4000)
+    decision_reason: str = Field(default="", max_length=2000)
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class NotepadVersion(BaseModel):
+    """A named alternative. Versions are independent; these are the output."""
+
+    id: str
+    name: str = Field(min_length=1, max_length=40)
+    doc: NotepadDoc = Field(default_factory=NotepadDoc)
+    created_from: str | None = None
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class NotepadTurn(BaseModel):
+    """One line of the group chat."""
+
+    id: str
+    role: Literal["researcher", "perspective", "system", "summary"]
+    author_id: str | None = None
+    author_label: str = ""
+    text: str = Field(default="", max_length=8000)
+    citations: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class NotepadState(BaseModel):
+    """The group-chat stage: notepad versions, conversation, and roster."""
+
+    id: str
+    versions: list[NotepadVersion] = Field(default_factory=list)
+    active_version_id: str | None = None
+    turns: list[NotepadTurn] = Field(default_factory=list)
+    proposals: list[NotepadProposal] = Field(default_factory=list)
+    in_chat: list[str] = Field(default_factory=list)
+    turn_cursor: int = 0
+
+    def active_version(self) -> NotepadVersion | None:
+        for version in self.versions:
+            if version.id == self.active_version_id:
+                return version
+        return self.versions[0] if self.versions else None
+
+    def pending_proposals(self) -> list[NotepadProposal]:
+        return [item for item in self.proposals if item.status == "pending"]
+
+
 class DialogueState(BaseModel):
     """Canonical Perspectra-style deliberation state for one Investigation.
 
@@ -619,6 +707,8 @@ class SessionState(BaseModel):
     origin_question_id: str | None = None
     origin_question: ResearchQuestion | None = None
     integrated_into_parent_at: datetime | None = None
+    position: NotepadDoc = Field(default_factory=NotepadDoc)
+    arm: Literal["baseline", "guided"] = "guided"
     applied_hypothesis: HypothesisDev | None = None
     applied_hypothesis_version_id: str | None = None
     suggested_queries: list[SuggestedQuery] = Field(default_factory=list)
@@ -631,6 +721,7 @@ class SessionState(BaseModel):
     agents: list[AgentState] = Field(default_factory=list)
     deliberations: list[DeliberationState] = Field(default_factory=list)
     dialogue: DialogueState | None = None
+    notepad: NotepadState | None = None
     searched: bool = False
     clustering: ClusteringDiagnostics | None = None
 

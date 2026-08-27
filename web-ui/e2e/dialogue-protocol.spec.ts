@@ -45,7 +45,7 @@ async function dialogueWorkspace(page: Page) {
     )
   }
   expect(state.perspectives.length).toBe(3)
-  await page.goto(`/focused?workspace=${workspaceId}`)
+  await page.goto(`/focused?workspace=${workspaceId}&surface=threads`)
   await expect(
     page.getByRole("button", { name: "Continue", exact: true }),
   ).toBeEnabled()
@@ -220,7 +220,7 @@ test("continues a finished dialogue from an open question", async ({ page }) => 
     )
   }
 
-  await page.goto(`/focused?workspace=${workspaceId}`)
+  await page.goto(`/focused?workspace=${workspaceId}&surface=threads`)
   await expect(
     page.getByRole("heading", { name: "Current Threads resolved" }),
   ).toBeVisible()

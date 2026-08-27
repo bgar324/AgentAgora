@@ -630,6 +630,73 @@ export interface DialogueState {
   reflections: CanonReflection[]
 }
 
+export type NotepadPart = "framing" | "prior" | "method" | "expected"
+
+export const NOTEPAD_PARTS: NotepadPart[] = [
+  "framing",
+  "prior",
+  "method",
+  "expected",
+]
+
+export const NOTEPAD_LABELS: Record<NotepadPart, string> = {
+  framing: "Framing",
+  prior: "Previous work",
+  method: "Methodology",
+  expected: "Expected results",
+}
+
+export interface NotepadDoc {
+  framing: string
+  prior: string
+  method: string
+  expected: string
+}
+
+export interface NotepadVersion {
+  id: string
+  name: string
+  doc: NotepadDoc
+  created_from: string | null
+  created_at: string
+}
+
+export interface NotepadTurn {
+  id: string
+  role: "researcher" | "perspective" | "system" | "summary"
+  author_id: string | null
+  author_label: string
+  text: string
+  citations: string[]
+  created_at: string
+}
+
+export interface NotepadProposal {
+  id: string
+  version_id: string
+  part: NotepadPart
+  author_id: string
+  author_label: string
+  current_text: string
+  proposed_text: string
+  reason: string
+  citations: string[]
+  status: "pending" | "accepted" | "edited" | "rejected"
+  decided_text: string | null
+  decision_reason: string
+  created_at: string
+}
+
+export interface NotepadState {
+  id: string
+  versions: NotepadVersion[]
+  active_version_id: string | null
+  turns: NotepadTurn[]
+  proposals: NotepadProposal[]
+  in_chat: string[]
+  turn_cursor: number
+}
+
 export interface SessionState {
   id: string
   workspace_id: string
@@ -652,6 +719,9 @@ export interface SessionState {
   perspectives: Perspective[]
   agents: AgentState[]
   deliberations: DeliberationState[]
+  notepad: NotepadState | null
+  position: NotepadDoc
+  arm: "baseline" | "guided"
   dialogue: DialogueState | null
   searched: boolean
   clustering: ClusteringDiagnostics | null
