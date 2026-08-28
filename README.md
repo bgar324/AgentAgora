@@ -70,9 +70,9 @@ the FastAPI service behind the Vercel server proxy token.
 Computed semantic cosine distances remain export-only study measurements; they
 are never rendered to participants.
 
-## Required keys
+## Live-mode keys
 
-Copy the template and fill the keys:
+For live sessions, copy the template and fill the keys:
 
 ```bash
 cp .env.example .env
@@ -82,9 +82,9 @@ cp .env.example .env
 - `OPENROUTER_API_KEY`: structured model calls for live extraction and panel responses.
 - `SEMANTIC_SCHOLAR_API_KEY`: optional, but recommended for paper-search throughput.
 
-Demo sessions use the bundled abstract corpus and deterministic panel output.
-Focused demo rounds still embed the four facet profiles with OpenAI for the
-hidden study-analysis metric; they never display that metric to participants.
+Demo sessions use the bundled corpus and deterministic panel output without
+external API keys. Without OpenAI, the hidden study-analysis metric is recorded
+as unavailable and is never displayed to participants.
 
 ## Run locally
 
@@ -94,7 +94,7 @@ Backend, from the repository root:
 python3 -m venv .venv
 .venv/bin/python -m pip install -e .
 .venv/bin/python -m pip install pytest ruff
-.venv/bin/fastapi dev src/agora/app.py --port 8000
+.venv/bin/fastapi dev src/agora/focused_app.py --port 8000
 ```
 
 Frontend, in another terminal:

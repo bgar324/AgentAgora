@@ -43,10 +43,16 @@ async def lifespan(app: FastAPI):
     else:
         focused_db = connect(settings.server.data_dir / "agora.db")
         focused_persistence = FocusedPersistence(focused_db)
-    openai_client = AsyncOpenAI(api_key=settings.openai.api_key)
+    openai_client = (
+        AsyncOpenAI(api_key=settings.openai.api_key)
+        if settings.openai.api_key
+        else None
+    )
     s2_client = SemanticScholarClient(settings.semantic_scholar)
 
     async def embed(texts):
+        if openai_client is None:
+            raise RuntimeError("OPENAI_API_KEY is required for embeddings")
         return await embed_texts(texts, client=openai_client)
 
     app.state.settings = settings
@@ -67,7 +73,7 @@ async def lifespan(app: FastAPI):
     app.state.focused_provider = focused_provider
     app.state.focused = FocusedPanelService(
         provider=focused_provider,
-        embedder=embed,
+        embedder=embed if openai_client is not None else None,
         embedding_model=EMBEDDING_MODEL,
         s2=focused_s2,
         persistence=focused_persistence,
@@ -79,7 +85,8 @@ async def lifespan(app: FastAPI):
     if app.state.focused_provider is not None:
         await app.state.focused_provider.close()
     await s2_client.close()
-    await openai_client.close()
+    if openai_client is not None:
+        await openai_client.close()
     if focused_db is not None:
         focused_db.close()
     db.close()
