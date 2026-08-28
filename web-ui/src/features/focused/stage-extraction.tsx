@@ -1301,9 +1301,6 @@ function ClusterRow({ cluster, index }: { cluster: ClusterCard; index: number })
                     className="field mt-1 min-h-14 w-full resize-none rounded-lg px-3 py-2 text-[12.5px] leading-relaxed [field-sizing:content]"
                   />
                 </div>
-                <p className="text-[10.5px] leading-relaxed text-[var(--mute)]">
-                  Drafted from this cluster. Edit either field before building.
-                </p>
               </div>
             )}
             <Button
