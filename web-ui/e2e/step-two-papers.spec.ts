@@ -185,3 +185,29 @@ test("the Perspectives rail routes back to Step 2 and rejoins on return", async 
     timeout: 30_000,
   })
 })
+
+test("a Perspective shows its four Fragments and their synthesis", async ({
+  page,
+}) => {
+  await atStepTwo(page)
+  await page.getByRole("heading", { name: "Resistance ecology" }).click()
+  await page.getByRole("button", { name: "Build this Perspective" }).click()
+  await page.getByRole("button", { name: "Continue", exact: true }).click()
+  await page.getByRole("button", { name: /Open the discussion/ }).click()
+  await expect(page.getByTestId("notepad-perspectives")).toBeVisible({
+    timeout: 30_000,
+  })
+
+  // Expanding the card exposes both levels of Kat's ontology: the four
+  // Fragments the formative study identified, and the framing/position
+  // synthesis derived from them.
+  await page
+    .getByTestId("notepad-perspectives")
+    .getByRole("button", { name: "Resistance ecology" })
+    .click()
+  const card = page.getByTestId("notepad-perspectives")
+  for (const fragment of ["Scope", "Explanation", "Approach", "Significance"]) {
+    await expect(card).toContainText(fragment)
+  }
+  await expect(card).toContainText("Framing & Position")
+})

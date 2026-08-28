@@ -6,6 +6,14 @@ export const FACETS = [
 ] as const
 
 export type Facet = (typeof FACETS)[number]
+
+/** Kat's vocabulary: the four Fragments of a Perspective. */
+export const FACET_LABELS: Record<Facet, string> = {
+  scope: "Scope",
+  explanation: "Explanation",
+  approach: "Approach",
+  significance: "Significance",
+}
 export type RetrievalTier = "answer" | "problem" | "candidate"
 
 export interface ExpPaper {
