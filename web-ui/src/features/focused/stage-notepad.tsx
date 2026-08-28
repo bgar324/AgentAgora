@@ -821,7 +821,7 @@ export function StageNotepad({ session }: { session: SessionState }) {
 
   return (
     <main
-      className={`grid min-h-0 flex-1 gap-3 px-4 pb-4 lg:max-h-[calc(100dvh-48px)] lg:grid-rows-[minmax(0,1fr)] lg:overflow-hidden ${
+      className={`grid min-h-0 flex-1 gap-3 p-4 lg:max-h-[calc(100dvh-48px)] lg:grid-rows-[minmax(0,1fr)] lg:overflow-hidden ${
         collapsed
           ? "lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_40px]"
           : "lg:grid-cols-3"
