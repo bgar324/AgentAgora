@@ -50,7 +50,7 @@ async function atStepTwo(page: Page) {
 async function carryPaper(page: Page, index = 0) {
   const card = page.getByTestId("paper-result").nth(index)
   await card.getByRole("button").first().click()
-  await card.getByRole("button", { name: "Carry to Perspective" }).click()
+  await card.getByRole("button", { name: "Add to editor" }).click()
   return card
 }
 
@@ -98,7 +98,7 @@ test("a paper expands inline and carries its abstract into an editable Perspecti
   await card.getByRole("button").first().click()
   await expect(card).toContainText("Abstract")
   await expect(card).toContainText(paper.abstract)
-  await card.getByRole("button", { name: "Carry to Perspective" }).click()
+  await card.getByRole("button", { name: "Add to editor" }).click()
 
   const job = page.getByLabel("Job", { exact: true })
   const description = page.getByRole("textbox", {

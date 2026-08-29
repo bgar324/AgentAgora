@@ -268,7 +268,7 @@ function NotepadColumn({
           ) : (
             <Plus size={11} strokeWidth={2.2} />
           )}
-          Version
+          Copy current
         </button>
         <button
           type="button"
@@ -278,7 +278,7 @@ function NotepadColumn({
           onClick={() => flushThen(() => focused.addNotepadVersion(false))}
           className="flex items-center rounded-md border border-dashed border-[var(--line)] px-2 py-0.5 text-[11px] text-[var(--mute)] transition-colors hover:border-[var(--line-strong)] hover:text-[var(--ink-2)]"
         >
-          Blank
+          Start blank
         </button>
       </div>
       <p className="mt-1.5 text-[10.5px] text-[var(--mute)]">
