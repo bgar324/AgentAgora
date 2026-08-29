@@ -41,6 +41,22 @@ QUESTIONS = [
     "Does it harm the patient's flora beyond the treated infection?",
 ]
 
+def test_in_memory_mutations_advance_workspace_revision() -> None:
+    async def go() -> tuple[int, int]:
+        service = FocusedPanelService()
+        view = service.create_workspace(
+            problem=PROBLEM,
+            research_questions=QUESTIONS,
+            demo=True,
+        )
+        before = view.workspace.revision
+        await service.suggest_queries(view.active.id)
+        after = service.workspace_view(view.workspace.id).workspace.revision
+        return before, after
+
+    before, after = asyncio.run(go())
+    assert after == before + 1
+
 
 class FlakingProvider:
     async def generate_structured(self, **_):

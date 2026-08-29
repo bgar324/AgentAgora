@@ -45,6 +45,7 @@ function PartField({
   value,
   versionId,
   onCommit,
+  onStage,
   registerFlush,
 }: {
   part: NotepadPart
@@ -55,6 +56,7 @@ function PartField({
     part: NotepadPart,
     text: string,
   ) => Promise<unknown>
+  onStage: (versionId: string, part: NotepadPart, text: string) => void
   registerFlush: RegisterFlush
 }) {
   // "Changes take effect as they are typed; there is nothing to save."
@@ -107,6 +109,7 @@ function PartField({
   )
 
   const change = (next: string) => {
+    onStage(versionId, part, next)
     setText(next)
     latestRevision.current += 1
     pending.current = { text: next, revision: latestRevision.current }
@@ -172,6 +175,7 @@ function NotepadColumn({
 
 
   const editNotepadPart = focused.editNotepadPart
+  const stageNotepadPart = focused.stageNotepadPart
   const flushNotepadEdits = focused.flushNotepadEdits
   useEffect(() => {
     void flushNotepadEdits().catch((cause) =>
@@ -274,6 +278,7 @@ function NotepadColumn({
             versionId={version.id}
             value={version.doc[part]}
             onCommit={commit}
+            onStage={stageNotepadPart}
             registerFlush={registerFlush}
           />
         ))}

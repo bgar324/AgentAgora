@@ -545,25 +545,18 @@ class FocusedPanelService:
 
     def _persist_workspace(self, workspace_id: str) -> None:
         workspace = self._require_workspace(workspace_id)
-        if self._persistence is None:
-            try:
-                self._validated_workspace_state(workspace)
-            except Exception:
-                self._restore_durable(workspace_id)
-                raise
-            self._remember_durable(workspace_id)
-            return
         expected_revision = workspace.revision
         workspace.revision += 1
         try:
             validated_workspace, investigations = self._validated_workspace_state(
                 workspace
             )
-            self._persistence.save(
-                validated_workspace,
-                investigations,
-                expected_revision=expected_revision,
-            )
+            if self._persistence is not None:
+                self._persistence.save(
+                    validated_workspace,
+                    investigations,
+                    expected_revision=expected_revision,
+                )
         except PersistenceConflict as error:
             workspace.revision = expected_revision
             self._reload_workspace(workspace_id)

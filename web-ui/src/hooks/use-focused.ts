@@ -62,15 +62,33 @@ type PendingNotepadEdit = {
 
 const notepadEditQueues = new Map<string, Promise<void>>()
 const latestNotepadEdits = new Map<string, PendingNotepadEdit>()
+const savedNotepadTexts = new Map<string, string>()
+const queuedNotepadEdits = new Map<
+  string,
+  { edit: PendingNotepadEdit; request: Promise<void> }
+>()
 const notepadFlushes = new Map<string, Promise<void>>()
+
+function stageNotepadEdit(
+  sessionId: string,
+  versionId: string,
+  part: NotepadPart,
+  text: string,
+): PendingNotepadEdit {
+  const key = `${sessionId}:${versionId}:${part}`
+  const current = latestNotepadEdits.get(key)
+  if (current?.text === text) return current
+  const edit = { sessionId, versionId, part, text }
+  latestNotepadEdits.set(key, edit)
+  return edit
+}
 
 /**
  * Most mutations are exclusive. Perspective generation may run concurrently;
- * its response merge retains newer local adds without reviving removals.
+ * workspace revisions reject stale responses while pending adds remain visible.
  */
 export function useFocusedPanel() {
   const workspaceViewSet = useFocusedStore((s) => s.workspaceViewSet)
-  const perspectiveViewSet = useFocusedStore((s) => s.perspectiveViewSet)
   const busySet = useFocusedStore((s) => s.busySet)
   const queriesCleared = useFocusedStore((s) => s.queriesCleared)
   const searchProgressAdded = useFocusedStore((s) => s.searchProgressAdded)
@@ -319,11 +337,6 @@ export function useFocusedPanel() {
       if (!session || (!paper && !cluster)) {
         throw new Error("This literature source is no longer available.")
       }
-      const perspectiveIdsAtRequest = new Set(
-        session.perspectives
-          .filter((perspective) => !perspective.id.startsWith("optimistic:"))
-          .map((perspective) => perspective.id),
-      )
 
       const origin = paper ? `paper:${paper.id}` : cluster!.id
       if (
@@ -383,18 +396,15 @@ export function useFocusedPanel() {
               invited_perspective_ids: invitedPerspectiveIds,
             }),
           },
-          (view) => perspectiveViewSet(view, perspectiveIdsAtRequest),
         )
         return view.active
-      } catch (cause) {
+      } finally {
         optimisticPerspectiveRemove(optimisticId)
-        throw cause
       }
     },
     [
       optimisticPerspectiveAdd,
       optimisticPerspectiveRemove,
-      perspectiveViewSet,
       requestView,
       sessionId,
     ],
@@ -772,15 +782,33 @@ export function useFocusedPanel() {
     [notepadCall],
   )
 
+  const stageNotepadPart = useCallback(
+    (versionId: string, part: NotepadPart, text: string) => {
+      if (sessionId === null) return
+      stageNotepadEdit(sessionId, versionId, part, text)
+    },
+    [sessionId],
+  )
+
   const editNotepadPart = useCallback(
-    async (versionId: string, part: NotepadPart, text: string) => {
-      if (sessionId === null) throw new Error("No active investigation.")
+    (versionId: string, part: NotepadPart, text: string) => {
+      if (sessionId === null) {
+        return Promise.reject(new Error("No active investigation."))
+      }
       const queueKey = `${sessionId}:${versionId}:${part}`
-      const edit = { sessionId, versionId, part, text }
-      latestNotepadEdits.set(queueKey, edit)
+      if (
+        latestNotepadEdits.get(queueKey) === undefined &&
+        savedNotepadTexts.get(queueKey) === text
+      ) {
+        return Promise.resolve()
+      }
+      const edit = stageNotepadEdit(sessionId, versionId, part, text)
+      const queued = queuedNotepadEdits.get(queueKey)
+      if (queued?.edit === edit) return queued.request
+
       const previous = notepadEditQueues.get(queueKey) ?? Promise.resolve()
       const request = previous.then(async () => {
-        const view = await requestView(
+        await requestView(
           `sessions/${sessionId}/notepad/part`,
           {
             method: "PATCH",
@@ -796,23 +824,27 @@ export function useFocusedPanel() {
             }
           },
         )
+        savedNotepadTexts.set(queueKey, edit.text)
         if (latestNotepadEdits.get(queueKey) === edit) {
           latestNotepadEdits.delete(queueKey)
         }
-        return view
       })
       const settled = request.then(
         () => undefined,
         () => undefined,
       )
+      const queuedEdit = { edit, request }
       notepadEditQueues.set(queueKey, settled)
+      queuedNotepadEdits.set(queueKey, queuedEdit)
       void settled.then(() => {
         if (notepadEditQueues.get(queueKey) === settled) {
           notepadEditQueues.delete(queueKey)
         }
+        if (queuedNotepadEdits.get(queueKey) === queuedEdit) {
+          queuedNotepadEdits.delete(queueKey)
+        }
       })
-      const view = await request
-      return view.active
+      return request
     },
     [requestView, sessionId, workspaceViewSet],
   )
@@ -1046,6 +1078,7 @@ export function useFocusedPanel() {
     continueDialogueFromResolution,
     fetchDialogueReport,
     startNotepad,
+    stageNotepadPart,
     editNotepadPart,
     flushNotepadEdits,
     addNotepadVersion,

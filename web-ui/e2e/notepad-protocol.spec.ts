@@ -387,6 +387,9 @@ test("version commands drain edits owned by a prior chat mount", async ({
     .click()
   await page.waitForTimeout(150)
   expect(versionCreates).toBe(0)
+  await page
+    .getByTestId("notepad-part-framing")
+    .fill("Wording typed while Copy waits.")
 
   releaseFirst()
   await expect.poll(() => versionCreates).toBe(1)
@@ -401,9 +404,47 @@ test("version commands drain edits owned by a prior chat mount", async ({
       (version: { doc: { framing: string } }) => version.doc.framing,
     ),
   ).toEqual([
-    "Wording the copied version must inherit.",
-    "Wording the copied version must inherit.",
+    "Wording typed while Copy waits.",
+    "Wording typed while Copy waits.",
   ])
+})
+
+test("deleting a version does not replay its coordinator-saved draft", async ({
+  page,
+}) => {
+  await notepadWorkspace(page, "guided")
+  await openGroupChat(page)
+  await page
+    .getByRole("button", { name: "Add version by copying the current version" })
+    .click()
+  await expect(page.getByTestId("notepad-version-v2")).toBeVisible()
+
+  let releaseFirst: () => void = () => undefined
+  const firstHeld = new Promise<void>((resolve) => {
+    releaseFirst = resolve
+  })
+  let patchCount = 0
+  await page.route("**/api/focused/sessions/*/notepad/part", async (route) => {
+    patchCount += 1
+    if (patchCount === 1) await firstHeld
+    await route.continue()
+  })
+
+  await page.getByTestId("notepad-part-framing").fill("First held wording.")
+  await expect.poll(() => patchCount).toBe(1)
+  await page.getByRole("button", { name: "Delete v2" }).click()
+  await page
+    .getByTestId("notepad-part-framing")
+    .fill("Wording typed while Delete waits.")
+  releaseFirst()
+
+  await expect(page.getByTestId("notepad-version-v2")).toHaveCount(0)
+  await page.waitForTimeout(600)
+  await page.getByRole("button", { name: "Add a blank version" }).click()
+  await expect(page.getByTestId("notepad-version-v2")).toBeVisible()
+  await expect(
+    page.getByTestId("notepad-panel").getByRole("alert"),
+  ).toHaveCount(0)
 })
 
 test("a failed autosave retries after the chat remounts", async ({ page }) => {

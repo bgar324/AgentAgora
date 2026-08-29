@@ -134,6 +134,24 @@ test("a build failure is shown beside the Perspective editor", async ({ page }) 
   ).toHaveText("Perspective model unavailable.")
 })
 
+test("a stale successful add clears its optimistic row", async ({ page }) => {
+  const { workspaceId } = await atStepTwo(page)
+  const before = await activeView(page, workspaceId)
+  await carryPaper(page)
+  await page.route(
+    "**/api/focused/sessions/*/perspectives",
+    async (route) => {
+      const response = await route.fetch()
+      const payload = await response.json()
+      payload.workspace.revision = before.workspace.revision - 1
+      await route.fulfill({ response, json: payload })
+    },
+  )
+
+  await page.getByRole("button", { name: "Build Perspective" }).click()
+  await expect(page.getByText("Adding…")).toHaveCount(0, { timeout: 5_000 })
+})
+
 test("a paper add accepts an authoritative concurrent removal", async ({
   page,
 }) => {
