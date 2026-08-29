@@ -223,7 +223,7 @@ def _fallback_queries(
     def push(q: str, rationale: str) -> None:
         q = compact_search_query(q)
         key = q.lower().rstrip("?")
-        if len(q) > 12 and key not in seen:
+        if q and key not in seen:
             seen.add(key)
             out.append(SuggestedQuery(query=q, rationale=rationale))
 
@@ -251,11 +251,15 @@ def _fallback_queries(
 
     words = _content_words(" ".join(source_texts))
     freq = [word for word, _ in Counter(words).most_common(6)]
-    if freq:
-        push(
-            " ".join(freq[:4]) + " evidence",
-            "Core constructs across the problem and position.",
-        )
+    seed_terms = (
+        freq
+        or list(dict.fromkeys(_search_query_words(" ".join(source_texts))))[:6]
+        or ["research"]
+    )
+    push(
+        " ".join(seed_terms[:4]) + " evidence",
+        "Core constructs across the problem and position.",
+    )
     if len(freq) >= 4:
         push(
             f"{freq[0]} versus {freq[min(2, len(freq) - 1)]}",
@@ -265,9 +269,22 @@ def _fallback_queries(
             f"mechanisms of {freq[0]} and {freq[1]}",
             "Reaches mechanism-oriented work.",
         )
+    seed = " ".join(seed_terms[: min(3, len(seed_terms))])
+    for suffix, rationale in (
+        ("outcomes", "Outcome-oriented literature for coverage."),
+        ("mechanisms", "Mechanism-oriented literature for coverage."),
+        ("methods", "Methods literature for coverage."),
+        ("evidence review", "Broad review literature for coverage."),
+    ):
+        if len(out) >= count:
+            break
+        push(f"{seed} {suffix}", rationale)
     index = 0
-    while len(out) < count and freq:
-        pair = f"{freq[index % len(freq)]} {freq[(index + 2) % len(freq)]} review"
+    while len(out) < count and seed_terms:
+        pair = (
+            f"{seed_terms[index % len(seed_terms)]} "
+            f"{seed_terms[(index + 2) % len(seed_terms)]} review"
+        )
         push(pair, "Broad review literature for coverage.")
         index += 1
         if index > count * 3:
@@ -317,12 +334,20 @@ async def suggest_queries(
         task=FocusedTask.suggest_queries,
         temperature=0.4,
     )
-    if parsed and parsed.queries:
-        return [
-            query.model_copy(update={"query": compact_search_query(query.query)})
-            for query in parsed.queries[:count]
-        ]
-    return _fallback_queries(problem, questions, position, count)
+    fallbacks = _fallback_queries(problem, questions, position, count)
+    candidates = [*(parsed.queries if parsed else []), *fallbacks]
+    suggestions: list[SuggestedQuery] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        query = compact_search_query(candidate.query)
+        key = query.lower().rstrip("?")
+        if not query or key in seen:
+            continue
+        seen.add(key)
+        suggestions.append(candidate.model_copy(update={"query": query}))
+        if len(suggestions) == count:
+            break
+    return suggestions
 
 
 async def derive_research_questions(
@@ -929,19 +954,26 @@ async def extract_cluster_facets(
         task=FocusedTask.extract_cluster_facets,
         temperature=0.1,
     )
-    if parsed and parsed.facets:
-        by_id = {paper.id: paper for paper in papers}
-        candidates = [
-            FacetEvidence.model_validate(evidence.model_dump())
-            for evidence in parsed.facets
-        ]
-        return [
-            map_facet_to_sentence(by_id[evidence.paper_id], evidence)
-            if evidence.paper_id in by_id
-            else evidence
-            for evidence in candidates
-        ]
-    return fallback_cluster_facets(papers)
+    fallback = fallback_cluster_facets(papers)
+    if not parsed or not parsed.facets:
+        return fallback
+
+    by_id = {paper.id: paper for paper in papers}
+    by_facet: dict[Facet, FacetEvidence] = {}
+    for candidate in parsed.facets:
+        paper = by_id.get(candidate.paper_id)
+        if paper is None or candidate.facet in by_facet:
+            continue
+        evidence = FacetEvidence.model_validate(candidate.model_dump())
+        mapped = map_facet_to_sentence(
+            paper,
+            evidence.model_copy(update={"sentence_index": None, "sentence": None}),
+        )
+        if mapped.sentence_index is not None:
+            by_facet[candidate.facet] = mapped
+    for evidence in fallback:
+        by_facet.setdefault(evidence.facet, evidence)
+    return [by_facet[facet] for facet in FACETS if facet in by_facet]
 
 
 def map_facet_to_sentence(paper: ExpPaper, evidence: FacetEvidence) -> FacetEvidence:
@@ -953,6 +985,7 @@ def map_facet_to_sentence(paper: ExpPaper, evidence: FacetEvidence) -> FacetEvid
         if value and (value in normalized or normalized in value):
             return evidence.model_copy(
                 update={
+                    "text": _compress(sentence),
                     "paper_id": paper.id,
                     "sentence_index": index,
                     "sentence": sentence,
@@ -969,6 +1002,7 @@ def map_facet_to_sentence(paper: ExpPaper, evidence: FacetEvidence) -> FacetEvid
     if best_index is not None and best_score >= 0.5:
         return evidence.model_copy(
             update={
+                "text": _compress(sentences[best_index]),
                 "paper_id": paper.id,
                 "sentence_index": best_index,
                 "sentence": sentences[best_index],

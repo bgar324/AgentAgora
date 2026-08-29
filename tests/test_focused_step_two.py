@@ -11,14 +11,19 @@ import asyncio
 
 import pytest
 
+from agora.api.focused import paper_detail
 from agora.focused import agents
 from agora.focused.demo_data import DEMO_QUERY_SUGGESTIONS
 from agora.focused.models import (
     FACETS,
     ClusterCard,
     ExpPaper,
+    FacetCandidate,
     FacetEvidence,
+    FacetExtraction,
     NotepadDoc,
+    QuerySuggestions,
+    SuggestedQuery,
 )
 from agora.focused.service import FocusedPanelService, SessionError
 
@@ -72,6 +77,84 @@ def test_query_suggestion_sees_the_four_parts(monkeypatch) -> None:
     # The problem and questions are still there; the parts are additive.
     assert PROBLEM in captured["user"]
     assert "Does breadth raise resistance?" in captured["user"]
+
+
+
+def test_partial_or_duplicate_model_queries_are_completed_to_five(
+    monkeypatch,
+) -> None:
+    async def partial(*_args, **_kwargs):
+        return QuerySuggestions(
+            queries=[
+                SuggestedQuery(query="resistance ecology"),
+                SuggestedQuery(query="resistance ecology"),
+            ]
+        )
+
+    monkeypatch.setattr(agents, "_structured", partial)
+    queries = asyncio.run(
+        agents.suggest_queries(
+            PROBLEM,
+            [],
+            position=NotepadDoc(**POSITION),
+        )
+    )
+    assert len(queries) == 5
+    assert len({suggestion.query.lower() for suggestion in queries}) == 5
+
+
+def test_partial_or_unsupported_model_facets_use_grounded_fallbacks(
+    monkeypatch,
+) -> None:
+    paper = ExpPaper(
+        id="paper",
+        title="Resistance study",
+        abstract=(
+            "Adults received broad antibiotics. "
+            "Longer exposure selected resistance genes. "
+            "A cohort compared antibiotic-days. "
+            "Resistance increased across hospitals."
+        ),
+        abstract_sentences=[
+            "Adults received broad antibiotics.",
+            "Longer exposure selected resistance genes.",
+            "A cohort compared antibiotic-days.",
+            "Resistance increased across hospitals.",
+        ],
+    )
+
+    async def partial(*_args, **_kwargs):
+        return FacetExtraction(
+            facets=[
+                FacetCandidate(
+                    facet="scope",
+                    text="An unsupported claim about marine mammals.",
+                    paper_id=paper.id,
+                    sentence_index=0,
+                ),
+                FacetCandidate(
+                    facet="scope",
+                    text=paper.abstract_sentences[0],
+                    paper_id=paper.id,
+                    sentence_index=0,
+                ),
+            ]
+        )
+
+    monkeypatch.setattr(agents, "_structured", partial)
+    facets = asyncio.run(agents.extract_cluster_facets([paper], provider=object()))
+    assert [evidence.facet for evidence in facets] == FACETS
+    assert all(evidence.sentence_index is not None for evidence in facets)
+    assert all(evidence.sentence in paper.abstract_sentences for evidence in facets)
+    assert all("marine mammals" not in evidence.text for evidence in facets)
+
+
+def test_short_acronym_problem_still_produces_five_queries() -> None:
+    queries = asyncio.run(
+        agents.suggest_queries("AI?", [], position=NotepadDoc())
+    )
+    assert len(queries) == 5
+    assert len({suggestion.query.casefold() for suggestion in queries}) == 5
 
 
 def test_providerless_queries_come_from_the_problem_and_each_position_part() -> None:
@@ -181,6 +264,46 @@ def test_custom_demo_questions_do_not_relabel_fixture_queries() -> None:
     assert state.question_reach[0].candidates == [question]
 
 
+def test_in_range_sentence_index_does_not_validate_an_unsupported_claim() -> None:
+    paper = ExpPaper(
+        id="p1",
+        title="Resistance ecology",
+        abstract="Longer exposure selects for resistance genes.",
+        abstract_sentences=["Longer exposure selects for resistance genes."],
+    )
+    validated = FocusedPanelService._validate_facet_source(
+        FacetEvidence(
+            facet="scope",
+            text="An unsupported claim about marine mammals.",
+            paper_id=paper.id,
+            sentence_index=0,
+        ),
+        {paper.id: paper},
+    )
+    assert validated.text == ""
+    assert validated.paper_id is None
+
+def test_partially_overlapping_facet_keeps_only_the_source_sentence() -> None:
+    sentence = "Adults received broad antibiotics."
+    paper = ExpPaper(
+        id="p1",
+        title="Antibiotic outcomes",
+        abstract=sentence,
+        abstract_sentences=[sentence],
+    )
+    validated = FocusedPanelService._validate_facet_source(
+        FacetEvidence(
+            facet="scope",
+            text="Adults received broad antibiotics and all survived.",
+            paper_id=paper.id,
+            sentence_index=0,
+        ),
+        {paper.id: paper},
+    )
+    assert validated.text == sentence.rstrip(".")
+    assert validated.sentence == sentence
+
+
 def test_question_derivation_sees_the_four_parts(monkeypatch) -> None:
     captured: dict[str, str] = {}
 
@@ -276,6 +399,8 @@ def test_a_paper_builds_one_grounded_editable_perspective() -> None:
         assert {evidence.paper_id for evidence in perspective.facets.values()} == {
             "paper-source"
         }
+        detail = await paper_detail(session_id, "paper-source", service)
+        assert {hit["facet"] for hit in detail["facet_hits"]} == set(FACETS)
         with pytest.raises(
             SessionError,
             match="already has a Perspective",

@@ -828,7 +828,9 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   await expect(startPaperSearch).toBeVisible()
   await startPaperSearch.click()
   await expect(page.getByText("Research branch", { exact: true })).toBeVisible()
-  await expect(page.getByText(/Back to panel returns/)).toBeVisible()
+  await expect(
+    page.getByText(/Build Perspectives from fresh papers, then return/),
+  ).toBeVisible()
   const activeBranch = await requestJson(
     page.request,
     `/api/focused/workspaces/${workspaceId}`,
@@ -924,7 +926,7 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   await page.getByTestId(`investigation-node-${childId}`).click()
   await expect(
     page.getByText(
-      "This research branch has already been added to the parent Canvas and is now read-only.",
+      "This branch has already been added to the parent and is read-only.",
       { exact: true },
     ),
   ).toBeVisible()
@@ -1331,20 +1333,16 @@ test("reloads the authoritative workspace after a revision conflict", async ({
   latest.active.problem = "Reloaded workspace state"
 
   await page.route(
-    `**/api/focused/sessions/${rootId}`,
-    (route) => {
-      if (route.request().method() === "PATCH") {
-        return route.fulfill({
-          status: 409,
-          contentType: "application/json",
-          body: JSON.stringify({
-            detail:
-              "This workspace changed in another process. Its latest state was reloaded.",
-          }),
-        })
-      }
-      return route.continue()
-    },
+    `**/api/focused/sessions/${rootId}/suggest-queries`,
+    (route) =>
+      route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({
+          detail:
+            "This workspace changed in another process. Its latest state was reloaded.",
+        }),
+      }),
   )
   await page.route(
     `**/api/focused/workspaces/${workspaceId}`,
@@ -1356,13 +1354,10 @@ test("reloads the authoritative workspace after a revision conflict", async ({
       }),
   )
 
-  await page.getByRole("button", { name: "Edit investigation brief" }).click()
-  await page.getByRole("textbox", { name: "Problem" }).fill("Conflicting edit")
-  await page.getByRole("button", { name: "Save brief" }).click()
+  await page.getByRole("button", { name: "Suggest queries" }).click()
   await expect(
     page.getByText(/This workspace changed in another process/),
   ).toBeVisible()
-  await page.getByRole("button", { name: "Cancel" }).click()
   await expect(
     page.getByText("Reloaded workspace state", { exact: true }),
   ).toBeVisible()

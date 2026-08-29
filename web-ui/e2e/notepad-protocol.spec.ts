@@ -99,6 +99,95 @@ test("the input screen collects the problem and a four-part position", async ({
   )
 })
 
+test("demo and custom input drafts remain separate", async ({ page }) => {
+  await page.goto("/focused")
+  await page.getByLabel("Demo mode").uncheck()
+  await expect(page.getByLabel("Problem", { exact: true })).toHaveValue("")
+  for (const label of [
+    "Framing",
+    "Previous work",
+    "Methodology",
+    "Expected results",
+  ]) {
+    await expect(page.getByLabel(label, { exact: true })).toHaveValue("")
+  }
+
+  const custom = {
+    problem: "Does delayed prescribing preserve outcomes?",
+    framing: "Custom framing.",
+    prior: "Custom prior work.",
+    method: "Custom methodology.",
+    expected: "Custom expected results.",
+  }
+  await page.getByLabel("Problem", { exact: true }).fill(custom.problem)
+  await page.getByLabel("Framing", { exact: true }).fill(custom.framing)
+  await page.getByLabel("Previous work", { exact: true }).fill(custom.prior)
+  await page.getByLabel("Methodology", { exact: true }).fill(custom.method)
+  await page
+    .getByLabel("Expected results", { exact: true })
+    .fill(custom.expected)
+
+  await page.getByLabel("Demo mode").check()
+  await expect(page.getByLabel("Problem", { exact: true })).toHaveValue(PROBLEM)
+  await expect(page.getByLabel("Framing", { exact: true })).not.toHaveValue(
+    custom.framing,
+  )
+
+  await page.getByLabel("Demo mode").uncheck()
+  await expect(page.getByLabel("Problem", { exact: true })).toHaveValue(
+    custom.problem,
+  )
+  await expect(page.getByLabel("Framing", { exact: true })).toHaveValue(
+    custom.framing,
+  )
+  await expect(page.getByLabel("Previous work", { exact: true })).toHaveValue(
+    custom.prior,
+  )
+  await expect(page.getByLabel("Methodology", { exact: true })).toHaveValue(
+    custom.method,
+  )
+  await expect(
+    page.getByLabel("Expected results", { exact: true }),
+  ).toHaveValue(custom.expected)
+})
+
+test("an explicit arm link never restores another participant's workspace", async ({
+  page,
+}) => {
+  const existing = await page.request.post("/api/focused/workspaces", {
+    data: {
+      problem: "A previous participant's private problem.",
+      research_questions: [],
+      position: POSITION,
+      arm: "guided",
+      demo: true,
+    },
+  })
+  expect(existing.ok()).toBeTruthy()
+  const existingId = (await existing.json()).workspace.id as string
+
+  await page.goto("/focused")
+  await page.evaluate(
+    (workspaceId) => localStorage.setItem("focused-workspace", workspaceId),
+    existingId,
+  )
+  await page.goto("/focused?arm=baseline")
+  await expect(page.getByLabel("Problem", { exact: true })).toBeVisible()
+  await expect(page.getByText("A previous participant's private problem.")).toHaveCount(
+    0,
+  )
+  await page.getByRole("button", { name: "Continue" }).click()
+  await expect(page).toHaveURL(/workspace=[a-f0-9]+/)
+  const nextId = new URL(page.url()).searchParams.get("workspace")
+  expect(nextId).not.toBe(existingId)
+  const view = await requestJson(
+    page.request,
+    `/api/focused/workspaces/${nextId}`,
+    "get",
+  )
+  expect(view.arm).toBe("baseline")
+})
+
 // One test per case: a fresh context starts with empty localStorage, so the
 // workspace-restore effect cannot race a mid-test clear.
 for (const [query, expected] of [
@@ -158,6 +247,23 @@ test("three columns carry the notepad, the chat, and the Perspectives", async ({
   await expect(page.getByTestId("notepad-perspectives")).toBeVisible()
 })
 
+test("a desktop-collapsed Perspective rail returns on a phone", async ({
+  page,
+}) => {
+  await notepadWorkspace(page, "guided")
+  await openGroupChat(page)
+  await page
+    .getByRole("button", { name: "Collapse the perspectives" })
+    .click()
+  await expect(page.getByTestId("notepad-perspectives")).toBeHidden()
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(page.getByTestId("notepad-perspectives")).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Collapse the perspectives" }),
+  ).toHaveCount(0)
+})
+
 test("versions fork and stay independent", async ({ page }) => {
   await notepadWorkspace(page, "guided")
   await openGroupChat(page)
@@ -206,6 +312,25 @@ test("a blank version starts empty", async ({ page }) => {
   for (const part of ["framing", "prior", "method", "expected"]) {
     await expect(page.getByTestId(`notepad-part-${part}`)).toHaveValue("")
   }
+})
+
+test("an immediate reload restores the latest local draft", async ({ page }) => {
+  const { workspaceId } = await notepadWorkspace(page, "guided")
+  await openGroupChat(page)
+  const text = "Wording typed immediately before reload."
+  await page.getByTestId("notepad-part-framing").fill(text)
+  await page.reload()
+  await expect(page.getByTestId("notepad-part-framing")).toHaveValue(text, {
+    timeout: 15_000,
+  })
+  await expect(async () => {
+    const state = await requestJson(
+      page.request,
+      `/api/focused/workspaces/${workspaceId}`,
+      "get",
+    )
+    expect(state.notepad.versions[0].doc.framing).toBe(text)
+  }).toPass({ timeout: 15_000 })
 })
 
 
@@ -551,9 +676,6 @@ test("the edit draft opens from your latest wording, not a frozen copy", async (
   // Type after the card is already on screen, then take the edit path.
   const typed = `${POSITION.prior} Typed after the card appeared.`
   await page.getByTestId("notepad-part-prior").fill(typed)
-  await expect(proposal).toContainText("Typed after the card appeared.", {
-    timeout: 15_000,
-  })
 
   await proposal.getByRole("button", { name: "Edit", exact: true }).click()
   // The draft is created when the editor opens, so it carries the newer
@@ -584,6 +706,15 @@ test("approving after your own edit keeps both", async ({ page }) => {
 
   const proposal = page.getByTestId("notepad-proposal")
   await expect(proposal).toBeVisible({ timeout: 30_000 })
+  const requestOrder: string[] = []
+  await page.route("**/api/focused/sessions/*/notepad/part", async (route) => {
+    requestOrder.push("edit")
+    await route.continue()
+  })
+  await page.route("**/api/focused/sessions/*/notepad/decisions", async (route) => {
+    requestOrder.push("decision")
+    await route.continue()
+  })
 
   // Keep typing while the card waits: the notepad is always editable.
   const edit = `${POSITION.prior} And my own qualification.`
@@ -594,6 +725,10 @@ test("approving after your own edit keeps both", async ({ page }) => {
   })
 
   await proposal.getByRole("button", { name: "Approve", exact: true }).click()
+  await expect.poll(() => requestOrder.slice(0, 2)).toEqual([
+    "edit",
+    "decision",
+  ])
   await expect(proposal).toBeHidden({ timeout: 30_000 })
 
   const prior = page.getByTestId("notepad-part-prior")
@@ -604,6 +739,30 @@ test("approving after your own edit keeps both", async ({ page }) => {
   await expect(page.getByTestId("notepad-conversation")).toContainText(
     "folded into your newer wording",
   )
+})
+
+test("a proposal stays with the version that owns it", async ({ page }) => {
+  await notepadWorkspace(page, "guided")
+  await openGroupChat(page)
+  await page.getByRole("button", { name: /Let agents discuss/ }).click()
+  await expect(page.getByTestId("notepad-conversation")).toContainText("[1]", {
+    timeout: 30_000,
+  })
+  await page.getByLabel("Which part the summary goes to").selectOption("prior")
+  await page.getByRole("button", { name: /Summarize so far/ }).click()
+  await expect(page.getByTestId("notepad-proposal")).toBeVisible()
+
+  await page
+    .getByRole("button", { name: "Add version by copying the current version" })
+    .click()
+  await expect(page.getByTestId("notepad-version-v2")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  )
+  await expect(page.getByTestId("notepad-proposal")).toHaveCount(0)
+
+  await page.getByTestId("notepad-version-v1").click()
+  await expect(page.getByTestId("notepad-proposal")).toBeVisible()
 })
 
 

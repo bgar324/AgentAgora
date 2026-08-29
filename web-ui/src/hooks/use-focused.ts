@@ -2,6 +2,7 @@
 
 import { useCallback } from "react"
 
+import { NOTEPAD_PARTS } from "@/types/focused"
 import { useFocusedStore } from "@/store/focused"
 import type {
   Facet,
@@ -35,6 +36,58 @@ type SearchProgressResponse = {
   next: number
 }
 
+function isPathSegment(value: unknown): value is string | number {
+  return typeof value === "string" || typeof value === "number"
+}
+
+function apiErrorMessage(payload: unknown, fallback: string): string {
+  if (
+    typeof payload !== "object" ||
+    payload === null ||
+    !("detail" in payload)
+  ) {
+    return fallback
+  }
+  const detail = payload.detail
+  if (typeof detail === "string") return detail.trim() || fallback
+  if (
+    typeof detail === "object" &&
+    detail !== null &&
+    "message" in detail &&
+    typeof detail.message === "string"
+  ) {
+    return detail.message.trim() || fallback
+  }
+  if (!Array.isArray(detail)) return fallback
+
+  const messages = detail.flatMap((entry) => {
+    if (typeof entry === "string") {
+      const message = entry.trim()
+      return message ? [message] : []
+    }
+    if (
+      typeof entry !== "object" ||
+      entry === null ||
+      !("msg" in entry) ||
+      typeof entry.msg !== "string"
+    ) {
+      return []
+    }
+    const message = entry.msg.trim()
+    if (!message) return []
+    const location = "loc" in entry ? entry.loc : undefined
+    const path = Array.isArray(location)
+      ? location
+          .filter(isPathSegment)
+          .filter((segment) => segment !== "body")
+          .join(".")
+      : ""
+    return [path ? `${path}: ${message}` : message]
+  })
+  return messages.length > 0 ? messages.join("; ") : fallback
+}
+
+
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api/focused/${path}`, {
@@ -42,9 +95,9 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   })
   if (!res.ok) {
-    let detail = res.statusText
+    let detail = res.statusText || "Request failed"
     try {
-      detail = (await res.json()).detail ?? detail
+      detail = apiErrorMessage(await res.json(), detail)
     } catch {
       /* keep statusText */
     }
@@ -69,6 +122,62 @@ const queuedNotepadEdits = new Map<
 >()
 const notepadFlushes = new Map<string, Promise<void>>()
 
+const NOTEPAD_DRAFTS_KEY = "focused-notepad-drafts"
+
+function persistNotepadDrafts() {
+  if (typeof window === "undefined") return
+  const drafts = [...latestNotepadEdits.values()]
+  try {
+    if (drafts.length === 0) {
+      window.localStorage.removeItem(NOTEPAD_DRAFTS_KEY)
+    } else {
+      window.localStorage.setItem(NOTEPAD_DRAFTS_KEY, JSON.stringify(drafts))
+    }
+  } catch {
+    // Autosave still runs when browser storage is unavailable.
+  }
+}
+
+function restoreNotepadDrafts(sessionId: string) {
+  if (typeof window === "undefined") return
+  let stored: unknown
+  try {
+    const raw = window.localStorage.getItem(NOTEPAD_DRAFTS_KEY)
+    if (!raw) return
+    stored = JSON.parse(raw)
+  } catch {
+    return
+  }
+  if (!Array.isArray(stored)) return
+  for (const item of stored) {
+    if (
+      typeof item !== "object" ||
+      item === null ||
+      !("sessionId" in item) ||
+      item.sessionId !== sessionId ||
+      !("versionId" in item) ||
+      typeof item.versionId !== "string" ||
+      !("part" in item) ||
+      typeof item.part !== "string" ||
+      !("text" in item) ||
+      typeof item.text !== "string"
+    ) {
+      continue
+    }
+    const part = NOTEPAD_PARTS.find((candidate) => candidate === item.part)
+    if (!part) continue
+    const key = `${sessionId}:${item.versionId}:${part}`
+    if (!latestNotepadEdits.has(key)) {
+      latestNotepadEdits.set(key, {
+        sessionId,
+        versionId: item.versionId,
+        part,
+        text: item.text,
+      })
+    }
+  }
+}
+
 function stageNotepadEdit(
   sessionId: string,
   versionId: string,
@@ -80,6 +189,7 @@ function stageNotepadEdit(
   if (current?.text === text) return current
   const edit = { sessionId, versionId, part, text }
   latestNotepadEdits.set(key, edit)
+  persistNotepadDrafts()
   return edit
 }
 
@@ -98,6 +208,10 @@ export function useFocusedPanel() {
   )
   const optimisticPerspectiveRemove = useFocusedStore(
     (s) => s.optimisticPerspectiveRemove,
+  )
+  const notepadDraftStaged = useFocusedStore((s) => s.notepadDraftStaged)
+  const notepadDraftAcknowledged = useFocusedStore(
+    (s) => s.notepadDraftAcknowledged,
   )
   const sessionId = useFocusedStore((s) => s.sessionId)
   const workspaceId = useFocusedStore((s) => s.workspace?.id ?? null)
@@ -786,8 +900,9 @@ export function useFocusedPanel() {
     (versionId: string, part: NotepadPart, text: string) => {
       if (sessionId === null) return
       stageNotepadEdit(sessionId, versionId, part, text)
+      notepadDraftStaged(versionId, part, text)
     },
-    [sessionId],
+    [notepadDraftStaged, sessionId],
   )
 
   const editNotepadPart = useCallback(
@@ -824,9 +939,11 @@ export function useFocusedPanel() {
             }
           },
         )
+        notepadDraftAcknowledged(versionId, part, edit.text)
         savedNotepadTexts.set(queueKey, edit.text)
         if (latestNotepadEdits.get(queueKey) === edit) {
           latestNotepadEdits.delete(queueKey)
+          persistNotepadDrafts()
         }
       })
       const settled = request.then(
@@ -846,11 +963,22 @@ export function useFocusedPanel() {
       })
       return request
     },
-    [requestView, sessionId, workspaceViewSet],
+    [
+      notepadDraftAcknowledged,
+      requestView,
+      sessionId,
+      workspaceViewSet,
+    ],
   )
 
   const flushNotepadEdits = useCallback(() => {
     if (sessionId === null) return Promise.resolve()
+    restoreNotepadDrafts(sessionId)
+    for (const edit of latestNotepadEdits.values()) {
+      if (edit.sessionId === sessionId) {
+        notepadDraftStaged(edit.versionId, edit.part, edit.text)
+      }
+    }
     const running = notepadFlushes.get(sessionId)
     if (running) return running
 
@@ -883,7 +1011,7 @@ export function useFocusedPanel() {
     }
     void operation.then(clear, clear)
     return operation
-  }, [editNotepadPart, sessionId])
+  }, [editNotepadPart, notepadDraftStaged, sessionId])
 
   const addNotepadVersion = useCallback(
     async (copyCurrent: boolean) => {
@@ -956,12 +1084,13 @@ export function useFocusedPanel() {
   )
 
   const decideNotepadProposal = useCallback(
-    (
+    async (
       proposalId: string,
       action: "approve" | "edit" | "reject",
       extra?: { text?: string; reason?: string },
-    ) =>
-      notepadCall("Recording your decision", "decisions", {
+    ) => {
+      await flushNotepadEdits()
+      return notepadCall("Recording your decision", "decisions", {
         method: "POST",
         body: JSON.stringify({
           proposal_id: proposalId,
@@ -969,8 +1098,9 @@ export function useFocusedPanel() {
           text: extra?.text ?? null,
           reason: extra?.reason ?? "",
         }),
-      }),
-    [notepadCall],
+      })
+    },
+    [flushNotepadEdits, notepadCall],
   )
 
   const clearNotepadChat = useCallback(

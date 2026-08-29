@@ -1441,6 +1441,31 @@ class FocusedPanelService:
             if clean_query and key not in seen and len(deduped) < MAX_SUGGESTED_QUERIES:
                 seen.add(key)
                 deduped.append(suggestion)
+        if len(deduped) < MAX_SUGGESTED_QUERIES:
+            fallbacks = await agents.suggest_queries(
+                state.problem,
+                state.research_questions,
+                position=state.position,
+                provider=None,
+                count=MAX_SUGGESTED_QUERIES,
+            )
+            for suggestion in fallbacks:
+                clean_query = " ".join(suggestion.query.split())
+                key = clean_query.casefold()
+                if clean_query and key not in seen:
+                    seen.add(key)
+                    deduped.append(
+                        suggestion.model_copy(
+                            update={
+                                "query": clean_query,
+                                "kind": "problem",
+                                "question_index": None,
+                                "round": 1,
+                            }
+                        )
+                    )
+                if len(deduped) == MAX_SUGGESTED_QUERIES:
+                    break
         state.suggested_queries = deduped
         state.question_reach = reaches
         return self._save_state(state)
@@ -1795,13 +1820,6 @@ class FocusedPanelService:
                 }
             )
         paper = papers[evidence.paper_id]
-        sentences = paper.abstract_sentences
-        if evidence.sentence_index is not None and 0 <= evidence.sentence_index < len(
-            sentences
-        ):
-            return evidence.model_copy(
-                update={"sentence": sentences[evidence.sentence_index]}
-            )
         mapped = agents.map_facet_to_sentence(
             paper,
             evidence.model_copy(update={"sentence_index": None, "sentence": None}),
@@ -4359,10 +4377,43 @@ class FocusedPanelService:
 
     @_serialized_session_mutation
     async def ask_notepad(self, session_id: str, *, message: str) -> SessionState:
+        from agora.focused import notepad as notepad_module
+
+        session = self._require(session_id)
+        state = session.state
+        try:
+            speaker = notepad_module.next_speaker(state)
+        except notepad_module.NotepadError as error:
+            raise SessionError(str(error)) from error
+        notepad = state.notepad
+        if notepad is None:
+            raise SessionError("The group chat has not started yet.")
+        history = [
+            f"{turn.author_label}: {turn.text}"
+            for turn in notepad.turns[-8:]
+        ]
+        answer = await agents.reply_to_user(
+            speaker,
+            message,
+            history,
+            provider=self._provider_for(session),
+        )
+        citations = (
+            self._canonical_citations(
+                state,
+                answer.citations,
+                set(speaker.sources),
+            )
+            if state.arm == "guided"
+            else []
+        )
         return self._notepad_call(
             session_id,
-            lambda mod, state: mod.ask(
-                state, message=message, guided=state.arm == "guided"
+            lambda mod, current: mod.ask(
+                current,
+                message=message,
+                reply=answer.text,
+                citations=citations,
             ),
         )
 
