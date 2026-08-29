@@ -350,6 +350,112 @@ test("autosave ordering survives leaving and reopening the chat", async ({
   }).toPass({ timeout: 15_000 })
 })
 
+test("version commands drain edits owned by a prior chat mount", async ({
+  page,
+}) => {
+  const { workspaceId } = await notepadWorkspace(page, "guided")
+  await openGroupChat(page)
+  let releaseFirst: () => void = () => undefined
+  const firstHeld = new Promise<void>((resolve) => {
+    releaseFirst = resolve
+  })
+  let patchCount = 0
+  let versionCreates = 0
+  await page.route("**/api/focused/sessions/*/notepad/part", async (route) => {
+    patchCount += 1
+    if (patchCount === 1) await firstHeld
+    await route.continue()
+  })
+  await page.route(
+    "**/api/focused/sessions/*/notepad/versions",
+    async (route) => {
+      versionCreates += 1
+      await route.continue()
+    },
+  )
+
+  await page.getByTestId("notepad-part-framing").fill("First held wording.")
+  await expect.poll(() => patchCount).toBe(1)
+  await page
+    .getByTestId("notepad-part-framing")
+    .fill("Wording the copied version must inherit.")
+  await page.getByTestId("notepad-build-perspective").click()
+  await openGroupChat(page)
+
+  await page
+    .getByRole("button", { name: "Add version by copying the current version" })
+    .click()
+  await page.waitForTimeout(150)
+  expect(versionCreates).toBe(0)
+
+  releaseFirst()
+  await expect.poll(() => versionCreates).toBe(1)
+  await expect(page.getByTestId("notepad-version-v2")).toBeVisible()
+  const state = await requestJson(
+    page.request,
+    `/api/focused/workspaces/${workspaceId}`,
+    "get",
+  )
+  expect(
+    state.notepad.versions.map(
+      (version: { doc: { framing: string } }) => version.doc.framing,
+    ),
+  ).toEqual([
+    "Wording the copied version must inherit.",
+    "Wording the copied version must inherit.",
+  ])
+})
+
+test("a failed autosave retries after the chat remounts", async ({ page }) => {
+  const { workspaceId } = await notepadWorkspace(page, "guided")
+  await openGroupChat(page)
+  let releaseFailure: () => void = () => undefined
+  const failureHeld = new Promise<void>((resolve) => {
+    releaseFailure = resolve
+  })
+  let failureObserved: () => void = () => undefined
+  const firstFailed = new Promise<void>((resolve) => {
+    failureObserved = resolve
+  })
+  let patchCount = 0
+  await page.route("**/api/focused/sessions/*/notepad/part", async (route) => {
+    patchCount += 1
+    if (patchCount === 1) {
+      await failureHeld
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "Autosave failed." }),
+      })
+      failureObserved()
+      return
+    }
+    await route.continue()
+  })
+
+  await page
+    .getByTestId("notepad-part-framing")
+    .fill("Keep this draft across the failed request.")
+  await expect.poll(() => patchCount).toBe(1)
+  await page.getByTestId("notepad-build-perspective").click()
+  releaseFailure()
+  await firstFailed
+  await openGroupChat(page)
+
+  await expect.poll(() => patchCount).toBe(2)
+  await expect(page.getByTestId("notepad-part-framing")).toHaveValue(
+    "Keep this draft across the failed request.",
+  )
+  const state = await requestJson(
+    page.request,
+    `/api/focused/workspaces/${workspaceId}`,
+    "get",
+  )
+  expect(state.notepad.versions[0].doc.framing).toBe(
+    "Keep this draft across the failed request.",
+  )
+})
+
 test("the guided arm cites evidence and gates the notepad behind review", async ({
   page,
 }) => {

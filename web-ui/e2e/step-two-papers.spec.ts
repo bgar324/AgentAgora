@@ -134,6 +134,55 @@ test("a build failure is shown beside the Perspective editor", async ({ page }) 
   ).toHaveText("Perspective model unavailable.")
 })
 
+test("a paper add accepts an authoritative concurrent removal", async ({
+  page,
+}) => {
+  const { workspaceId } = await atStepTwo(page)
+  await carryPaper(page)
+  await page.getByRole("button", { name: "Build Perspective" }).click()
+  await expect(page.getByText("Adding…")).toHaveCount(0, { timeout: 30_000 })
+
+  const before = await activeView(page, workspaceId)
+  const sessionId = before.active.id as string
+  const removed = before.active.perspectives[0] as {
+    id: string
+    name: string
+  }
+  await carryPaper(page, 1)
+
+  let releaseAdd: () => void = () => undefined
+  const addHeld = new Promise<void>((resolve) => {
+    releaseAdd = resolve
+  })
+  let observeAdd: () => void = () => undefined
+  const addStarted = new Promise<void>((resolve) => {
+    observeAdd = resolve
+  })
+  await page.route(
+    "**/api/focused/sessions/*/perspectives",
+    async (route) => {
+      observeAdd()
+      await addHeld
+      await route.continue()
+    },
+  )
+
+  await page.getByRole("button", { name: "Build Perspective" }).click()
+  await addStarted
+  const removal = await page.request.delete(
+    `/api/focused/sessions/${sessionId}/perspectives/${removed.id}`,
+  )
+  expect(removal.ok()).toBeTruthy()
+  releaseAdd()
+
+  const built = page.getByTestId("built-perspectives")
+  await expect(built.getByText("Adding…")).toHaveCount(0, { timeout: 30_000 })
+  await expect(built).not.toContainText(removed.name)
+  await expect(built.locator("article")).toHaveCount(1)
+  const after = await activeView(page, workspaceId)
+  expect(after.active.perspectives).toHaveLength(1)
+})
+
 test("the researcher's wording is built below the editor", async ({ page }) => {
   const { workspaceId } = await atStepTwo(page)
   const initial = await activeView(page, workspaceId)

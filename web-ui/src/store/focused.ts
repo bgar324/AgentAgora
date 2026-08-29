@@ -31,7 +31,10 @@ type FocusedState = {
 
 type FocusedActions = {
   workspaceViewSet: (view: WorkspaceView) => void
-  perspectiveViewSet: (view: WorkspaceView) => void
+  perspectiveViewSet: (
+    view: WorkspaceView,
+    perspectiveIdsAtRequest: ReadonlySet<string>,
+  ) => void
   optimisticPerspectiveAdd: (perspective: Perspective) => void
   optimisticPerspectiveRemove: (id: string) => void
   workspaceScreenSet: (screen: WorkspaceScreen) => void
@@ -63,7 +66,7 @@ const initialState: FocusedState = {
 function workspaceViewPatch(
   state: FocusedState,
   view: WorkspaceView,
-  monotonicPerspectives = false,
+  perspectiveIdsAtRequest?: ReadonlySet<string>,
 ): Partial<FocusedState> {
   const currentWorkspace = state.workspace
   const sameWorkspace = currentWorkspace?.id === view.workspace.id
@@ -77,30 +80,37 @@ function workspaceViewPatch(
   const activeChanged = state.sessionId !== view.active.id
   const currentSession =
     sameWorkspace && !activeChanged ? state.session : null
+  const representedIds = new Set(
+    view.active.perspectives.map((perspective) => perspective.id),
+  )
   const representedOrigins = new Set(
     view.active.perspectives.map((perspective) => perspective.origin),
   )
-  if (
-    monotonicPerspectives &&
-    currentSession?.perspectives.some(
-      (perspective) =>
-        !perspective.id.startsWith("optimistic:") &&
-        !representedOrigins.has(perspective.origin),
-    )
-  ) {
-    return {}
-  }
+  const concurrentPerspectives =
+    perspectiveIdsAtRequest === undefined
+      ? []
+      : (currentSession?.perspectives.filter(
+          (perspective) =>
+            !perspective.id.startsWith("optimistic:") &&
+            !perspectiveIdsAtRequest.has(perspective.id) &&
+            !representedIds.has(perspective.id) &&
+            !representedOrigins.has(perspective.origin),
+        ) ?? [])
   const pendingPerspectives =
     currentSession?.perspectives.filter(
       (perspective) =>
         perspective.id.startsWith("optimistic:") &&
         !representedOrigins.has(perspective.origin),
     ) ?? []
+  const retainedPerspectives = [
+    ...concurrentPerspectives,
+    ...pendingPerspectives,
+  ]
   const active =
-    pendingPerspectives.length > 0
+    retainedPerspectives.length > 0
       ? {
           ...view.active,
-          perspectives: [...view.active.perspectives, ...pendingPerspectives],
+          perspectives: [...view.active.perspectives, ...retainedPerspectives],
         }
       : view.active
   return {
@@ -127,8 +137,10 @@ export const useFocusedStore = create<FocusedState & FocusedActions>()(
     ...initialState,
     workspaceViewSet: (view) =>
       set((state) => workspaceViewPatch(state, view)),
-    perspectiveViewSet: (view) =>
-      set((state) => workspaceViewPatch(state, view, true)),
+    perspectiveViewSet: (view, perspectiveIdsAtRequest) =>
+      set((state) =>
+        workspaceViewPatch(state, view, perspectiveIdsAtRequest),
+      ),
     optimisticPerspectiveAdd: (perspective) =>
       set((state) => {
         if (

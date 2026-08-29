@@ -172,6 +172,12 @@ function NotepadColumn({
 
 
   const editNotepadPart = focused.editNotepadPart
+  const flushNotepadEdits = focused.flushNotepadEdits
+  useEffect(() => {
+    void flushNotepadEdits().catch((cause) =>
+      setError(cause instanceof Error ? cause.message : "Could not save"),
+    )
+  }, [flushNotepadEdits])
   const commit = useCallback(
     async (versionId: string, part: NotepadPart, text: string) => {
       setError(null)
