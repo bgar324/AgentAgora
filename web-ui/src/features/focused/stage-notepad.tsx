@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { ChevronRight, Plus, UserRound, X } from "lucide-react"
+import { ChevronRight, Plus, Trash2, UserRound, X } from "lucide-react"
 
 import { useFocusedPanel } from "@/hooks/use-focused"
 import { notepadDraftKey, useFocusedStore } from "@/store/focused"
@@ -48,6 +48,7 @@ function PartField({
   onCommit,
   onStage,
   registerFlush,
+  onFocus,
   disabled,
 }: {
   part: NotepadPart
@@ -61,6 +62,7 @@ function PartField({
   ) => Promise<unknown>
   onStage: (versionId: string, part: NotepadPart, text: string) => void
   registerFlush: RegisterFlush
+  onFocus: (part: NotepadPart) => void
   disabled: boolean
 }) {
   // "Changes take effect as they are typed; there is nothing to save."
@@ -132,6 +134,7 @@ function PartField({
         value={draft ?? value}
         rows={2}
         onChange={(event) => change(event.target.value)}
+        onFocus={() => onFocus(part)}
         disabled={disabled}
         placeholder={PART_PLACEHOLDERS[part]}
         className="field mt-1 min-h-14 w-full resize-none rounded-lg px-3 py-2 text-[12.5px] leading-relaxed [field-sizing:content]"
@@ -143,9 +146,11 @@ function PartField({
 function NotepadColumn({
   notepad,
   busy,
+  onPartFocus,
 }: {
   notepad: NotepadState
   busy: string | null
+  onPartFocus: (part: NotepadPart) => void
 }) {
   const focused = useFocusedPanel()
   const notepadDrafts = useFocusedStore((state) => state.notepadDrafts)
@@ -296,6 +301,7 @@ function NotepadColumn({
             onStage={stageNotepadPart}
             registerFlush={registerFlush}
             disabled={busy !== null}
+            onFocus={onPartFocus}
           />
         ))}
       </div>
@@ -513,16 +519,17 @@ function ConversationColumn({
   session,
   notepad,
   busy,
+  summaryPart,
 }: {
   session: SessionState
   notepad: NotepadState
   busy: string | null
+  summaryPart: NotepadPart
 }) {
   const focused = useFocusedPanel()
   const notepadDrafts = useFocusedStore((state) => state.notepadDrafts)
   const [message, setMessage] = useState("")
   const [turns, setTurns] = useState(4)
-  const [part, setPart] = useState<NotepadPart>("framing")
   const [error, setError] = useState<string | null>(null)
   const guided = session.arm === "guided"
 
@@ -636,37 +643,19 @@ function ConversationColumn({
       <div className="mt-3 space-y-2 border-t border-[var(--line)] pt-3">
         <div
           data-testid="discussion-actions"
-          className="rounded-xl border border-[var(--line)] bg-[color-mix(in_srgb,var(--node)_3%,var(--panel))] p-2.5"
+          className="grid grid-cols-[minmax(0,1fr)_32px] gap-2 min-[480px]:grid-cols-[minmax(0,1fr)_auto_32px]"
         >
-          <div className="mb-2 flex items-center justify-between gap-3">
-            <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--mute)]">
-              Panel actions
-            </span>
+          <div className="field flex h-8 min-w-0 overflow-hidden rounded-lg">
             <button
               type="button"
-              disabled={busy !== null || notepad.turns.length === 0}
-              onClick={() => guard(focused.clearNotepadChat())}
-              className="inline-flex h-6 items-center gap-1.5 rounded-md px-2 text-[11px] text-[var(--mute)] transition-colors hover:bg-[var(--red-bg)] hover:text-[var(--red)] disabled:pointer-events-none disabled:opacity-40"
-            >
-              {busy === "Clearing the chat" ? (
-                <Spinner className="size-3" />
-              ) : null}
-              Clear chat
-            </button>
-          </div>
-
-          <div className="grid grid-cols-1 gap-2 min-[480px]:grid-cols-[minmax(0,1fr)_104px]">
-            <Button
-              variant="primary"
-              size="md"
               disabled={busy !== null || notepad.in_chat.length === 0}
               onClick={() => guard(focused.discussNotepad(turns))}
-              className="w-full justify-center"
+              className="inline-flex min-w-0 flex-1 items-center justify-center gap-1.5 px-3 text-[12px] font-medium text-[var(--ink)] transition-colors hover:bg-[color-mix(in_srgb,var(--node)_5%,transparent)] disabled:opacity-40"
             >
               {busy === "Agents discussing" ? <Spinner /> : null}
               Let agents discuss
-            </Button>
-            <label className="field flex h-8 items-center rounded-lg px-2.5">
+            </button>
+            <label className="flex w-[94px] shrink-0 items-center border-l border-[var(--line)] px-2.5">
               <span className="sr-only">Turns</span>
               <select
                 value={turns}
@@ -686,37 +675,31 @@ function ConversationColumn({
             </label>
           </div>
 
-          <div className="mt-2 grid grid-cols-1 gap-2 min-[480px]:grid-cols-[minmax(0,1fr)_auto]">
-            <label className="field flex h-8 min-w-0 items-center rounded-lg px-2.5">
-              <span className="mr-2 shrink-0 text-[10px] font-semibold uppercase tracking-[0.06em] text-[var(--mute)]">
-                Summary to
-              </span>
-              <select
-                value={part}
-                aria-label="Which part the summary goes to"
-                disabled={busy !== null}
-                onChange={(event) =>
-                  setPart(event.target.value as NotepadPart)
-                }
-                className="min-w-0 flex-1 bg-transparent text-[12px] font-medium text-[var(--ink-2)] outline-none"
-              >
-                {NOTEPAD_PARTS.map((item) => (
-                  <option key={item} value={item}>
-                    {NOTEPAD_LABELS[item]}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <Button
-              variant="outline"
-              size="md"
-              disabled={busy !== null}
-              onClick={() => guard(focused.summarizeNotepad(part))}
-            >
-              {busy === "Summarizing" ? <Spinner /> : null}
-              Summarize so far
-            </Button>
-          </div>
+          <Button
+            variant="outline"
+            size="md"
+            disabled={busy !== null}
+            onClick={() => guard(focused.summarizeNotepad(summaryPart))}
+            className="col-span-2 row-start-2 justify-center min-[480px]:col-span-1 min-[480px]:row-auto"
+          >
+            {busy === "Summarizing" ? <Spinner /> : null}
+            Summarize so far
+          </Button>
+
+          <button
+            type="button"
+            aria-label="Clear chat"
+            title="Clear chat"
+            disabled={busy !== null || notepad.turns.length === 0}
+            onClick={() => guard(focused.clearNotepadChat())}
+            className="col-start-2 row-start-1 grid size-8 place-items-center rounded-lg text-[var(--mute)] transition-colors hover:bg-[var(--red-bg)] hover:text-[var(--red)] disabled:pointer-events-none disabled:opacity-35 min-[480px]:col-auto min-[480px]:row-auto"
+          >
+            {busy === "Clearing the chat" ? (
+              <Spinner className="size-3" />
+            ) : (
+              <Trash2 size={14} strokeWidth={1.8} aria-hidden />
+            )}
+          </button>
         </div>
         <div className="relative">
           <textarea
@@ -958,6 +941,7 @@ export function StageNotepad({ session }: { session: SessionState }) {
   const busy = useFocusedStore((s) => s.busy)
   const stageSet = useFocusedStore((s) => s.stageSet)
   const [collapsed, setCollapsed] = useState(false)
+  const [summaryPart, setSummaryPart] = useState<NotepadPart>("framing")
   const [error, setError] = useState<string | null>(null)
   const notepad = session.notepad
 
@@ -1009,8 +993,17 @@ export function StageNotepad({ session }: { session: SessionState }) {
           : "lg:grid-cols-3"
       }`}
     >
-      <NotepadColumn notepad={notepad} busy={busy} />
-      <ConversationColumn session={session} notepad={notepad} busy={busy} />
+      <NotepadColumn
+        notepad={notepad}
+        busy={busy}
+        onPartFocus={setSummaryPart}
+      />
+      <ConversationColumn
+        session={session}
+        notepad={notepad}
+        busy={busy}
+        summaryPart={summaryPart}
+      />
       {collapsed ? (
         <>
           <div className="lg:hidden">

@@ -636,9 +636,7 @@ test("the guided arm cites evidence and gates the notepad behind review", async 
     /You framed it as|Your methodology reads|You expect/,
   )
 
-  await page
-    .getByLabel("Which part the summary goes to")
-    .selectOption("prior")
+  await page.getByTestId("notepad-part-prior").focus()
   await page.getByRole("button", { name: /Summarize so far/ }).click()
 
   const proposal = page.getByTestId("notepad-proposal")
@@ -667,7 +665,7 @@ test("the edit draft opens from your latest wording, not a frozen copy", async (
   await expect(page.getByTestId("notepad-conversation")).toContainText("[1]", {
     timeout: 30_000,
   })
-  await page.getByLabel("Which part the summary goes to").selectOption("prior")
+  await page.getByTestId("notepad-part-prior").focus()
   await page.getByRole("button", { name: /Summarize so far/ }).click()
 
   const proposal = page.getByTestId("notepad-proposal")
@@ -701,7 +699,7 @@ test("approving after your own edit keeps both", async ({ page }) => {
   await expect(page.getByTestId("notepad-conversation")).toContainText("[1]", {
     timeout: 30_000,
   })
-  await page.getByLabel("Which part the summary goes to").selectOption("prior")
+  await page.getByTestId("notepad-part-prior").focus()
   await page.getByRole("button", { name: /Summarize so far/ }).click()
 
   const proposal = page.getByTestId("notepad-proposal")
@@ -748,7 +746,7 @@ test("a proposal stays with the version that owns it", async ({ page }) => {
   await expect(page.getByTestId("notepad-conversation")).toContainText("[1]", {
     timeout: 30_000,
   })
-  await page.getByLabel("Which part the summary goes to").selectOption("prior")
+  await page.getByTestId("notepad-part-prior").focus()
   await page.getByRole("button", { name: /Summarize so far/ }).click()
   await expect(page.getByTestId("notepad-proposal")).toBeVisible()
 
@@ -775,9 +773,7 @@ test("editing a proposal lands the researcher's wording verbatim", async ({
   await expect(page.getByTestId("notepad-conversation")).toContainText("[1]", {
     timeout: 30_000,
   })
-  await page
-    .getByLabel("Which part the summary goes to")
-    .selectOption("expected")
+  await page.getByTestId("notepad-part-expected").focus()
   await page.getByRole("button", { name: /Summarize so far/ }).click()
 
   const proposal = page.getByTestId("notepad-proposal")
@@ -804,9 +800,7 @@ test("rejecting a proposal leaves the notepad and returns the reason", async ({
   await expect(page.getByTestId("notepad-conversation")).toContainText("[1]", {
     timeout: 30_000,
   })
-  await page
-    .getByLabel("Which part the summary goes to")
-    .selectOption("framing")
+  await page.getByTestId("notepad-part-framing").focus()
   await page.getByRole("button", { name: /Summarize so far/ }).click()
 
   const proposal = page.getByTestId("notepad-proposal")
