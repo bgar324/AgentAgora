@@ -6,6 +6,8 @@ import { ChevronRight, Plus, UserRound, X } from "lucide-react"
 import { useFocusedPanel } from "@/hooks/use-focused"
 import { useFocusedStore } from "@/store/focused"
 import {
+  FACETS,
+  FACET_LABELS,
   NOTEPAD_LABELS,
   NOTEPAD_PARTS,
   type NotepadPart,
@@ -612,7 +614,7 @@ function PerspectiveCard({
 }) {
   const focused = useFocusedPanel()
   const [open, setOpen] = useState(false)
-  const source = perspective.facets.explanation ?? perspective.facets.scope
+  const fragments = FACETS.filter((facet) => perspective.facets[facet])
 
   return (
     <div className="ep-card-enter rounded-xl border border-[var(--line)] px-3 py-2.5">
@@ -650,16 +652,56 @@ function PerspectiveCard({
           {inChat ? "in chat" : "add"}
         </button>
       </div>
-      {open && source ? (
-        <div className="mt-2 space-y-1.5">
-          <p className="text-[12px] leading-relaxed text-[var(--ink-2)]">
-            {source.text}
-          </p>
-          {source.paper_id ? (
-            <p className="text-[10.5px] text-[var(--mute)]">
-              {`Source paper ${source.paper_id}`}
+      {open ? (
+        <div className="mt-2.5 space-y-3">
+          {perspective.summary ? (
+            <p className="text-[12px] leading-relaxed text-[var(--ink-2)]">
+              {perspective.summary}
             </p>
           ) : null}
+          {/* The four Fragments: what the formative study identified and
+              what a researcher can check, each with its source. */}
+          {fragments.length > 0 ? (
+            <dl className="space-y-2">
+              {fragments.map((facet) => {
+                const evidence = perspective.facets[facet]!
+                return (
+                  <div key={facet}>
+                    <dt className="text-[10.5px] font-medium uppercase tracking-wide text-[var(--mute)]">
+                      {FACET_LABELS[facet]}
+                    </dt>
+                    <dd className="mt-0.5 text-[12px] leading-relaxed">
+                      {evidence.text}
+                      {evidence.paper_id ? (
+                        <span className="ml-1 text-[10.5px] text-[var(--mute)]">
+                          {`[${evidence.paper_id}]`}
+                        </span>
+                      ) : null}
+                    </dd>
+                  </div>
+                )
+              })}
+            </dl>
+          ) : null}
+          {/* Framing and Position: the synthesis of the Fragments, one
+              level up. Absent only while the Perspective is still building. */}
+          {perspective.framing ? (
+            <div className="rounded-lg border border-[var(--line)] bg-[var(--hover)] px-2.5 py-2">
+              <p className="text-[10.5px] font-medium uppercase tracking-wide text-[var(--mute)]">
+                Framing &amp; Position
+              </p>
+              <p className="mt-1 text-[12px] leading-relaxed">
+                {perspective.framing.framing}
+              </p>
+              <p className="mt-1 text-[12px] leading-relaxed text-[var(--ink-2)]">
+                {perspective.framing.position}
+              </p>
+            </div>
+          ) : (
+            <p className="text-[11px] text-[var(--mute)]">
+              Synthesizing framing and position…
+            </p>
+          )}
         </div>
       ) : null}
     </div>
