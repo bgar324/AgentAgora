@@ -58,8 +58,13 @@ export function FocusedWorkspace() {
   useEffect(() => {
     if (session) return
     const params = new URLSearchParams(window.location.search)
-    const workspaceId =
-      params.get("workspace") ?? window.localStorage.getItem("focused-workspace")
+    const explicitWorkspaceId = params.get("workspace")
+    const assignmentRequested =
+      explicitWorkspaceId === null && params.has("arm")
+    const workspaceId = assignmentRequested
+      ? null
+      : (explicitWorkspaceId ??
+        window.localStorage.getItem("focused-workspace"))
     if (!workspaceId) return
     void loadWorkspace(workspaceId).catch((cause) => {
       if (
@@ -633,9 +638,19 @@ const DEMO_POSITION: NotepadDoc = {
     "Narrower first-line holds outcomes outside sepsis, and the harm horizon runs past the treated infection.",
 }
 
+const EMPTY_POSITION: NotepadDoc = {
+  framing: "",
+  prior: "",
+  method: "",
+  expected: "",
+}
+
 function StartScreen() {
-  const [problem, setProblem] = useState(DEMO_PROBLEM)
-  const [position, setPosition] = useState<NotepadDoc>(DEMO_POSITION)
+  const [customProblem, setCustomProblem] = useState("")
+  const [customPosition, setCustomPosition] =
+    useState<NotepadDoc>(EMPTY_POSITION)
+  const [demoPosition, setDemoPosition] =
+    useState<NotepadDoc>(DEMO_POSITION)
   // The study arm is assigned by whoever runs the session, through the link
   // they send (`?arm=baseline`). A participant must never pick their own
   // condition: self-selection destroys random assignment, and naming the
@@ -646,6 +661,9 @@ function StartScreen() {
       ? "baseline"
       : "guided") satisfies "baseline" | "guided"
   const [demo, setDemo] = useState(true)
+  const problem = demo ? DEMO_PROBLEM : customProblem
+  const position = demo ? demoPosition : customPosition
+  const setPosition = demo ? setDemoPosition : setCustomPosition
   const [error, setError] = useState<string | null>(null)
   const [starting, setStarting] = useState(false)
   const { createWorkspace } = useFocusedPanel()
@@ -681,7 +699,7 @@ function StartScreen() {
             <textarea
               id="focused-problem"
               value={problem}
-              onChange={(e) => setProblem(e.target.value)}
+              onChange={(event) => setCustomProblem(event.target.value)}
               disabled={demo}
               rows={3}
               className="field w-full resize-none px-3 py-2.5 text-[13px] leading-relaxed placeholder:text-[var(--mute)]"
@@ -719,13 +737,7 @@ function StartScreen() {
             <input
               type="checkbox"
               checked={demo}
-              onChange={(e) => {
-                const enabled = e.target.checked
-                setDemo(enabled)
-                if (enabled) {
-                  setProblem(DEMO_PROBLEM)
-                }
-              }}
+              onChange={(event) => setDemo(event.target.checked)}
               className="size-3.5 accent-[var(--node)]"
             />
             Demo mode

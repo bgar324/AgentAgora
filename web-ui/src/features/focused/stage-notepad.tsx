@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ChevronRight, Plus, UserRound, X } from "lucide-react"
 
 import { useFocusedPanel } from "@/hooks/use-focused"
-import { useFocusedStore } from "@/store/focused"
+import { notepadDraftKey, useFocusedStore } from "@/store/focused"
 import {
   FACETS,
   FACET_LABELS,
@@ -43,13 +43,16 @@ type RegisterFlush = (flush: () => Promise<void>) => () => void
 function PartField({
   part,
   value,
+  draft,
   versionId,
   onCommit,
   onStage,
   registerFlush,
+  disabled,
 }: {
   part: NotepadPart
   value: string
+  draft: string | undefined
   versionId: string
   onCommit: (
     versionId: string,
@@ -58,10 +61,10 @@ function PartField({
   ) => Promise<unknown>
   onStage: (versionId: string, part: NotepadPart, text: string) => void
   registerFlush: RegisterFlush
+  disabled: boolean
 }) {
   // "Changes take effect as they are typed; there is nothing to save."
   // A queued edit keeps the version that owned the keystroke.
-  const [text, setText] = useState(value)
   const timer = useRef<number | undefined>(undefined)
   const pending = useRef<{ text: string; revision: number } | null>(null)
   const latestRevision = useRef(0)
@@ -72,9 +75,6 @@ function PartField({
     commitRef.current = onCommit
   }, [onCommit])
 
-  useEffect(() => {
-    if (pending.current === null) setText(value)
-  }, [value])
 
   const flush = useCallback(() => {
     window.clearTimeout(timer.current)
@@ -110,7 +110,6 @@ function PartField({
 
   const change = (next: string) => {
     onStage(versionId, part, next)
-    setText(next)
     latestRevision.current += 1
     pending.current = { text: next, revision: latestRevision.current }
     window.clearTimeout(timer.current)
@@ -130,9 +129,10 @@ function PartField({
       <textarea
         id={`notepad-${versionId}-${part}`}
         data-testid={`notepad-part-${part}`}
-        value={text}
+        value={draft ?? value}
         rows={2}
         onChange={(event) => change(event.target.value)}
+        disabled={disabled}
         placeholder={PART_PLACEHOLDERS[part]}
         className="field mt-1 min-h-14 w-full resize-none rounded-lg px-3 py-2 text-[12.5px] leading-relaxed [field-sizing:content]"
       />
@@ -148,7 +148,9 @@ function NotepadColumn({
   busy: string | null
 }) {
   const focused = useFocusedPanel()
+  const notepadDrafts = useFocusedStore((state) => state.notepadDrafts)
   const [error, setError] = useState<string | null>(null)
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
   const flushers = useRef(new Set<() => Promise<void>>())
   const version =
     notepad.versions.find((item) => item.id === notepad.active_version_id) ??
@@ -178,17 +180,29 @@ function NotepadColumn({
   const stageNotepadPart = focused.stageNotepadPart
   const flushNotepadEdits = focused.flushNotepadEdits
   useEffect(() => {
-    void flushNotepadEdits().catch((cause) =>
-      setError(cause instanceof Error ? cause.message : "Could not save"),
+    void flushNotepadEdits().then(
+      () => setFieldErrors({}),
+      (cause) =>
+        setError(cause instanceof Error ? cause.message : "Could not save"),
     )
   }, [flushNotepadEdits])
   const commit = useCallback(
     async (versionId: string, part: NotepadPart, text: string) => {
-      setError(null)
+      const key = `${versionId}:${part}`
       try {
-        return await editNotepadPart(versionId, part, text)
+        const result = await editNotepadPart(versionId, part, text)
+        setFieldErrors((current) => {
+          if (!(key in current)) return current
+          const next = { ...current }
+          delete next[key]
+          return next
+        })
+        return result
       } catch (cause) {
-        setError(cause instanceof Error ? cause.message : "Could not save")
+        setFieldErrors((current) => ({
+          ...current,
+          [key]: cause instanceof Error ? cause.message : "Could not save",
+        }))
         throw cause
       }
     },
@@ -277,13 +291,17 @@ function NotepadColumn({
             part={part}
             versionId={version.id}
             value={version.doc[part]}
+            draft={notepadDrafts[notepadDraftKey(version.id, part)]}
             onCommit={commit}
             onStage={stageNotepadPart}
             registerFlush={registerFlush}
+            disabled={busy !== null}
           />
         ))}
       </div>
-      {error ? <ErrorLine>{error}</ErrorLine> : null}
+      {error || Object.values(fieldErrors)[0] ? (
+        <ErrorLine>{error || Object.values(fieldErrors)[0]}</ErrorLine>
+      ) : null}
     </section>
   )
 }
@@ -501,6 +519,7 @@ function ConversationColumn({
   busy: string | null
 }) {
   const focused = useFocusedPanel()
+  const notepadDrafts = useFocusedStore((state) => state.notepadDrafts)
   const [message, setMessage] = useState("")
   const [turns, setTurns] = useState(4)
   const [part, setPart] = useState<NotepadPart>("framing")
@@ -515,10 +534,15 @@ function ConversationColumn({
     return map
   }, [session.perspectives])
 
-  const pending = notepad.proposals.filter((item) => item.status === "pending")
+  const activeVersionId =
+    notepad.active_version_id ?? notepad.versions[0]?.id
+  const pending = notepad.proposals.filter(
+    (item) =>
+      item.status === "pending" && item.version_id === activeVersionId,
+  )
   const liveDoc =
-    notepad.versions.find((item) => item.id === notepad.active_version_id)
-      ?.doc ?? notepad.versions[0]?.doc
+    notepad.versions.find((item) => item.id === activeVersionId)?.doc ??
+    notepad.versions[0]?.doc
   const guard = (action: Promise<unknown>) => {
     setError(null)
     action.catch((cause) =>
@@ -528,7 +552,7 @@ function ConversationColumn({
 
   const send = () => {
     const text = message.trim()
-    if (!text) return
+    if (!text || notepad.in_chat.length === 0) return
     setMessage("")
     guard(focused.askNotepad(text))
   }
@@ -596,7 +620,13 @@ function ConversationColumn({
           <ProposalCard
             key={proposal.id}
             proposal={proposal}
-            live={liveDoc?.[proposal.part] ?? ""}
+            live={
+              activeVersionId
+                ? (notepadDrafts[
+                    notepadDraftKey(activeVersionId, proposal.part)
+                  ] ?? liveDoc?.[proposal.part] ?? "")
+                : (liveDoc?.[proposal.part] ?? "")
+            }
             guided={guided}
             busy={busy}
           />
@@ -660,6 +690,7 @@ function ConversationColumn({
             rows={2}
             aria-label="Message the panel"
             placeholder="Ask the panel something..."
+            disabled={busy !== null || notepad.in_chat.length === 0}
             onChange={(event) => setMessage(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
@@ -672,7 +703,9 @@ function ConversationColumn({
           <button
             type="button"
             aria-label="Send"
-            disabled={busy !== null || !message.trim()}
+            disabled={
+              busy !== null || notepad.in_chat.length === 0 || !message.trim()
+            }
             onClick={send}
             className="absolute bottom-2 right-2 grid size-7 place-items-center rounded-full bg-[var(--node)] text-white transition-opacity hover:opacity-90 disabled:opacity-35"
           >
@@ -850,7 +883,7 @@ function PerspectivesColumn({
           type="button"
           aria-label="Collapse the perspectives"
           onClick={onCollapse}
-          className="text-[var(--mute)] transition-opacity hover:opacity-70"
+          className="hidden text-[var(--mute)] transition-opacity hover:opacity-70 lg:block"
         >
           <ChevronRight size={14} strokeWidth={2.2} />
         </button>
@@ -864,8 +897,6 @@ function PerspectivesColumn({
             busy={busy}
           />
         ))}
-        {/* "A dashed box at the bottom leads to building a new one, which
-            joins the chat on return." */}
         <button
           type="button"
           data-testid="notepad-build-perspective"
@@ -884,7 +915,6 @@ function PerspectivesColumn({
     </section>
   )
 }
-
 /* -------------------------------------------------------------------------- */
 /* The stage                                                                  */
 /* -------------------------------------------------------------------------- */
@@ -948,16 +978,27 @@ export function StageNotepad({ session }: { session: SessionState }) {
       <NotepadColumn notepad={notepad} busy={busy} />
       <ConversationColumn session={session} notepad={notepad} busy={busy} />
       {collapsed ? (
-        <button
-          type="button"
-          aria-label="Expand the perspectives"
-          onClick={() => setCollapsed(false)}
-          className="panel hidden rounded-xl text-[var(--mute)] lg:block"
-        >
-          <span className="[writing-mode:vertical-rl] text-[11px]">
-            Perspectives
-          </span>
-        </button>
+        <>
+          <div className="lg:hidden">
+            <PerspectivesColumn
+              session={session}
+              notepad={notepad}
+              busy={busy}
+              onCollapse={() => setCollapsed(true)}
+              onBuildAnother={() => stageSet("extraction")}
+            />
+          </div>
+          <button
+            type="button"
+            aria-label="Expand the perspectives"
+            onClick={() => setCollapsed(false)}
+            className="panel hidden rounded-xl text-[var(--mute)] lg:block"
+          >
+            <span className="[writing-mode:vertical-rl] text-[11px]">
+              Perspectives
+            </span>
+          </button>
+        </>
       ) : (
         <PerspectivesColumn
           session={session}

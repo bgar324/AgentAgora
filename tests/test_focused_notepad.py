@@ -163,6 +163,23 @@ def test_a_blank_version_starts_with_four_empty_parts() -> None:
 
     asyncio.run(go())
 
+def test_new_version_names_do_not_reuse_an_existing_name() -> None:
+    async def go() -> None:
+        service, session_id = await _panel("guided")
+        await service.add_notepad_version(session_id, copy_current=True)
+        notepad = service.get(session_id).notepad
+        assert notepad is not None
+        await service.delete_notepad_version(
+            session_id,
+            version_id=notepad.versions[0].id,
+        )
+        await service.add_notepad_version(session_id, copy_current=False)
+        notepad = service.get(session_id).notepad
+        assert notepad is not None
+        assert [version.name for version in notepad.versions] == ["v2", "v3"]
+
+    asyncio.run(go())
+
 
 def test_a_queued_edit_stays_with_the_version_that_owned_it() -> None:
     async def go() -> None:
@@ -514,6 +531,39 @@ def test_asking_the_panel_gets_one_answer_from_a_participant() -> None:
         roles = [turn.role for turn in notepad.turns]
         assert roles == ["researcher", "perspective"]
         assert notepad.turns[0].text == "Which endpoint decides this?"
+        assert "Which endpoint decides this?" in notepad.turns[1].text
+
+    asyncio.run(go())
+
+def test_asking_with_an_empty_roster_is_refused_before_recording() -> None:
+    async def go() -> None:
+        service, session_id = await _panel("guided")
+        notepad = service.get(session_id).notepad
+        assert notepad is not None
+        for perspective_id in list(notepad.in_chat):
+            await service.set_notepad_participant(
+                session_id,
+                perspective_id=perspective_id,
+                participating=False,
+            )
+        with pytest.raises(Exception, match="Nobody is in the chat"):
+            await service.ask_notepad(session_id, message="Can anyone answer?")
+        assert notepad.turns == []
+
+    asyncio.run(go())
+
+
+def test_summary_uses_the_recorded_discussion() -> None:
+    async def go() -> None:
+        service, session_id = await _panel("guided")
+        await service.discuss_notepad(session_id, turns=2)
+        notepad = service.get(session_id).notepad
+        assert notepad is not None
+        spoken = [turn for turn in notepad.turns if turn.role == "perspective"]
+        await service.summarize_notepad(session_id, part="prior")
+        proposal = notepad.pending_proposals()[0]
+        assert spoken[-1].author_label in proposal.addition
+        assert spoken[-1].text in proposal.addition
 
     asyncio.run(go())
 

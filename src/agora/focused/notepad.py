@@ -23,7 +23,6 @@ hermetic tests.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
 
 from agora.focused.models import (
     NOTEPAD_LABELS,
@@ -151,9 +150,14 @@ def add_version(state: SessionState, *, copy_current: bool) -> NotepadState:
         if copy_current and current is not None
         else NotepadDoc()
     )
+    version_numbers = [
+        int(version.name[1:])
+        for version in notepad.versions
+        if version.name.startswith("v") and version.name[1:].isdigit()
+    ]
     version = NotepadVersion(
         id=_new_id("ver"),
-        name=f"v{len(notepad.versions) + 1}",
+        name=f"v{max(version_numbers, default=0) + 1}",
         doc=doc,
         created_from=current.id if copy_current and current else None,
     )
@@ -420,17 +424,27 @@ def discuss(
     return notepad
 
 
+def next_speaker(state: SessionState) -> Perspective:
+    notepad = _require(state)
+    cast = _cast(state, notepad)
+    if not cast:
+        raise NotepadError("Nobody is in the chat. Add a Perspective first.")
+    return cast[notepad.turn_cursor % len(cast)]
+
+
 def ask(
     state: SessionState,
     *,
     message: str,
-    guided: bool,
+    reply: str,
+    citations: list[str],
 ) -> NotepadState:
-    """The researcher speaks; the next participant answers once."""
+    """Record the researcher's message and one relevant participant answer."""
     notepad = _require(state)
     text = " ".join(message.split())
     if not text:
         raise NotepadError("A message requires text.")
+    speaker = next_speaker(state)
     notepad.turns.append(
         NotepadTurn(
             id=_new_id("turn"),
@@ -439,16 +453,6 @@ def ask(
             text=text,
         )
     )
-    cast = _cast(state, notepad)
-    if not cast:
-        return notepad
-    speaker = cast[notepad.turn_cursor % len(cast)]
-    version = notepad.active_version()
-    doc = version.doc if version else NotepadDoc()
-    if guided:
-        reply, citations = _guided_line(state, speaker, doc, notepad.turn_cursor)
-    else:
-        reply, citations = _baseline_line(speaker, notepad.turn_cursor)
     notepad.turn_cursor += 1
     notepad.turns.append(
         NotepadTurn(
@@ -468,13 +472,17 @@ def ask(
 # ---------------------------------------------------------------------------
 
 
-def _summary_text(notepad: NotepadState, cast: Sequence[Perspective]) -> str:
-    names = ", ".join(p.name for p in cast[:3])
-    return (
-        f"The discussion so far turns on where each account stops holding. "
-        f"{names} agree the trade-off is real, but the outcome and the timing "
-        f"of harm are not settled: the measure decides the answer."
-    )
+def _summary_text(notepad: NotepadState) -> str:
+    spoken = [turn for turn in notepad.turns if turn.role == "perspective"]
+    recent: list[str] = []
+    for turn in spoken[-4:]:
+        text = " ".join(turn.text.split())
+        if len(text) > 240:
+            text = f"{text[:237].rstrip()}..."
+        statement = f"{turn.author_label}: {text}"
+        if statement not in recent:
+            recent.append(statement)
+    return "The discussion so far: " + " ".join(recent)
 
 
 def summarize(
@@ -498,8 +506,7 @@ def summarize(
     version = notepad.active_version()
     if version is None:
         raise NotepadError("No notepad version is open.")
-    cast = _cast(state, notepad)
-    summary = _summary_text(notepad, cast)
+    summary = _summary_text(notepad)
     current = getattr(version.doc, part)
     proposed = f"{current} {summary}".strip() if current else summary
 

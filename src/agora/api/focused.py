@@ -476,16 +476,30 @@ async def run_search(
 async def paper_detail(session_id: str, paper_id: str, service: Service):
     paper = await _acall(service.paper_detail(session_id, paper_id))
     state = _guard(lambda: service.get(session_id))
-    hits = [
-        {
-            "facet": evidence.facet,
-            "text": evidence.text,
-            "sentence_index": evidence.sentence_index,
-        }
-        for cluster in state.clusters
-        for evidence in cluster.facets
-        if (evidence.paper_id == paper_id and evidence.sentence_index is not None)
+    hits = []
+    seen: set[tuple[str, int]] = set()
+    evidence_items = [
+        *(evidence for cluster in state.clusters for evidence in cluster.facets),
+        *(
+            evidence
+            for perspective in state.perspectives
+            for evidence in perspective.facets.values()
+        ),
     ]
+    for evidence in evidence_items:
+        if evidence.paper_id != paper_id or evidence.sentence_index is None:
+            continue
+        key = (evidence.facet, evidence.sentence_index)
+        if key in seen:
+            continue
+        seen.add(key)
+        hits.append(
+            {
+                "facet": evidence.facet,
+                "text": evidence.text,
+                "sentence_index": evidence.sentence_index,
+            }
+        )
     return {"paper": paper.model_dump(mode="json"), "facet_hits": hits}
 
 

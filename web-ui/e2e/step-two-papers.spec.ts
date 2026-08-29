@@ -134,6 +134,37 @@ test("a build failure is shown beside the Perspective editor", async ({ page }) 
   ).toHaveText("Perspective model unavailable.")
 })
 
+test("a structured API failure is readable", async ({ page }) => {
+  await atStepTwo(page)
+  await carryPaper(page)
+  await page.route(
+    "**/api/focused/sessions/*/perspectives",
+    async (route) => {
+      await route.fulfill({
+        status: 422,
+        contentType: "application/json",
+        body: JSON.stringify({
+          detail: [
+            {
+              type: "string_type",
+              loc: ["body", "cluster_id"],
+              msg: "Input should be a valid string",
+              input: null,
+            },
+          ],
+        }),
+      })
+    },
+  )
+
+  await page.getByRole("button", { name: "Build Perspective" }).click()
+  const alert = page.getByTestId("perspective-editor").getByRole("alert")
+  await expect(alert).toHaveText(
+    "cluster_id: Input should be a valid string",
+  )
+  await expect(alert).not.toContainText("[object Object]")
+})
+
 test("a stale successful add clears its optimistic row", async ({ page }) => {
   const { workspaceId } = await atStepTwo(page)
   const before = await activeView(page, workspaceId)

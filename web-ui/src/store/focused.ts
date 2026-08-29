@@ -4,6 +4,7 @@ import { create } from "zustand"
 
 import type {
   InvestigationSummary,
+  NotepadPart,
   Perspective,
   SessionState,
   SearchProgressItem,
@@ -14,6 +15,10 @@ const MAX_SEARCH_PROGRESS_EVENTS = 192
 
 type Stage = "extraction" | "deliberation"
 type WorkspaceScreen = "detail" | "map"
+
+export function notepadDraftKey(versionId: string, part: NotepadPart) {
+  return `${versionId}:${part}`
+}
 
 type FocusedState = {
   workspace: WorkspaceState | null
@@ -27,12 +32,23 @@ type FocusedState = {
   openPaperId: string | null
   busy: string | null
   searchProgress: SearchProgressItem[]
+  notepadDrafts: Record<string, string>
 }
 
 type FocusedActions = {
   workspaceViewSet: (view: WorkspaceView) => void
   optimisticPerspectiveAdd: (perspective: Perspective) => void
   optimisticPerspectiveRemove: (id: string) => void
+  notepadDraftStaged: (
+    versionId: string,
+    part: NotepadPart,
+    text: string,
+  ) => void
+  notepadDraftAcknowledged: (
+    versionId: string,
+    part: NotepadPart,
+    text: string,
+  ) => void
   workspaceScreenSet: (screen: WorkspaceScreen) => void
   stageSet: (stage: Stage) => void
   queryToggled: (query: string) => void
@@ -57,6 +73,7 @@ const initialState: FocusedState = {
   openPaperId: null,
   busy: null,
   searchProgress: [],
+  notepadDrafts: {},
 }
 
 function workspaceViewPatch(
@@ -107,6 +124,7 @@ function workspaceViewPatch(
     openClusterId: activeChanged ? null : state.openClusterId,
     openPaperId: activeChanged ? null : state.openPaperId,
     searchProgress: activeChanged ? [] : state.searchProgress,
+    notepadDrafts: activeChanged ? {} : state.notepadDrafts,
   }
 }
 
@@ -143,6 +161,21 @@ export const useFocusedStore = create<FocusedState & FocusedActions>()(
             }
           : null,
       })),
+    notepadDraftStaged: (versionId, part, text) =>
+      set((state) => ({
+        notepadDrafts: {
+          ...state.notepadDrafts,
+          [notepadDraftKey(versionId, part)]: text,
+        },
+      })),
+    notepadDraftAcknowledged: (versionId, part, text) =>
+      set((state) => {
+        const key = notepadDraftKey(versionId, part)
+        if (state.notepadDrafts[key] !== text) return {}
+        const notepadDrafts = { ...state.notepadDrafts }
+        delete notepadDrafts[key]
+        return { notepadDrafts }
+      }),
     workspaceScreenSet: (workspaceScreen) => set({ workspaceScreen }),
     stageSet: (stage) => set({ stage }),
     queryToggled: (query) =>
