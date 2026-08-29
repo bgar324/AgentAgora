@@ -48,7 +48,7 @@ async function addPerspective(page: Page, name: string) {
   for (let index = 0; index < (await cards.count()); index += 1) {
     const card = cards.nth(index)
     await card.getByRole("button").first().click()
-    const carry = card.getByRole("button", { name: "Carry to Perspective" })
+    const carry = card.getByRole("button", { name: "Add to editor" })
     if ((await carry.count()) > 0 && (await carry.isEnabled())) {
       await carry.click()
       carried = true
@@ -331,7 +331,7 @@ test("builds a Perspective from the selected paper", async ({ page }) => {
 
   const paper = page.getByTestId("paper-result").first()
   await paper.getByRole("button").first().click()
-  await paper.getByRole("button", { name: "Carry to Perspective" }).click()
+  await paper.getByRole("button", { name: "Add to editor" }).click()
   await page.getByRole("button", { name: "Build Perspective" }).click()
 
   await expect.poll(() => source.current?.paper_id ?? null).not.toBeNull()
@@ -401,7 +401,7 @@ test("returns from a blocked research branch to its parent panel", async ({
     .filter({ hasText: nextPaper.title })
   await nextPaperCard.getByRole("button").first().click()
   await nextPaperCard
-    .getByRole("button", { name: "Carry to Perspective" })
+    .getByRole("button", { name: "Add to editor" })
     .click()
   await page.getByRole("button", { name: "Build Perspective" }).click()
   await responseReady.promise

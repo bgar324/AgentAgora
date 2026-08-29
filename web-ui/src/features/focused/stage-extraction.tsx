@@ -396,7 +396,7 @@ export function StageExtraction() {
                             onClick={() => carryPaper(paper)}
                             className="mt-3"
                           >
-                            {built ? "Perspective built" : "Carry to Perspective"}
+                            {built ? "Perspective built" : "Add to editor"}
                           </Button>
                         </div>
                       )}
@@ -474,7 +474,7 @@ export function StageExtraction() {
               </div>
             ) : (
               <div className="flex min-h-[150px] items-center justify-center px-4 text-center">
-                <EmptyLine>Carry a paper here to build a Perspective.</EmptyLine>
+                <EmptyLine>Add a paper to start editing.</EmptyLine>
               </div>
             )}
 
