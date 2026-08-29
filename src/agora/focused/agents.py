@@ -17,6 +17,8 @@ from pydantic import BaseModel
 
 from agora.focused.models import (
     FACETS,
+    NOTEPAD_LABELS,
+    NOTEPAD_PARTS,
     ChatReply,
     ClusterNaming,
     ClusterNamings,
@@ -37,6 +39,7 @@ from agora.focused.models import (
     FramingPosition,
     HypothesisDev,
     HypothesisSteps,
+    NotepadDoc,
     ParticipantReflection,
     Perspective,
     QuerySuggestions,
@@ -243,10 +246,30 @@ def _fallback_queries(
     return out[:count]
 
 
+def _position_block(position: NotepadDoc | None) -> str:
+    """The researcher's own four-part position, when they wrote one.
+
+    Youngseung's baseline draws queries from the problem *and* these parts,
+    so a stated methodology or expected result steers retrieval instead of
+    sitting unused on the input screen.
+    """
+    if position is None:
+        return ""
+    parts = [
+        (NOTEPAD_LABELS[part], " ".join(getattr(position, part).split()))
+        for part in NOTEPAD_PARTS
+    ]
+    written = [f"### {label}\n{text}" for label, text in parts if text]
+    if not written:
+        return ""
+    return "\n\n## RESEARCHER POSITION\n" + "\n".join(written)
+
+
 async def suggest_queries(
     problem: str,
     questions: list[str],
     *,
+    position: NotepadDoc | None = None,
     provider: FocusedProvider | None = None,
     count: int = 5,
 ) -> list[SuggestedQuery]:
@@ -259,7 +282,8 @@ async def suggest_queries(
         "expressions, prose sentences, or notation such as Pₓ. Return exactly "
         f"{count} queries.",
         f"## RESEARCH PROBLEM\n{problem}\n\n## RESEARCH QUESTIONS\n"
-        + "\n".join(f"- {q}" for q in questions),
+        + "\n".join(f"- {q}" for q in questions)
+        + _position_block(position),
         QuerySuggestions,
         task=FocusedTask.suggest_queries,
         temperature=0.4,
@@ -275,6 +299,7 @@ async def suggest_queries(
 async def derive_research_questions(
     problem: str,
     *,
+    position: NotepadDoc | None = None,
     provider: FocusedProvider | None = None,
     count: int = 3,
 ) -> list[str]:
@@ -292,7 +317,7 @@ async def derive_research_questions(
         "present in the problem statement. Preserve the problem's own "
         "concepts; do not introduce neighboring topics. One sentence each, "
         f"ending in a question mark. Return at most {count} questions.",
-        f"## RESEARCH PROBLEM\n{problem}",
+        f"## RESEARCH PROBLEM\n{problem}" + _position_block(position),
         DerivedQuestions,
         task=FocusedTask.derive_research_questions,
         temperature=0.3,

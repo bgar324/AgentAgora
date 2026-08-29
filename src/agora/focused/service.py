@@ -1344,6 +1344,7 @@ class FocusedPanelService:
                 # them so answer-tier retrieval and coverage ranking still run.
                 state.research_questions = await agents.derive_research_questions(
                     state.problem,
+                    position=state.position,
                     provider=self._provider_for(session),
                 )
             problem_suggestions = [
@@ -1353,6 +1354,7 @@ class FocusedPanelService:
                 for suggestion in await agents.suggest_queries(
                     state.problem,
                     state.research_questions,
+                    position=state.position,
                     provider=self._provider_for(session),
                     count=3 if state.research_questions else MAX_SUGGESTED_QUERIES,
                 )
@@ -2455,6 +2457,7 @@ class FocusedPanelService:
         cluster_id: str,
         facets: list[FacetEvidence] | None = None,
         name: str | None = None,
+        description: str | None = None,
         invited_perspective_ids: list[str] | None = None,
     ) -> SessionState:
         session = self._require(session_id)
@@ -2518,7 +2521,10 @@ class FocusedPanelService:
         perspective.framing = await agents.derive_framing(
             perspective, provider=self._provider_for(session)
         )
-        perspective.summary = perspective.framing.framing
+        # The researcher's own wording wins when they edited the description
+        # before building; the derived framing is only the prefill.
+        edited = " ".join((description or "").split())
+        perspective.summary = edited or perspective.framing.framing
 
         # Authoritative re-check with NO await between check and append:
         # two racing requests can both pass the pre-check above, but only

@@ -288,6 +288,7 @@ export function useFocusedPanel() {
     async (
       clusterId: string,
       facets: FacetEvidence[] | null,
+      persona?: { name?: string; description?: string },
       invitedPerspectiveIds?: string[],
     ) => {
       const current = useFocusedStore.getState()
@@ -316,7 +317,7 @@ export function useFocusedPanel() {
       const optimisticId = `optimistic:${session.id}:${clusterId}`
       const optimisticPerspective: Perspective = {
         id: optimisticId,
-        name: cluster.name,
+        name: persona?.name?.trim() || cluster.name,
         color: "#98a2b3",
         facets: optimisticFacets,
         sources: [
@@ -327,7 +328,7 @@ export function useFocusedPanel() {
           ),
         ].sort(),
         framing: null,
-        summary: "",
+        summary: persona?.description?.trim() ?? "",
         evolved: false,
         origin: clusterId,
         source_question_id: null,
@@ -344,6 +345,8 @@ export function useFocusedPanel() {
             body: JSON.stringify({
               cluster_id: clusterId,
               facets,
+              name: persona?.name?.trim() || null,
+              description: persona?.description?.trim() || null,
               invited_perspective_ids: invitedPerspectiveIds,
             }),
           },

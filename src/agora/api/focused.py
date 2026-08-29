@@ -123,6 +123,7 @@ class PerspectiveRequest(BaseModel):
     cluster_id: str = Field(min_length=1, max_length=200)
     facets: list[FacetEvidence] | None = Field(default=None, max_length=4)
     name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
     invited_perspective_ids: list[str] | None = Field(
         default=None,
         max_length=12,
@@ -500,6 +501,7 @@ async def generate_perspective(
             cluster_id=request.cluster_id,
             facets=request.facets,
             name=request.name,
+            description=request.description,
         ),
     )
 
