@@ -42,10 +42,16 @@ async def lifespan(app: FastAPI):
         focused_db.row_factory = sqlite3.Row
         persistence = FocusedPersistence(focused_db)
 
-    openai_client = AsyncOpenAI(api_key=settings.openai.api_key)
+    openai_client = (
+        AsyncOpenAI(api_key=settings.openai.api_key)
+        if settings.openai.api_key
+        else None
+    )
     s2_client = SemanticScholarClient(settings.semantic_scholar)
 
     async def embed(texts: list[str]):
+        if openai_client is None:
+            raise RuntimeError("OPENAI_API_KEY is required for embeddings")
         return await embed_texts(texts, client=openai_client)
 
     provider = (
@@ -60,7 +66,7 @@ async def lifespan(app: FastAPI):
     app.state.focused_provider = provider
     app.state.focused = FocusedPanelService(
         provider=provider,
-        embedder=embed,
+        embedder=embed if openai_client is not None else None,
         embedding_model=EMBEDDING_MODEL,
         s2=FocusedSemanticScholar(s2_client),
         persistence=persistence,
@@ -71,7 +77,8 @@ async def lifespan(app: FastAPI):
     if provider is not None:
         await provider.close()
     await s2_client.close()
-    await openai_client.close()
+    if openai_client is not None:
+        await openai_client.close()
     if focused_db is not None:
         focused_db.close()
 
