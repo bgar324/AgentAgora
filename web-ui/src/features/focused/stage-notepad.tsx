@@ -123,7 +123,7 @@ function NotepadColumn({
       data-testid="notepad-panel"
       className="ep-enter panel flex min-h-0 flex-col rounded-xl px-4 py-3.5"
     >
-      <SectionLabel>Notepad</SectionLabel>
+      <SectionLabel>Document</SectionLabel>
       <div className="mt-2 flex flex-wrap items-center gap-1">
         {notepad.versions.map((item) => {
           const active = item.id === version.id
@@ -290,7 +290,7 @@ function ProposalCard({
             disabled={busy !== null}
             onClick={() => decide("approve")}
           >
-            {deciding ? <Spinner /> : null}Copy into the notepad
+            {deciding ? <Spinner /> : null}Copy into the document
           </Button>
         </div>
         {error ? <ErrorLine>{error}</ErrorLine> : null}
@@ -441,7 +441,7 @@ function ConversationColumn({
       data-testid="notepad-conversation"
       className="ep-enter panel flex min-h-0 flex-col rounded-xl px-4 py-3.5"
     >
-      <SectionLabel>Conversation</SectionLabel>
+      <SectionLabel>Discussion</SectionLabel>
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         <span className="text-[11px] text-[var(--mute)]">In the chat</span>
         {session.perspectives.map((perspective) => {
@@ -728,10 +728,10 @@ export function StageNotepad({ session }: { session: SessionState }) {
     return (
       <main className="mx-auto w-full max-w-[640px] px-4 py-10">
         <section className="ep-enter panel rounded-xl px-4 py-3.5">
-          <SectionLabel>Group chat</SectionLabel>
+          <SectionLabel>Discussion</SectionLabel>
           <p className="mt-1.5 text-[12.5px] leading-relaxed">
-            Your notepad carries the four parts you wrote. The panel discusses
-            them, and nothing reaches the notepad without your decision.
+            Your document carries the four parts you wrote. The panel discusses
+            them, and nothing reaches the document without your decision.
           </p>
           <div className="mt-3">
             <Button
@@ -751,8 +751,8 @@ export function StageNotepad({ session }: { session: SessionState }) {
                   )
               }}
             >
-              {busy === "Opening the group chat" ? <Spinner /> : null}Open the
-              group chat
+              {busy === "Opening the discussion" ? <Spinner /> : null}Open the
+              discussion
             </Button>
           </div>
           {session.perspectives.length === 0 ? (

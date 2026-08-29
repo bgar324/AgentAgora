@@ -738,7 +738,7 @@ export function useFocusedPanel() {
 
   const editNotepadPart = useCallback(
     (part: string, text: string) =>
-      notepadCall("Saving the notepad", "part", {
+      notepadCall("Saving the document", "part", {
         method: "PATCH",
         body: JSON.stringify({ part, text }),
       }),
