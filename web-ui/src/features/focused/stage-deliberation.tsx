@@ -623,8 +623,7 @@ export function StageDeliberation() {
             setAddingPerspective(true)
             try {
               await generatePerspective(
-                clusterId,
-                null,
+                { clusterId, facets: null },
                 undefined,
                 invitedPerspectiveIds,
               )
@@ -1065,7 +1064,7 @@ function PanelDrawer({
           <div className="mt-4 min-w-0">
             <div className="min-w-0">
               <div className="flex flex-col gap-5 [&>section+section]:border-t [&>section+section]:border-[var(--line)] [&>section+section]:pt-5">
-            {active.rounds.map((round, index) => (
+            {active.rounds.map((round) => (
               <RoundRecord
                 key={round.n}
                 round={round}

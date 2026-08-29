@@ -9,7 +9,7 @@ async function startWorkspace(page: Page) {
   await page.goto("/focused")
   await expect(page.getByRole("heading", { name: "Hypothesis Studio" })).toBeVisible()
   await expect(page.getByRole("spinbutton", { name: "Panel size" })).toHaveCount(0)
-  await page.getByRole("button", { name: "Begin" }).click()
+  await page.getByRole("button", { name: "Continue" }).click()
   await expect(page).toHaveURL(/workspace=[a-f0-9]+/)
   await expect(
     page.getByRole("button", { name: "Investigation map" }),
@@ -27,35 +27,40 @@ async function startWorkspace(page: Page) {
 }
 
 async function searchDemoLiterature(page: Page) {
-  await page.getByRole("button", { name: "Load demo queries" }).click()
-  await page
-    .getByRole("button", { name: /broad-spectrum antibiotic use antimicrobial/ })
-    .click()
-  await page
-    .getByRole("button", { name: /broad-spectrum antibiotics gut microbiome/ })
-    .click()
-  await page.getByRole("button", { name: /early broad coverage sepsis/ }).click()
-  await page.getByRole("button", { name: "Search papers (3 queries)" }).click()
-  await expect(
-    page.getByText("Resistance ecology", { exact: true }),
-  ).toBeVisible({ timeout: 15_000 })
-  const searchedQueries = page.getByRole("region", {
-    name: "Queries searched",
-  })
-  await expect(searchedQueries).toBeVisible()
-  for (const query of DEMO_QUERIES) {
-    await expect(searchedQueries).toContainText(query)
+  await page.getByRole("button", { name: "Suggest queries" }).click()
+  const options = page.getByTestId("suggested-query")
+  await expect(options).toHaveCount(5)
+  for (let index = 0; index < 3; index += 1) {
+    await options.nth(index).click()
   }
+  await page.getByRole("button", { name: "Search papers (3)" }).click()
+  await expect(page.getByTestId("paper-result").first()).toBeVisible({
+    timeout: 15_000,
+  })
+  await expect(page.getByTestId("search-brief")).toContainText(
+    /papers returned\./,
+  )
 }
 
 async function addPerspective(page: Page, name: string) {
-  await page.getByRole("heading", { name, exact: true }).click()
-  await page.getByRole("button", { name: "Build this Perspective" }).click()
+  const cards = page.getByTestId("paper-result")
+  let carried = false
+  for (let index = 0; index < (await cards.count()); index += 1) {
+    const card = cards.nth(index)
+    await card.getByRole("button").first().click()
+    const carry = card.getByRole("button", { name: "Carry to Perspective" })
+    if ((await carry.count()) > 0 && (await carry.isEnabled())) {
+      await carry.click()
+      carried = true
+      break
+    }
+  }
+  expect(carried).toBeTruthy()
+  await page.getByLabel("Job", { exact: true }).fill(name)
+  await page.getByRole("button", { name: "Build Perspective" }).click()
+  await expect(page.getByTestId("built-perspectives")).toContainText(name)
   await expect(
-    page.getByRole("button", { name: /Built/ }),
-  ).toBeVisible()
-  await expect(
-    page.getByRole("button", { name: `Remove ${name} from the matrix` }),
+    page.getByRole("button", { name: `Remove ${name}` }),
   ).toBeVisible()
 }
 
@@ -282,7 +287,7 @@ test("starts a custom Investigation from the problem alone", async ({ page }) =>
   await expect(
     page.getByRole("textbox", { name: "Research questions" }),
   ).toHaveCount(0)
-  await page.getByRole("button", { name: "Begin" }).click()
+  await page.getByRole("button", { name: "Continue" }).click()
   await expect(page).toHaveURL(/workspace=[a-f0-9]+/)
   const workspaceId = new URL(page.url()).searchParams.get("workspace")
   expect(workspaceId).toBeTruthy()
@@ -297,268 +302,41 @@ test("starts a custom Investigation from the problem alone", async ({ page }) =>
   )
 })
 
-test("shows a centered search-to-clustering timeline", async ({ page }) => {
+test("searches selected derived queries and lists papers directly", async ({
+  page,
+}) => {
   await startWorkspace(page)
-  await page.getByRole("button", { name: "Load demo queries" }).click()
-  for (const query of DEMO_QUERIES) {
-    await page.getByRole("button", { name: new RegExp(query) }).click()
-  }
-
-  await page.getByRole("button", { name: "Search papers (3 queries)" }).click()
-  const clusterSurface = page.getByTestId("cluster-results-surface")
-  const progress = clusterSurface.getByTestId("retrieval-progress-panel")
-  const queryTimeline = progress.getByTestId("query-progress-timeline")
-  await expect(progress).toBeVisible()
-  await expect(progress).toContainText("Searching literature")
-  await expect(queryTimeline).toBeVisible()
-  await expect(progress).toContainText("Searching papers for")
-  await expect(progress).toContainText(DEMO_QUERIES[0])
-  await expect
-    .poll(async () => {
-      const texts = await queryTimeline
-        .getByTestId("query-progress-step")
-        .allTextContents()
-      const activeRows = texts.filter((text) =>
-        text.includes("Searching papers for"),
-      ).length
-      const spinnerCount = await progress.locator(".animate-spin").count()
-      return activeRows >= DEMO_QUERIES.length && spinnerCount === activeRows
-    })
-    .toBe(true)
-  await expect(
-    queryTimeline.getByTestId("query-progress-step").last(),
-  ).not.toContainText("…")
-
-  const panelBox = await progress.boundingBox()
-  const contentBox = await progress
-    .getByTestId("retrieval-progress-content")
-    .boundingBox()
-  expect(panelBox).not.toBeNull()
-  expect(contentBox).not.toBeNull()
-  expect(
-    Math.abs(
-      contentBox!.y +
-        contentBox!.height / 2 -
-        (panelBox!.y + panelBox!.height / 2),
-    ),
-  ).toBeLessThan(5)
-
-  await expect(progress).toContainText(/Searched \d+ papers for/, {
-    timeout: 5_000,
-  })
-  await expect
-    .poll(() => queryTimeline.getByTestId("query-progress-step").count())
-    .toBeGreaterThanOrEqual(2)
-  await expect
-    .poll(() => queryTimeline.getByTestId("query-progress-step").count())
-    .toBeGreaterThanOrEqual(DEMO_QUERIES.length)
-
-  const processingTimeline = progress.getByTestId(
-    "processing-progress-timeline",
-  )
-  await expect(processingTimeline).toBeVisible({ timeout: 10_000 })
-  const searchedDetails = progress.getByTestId("searched-papers-details")
-  await expect(searchedDetails).toBeVisible()
-  await expect(searchedDetails).toContainText(/Searched \d+ papers/)
-  await expect(searchedDetails).not.toHaveAttribute("open", "")
-  await expect(progress.locator(".animate-spin")).toHaveCount(0)
-  await searchedDetails.locator("summary").click()
-  await expect(searchedDetails).toHaveAttribute("open", "")
-  await expect(searchedDetails).toContainText(DEMO_QUERIES[0])
-  await expect
-    .poll(() => searchedDetails.getByRole("listitem").count())
-    .toBeGreaterThanOrEqual(DEMO_QUERIES.length)
-
-
-  await expect(processingTimeline).toContainText("Creating Perspectives", {
-    timeout: 5_000,
-  })
-  await expect(progress.getByTestId("active-perspective-spinner")).toHaveCount(
-    1,
-  )
-
-  await expect(page.getByText("Resistance ecology", { exact: true })).toBeVisible()
-  await expect(progress).toBeVisible()
-  await expect(progress.getByTestId("completed-search-summary")).toHaveText(
-    /Searched \d+ papers, created \d+ Perspectives\./,
-  )
-  await expect(progress.getByTestId("searched-papers-details")).toHaveCount(0)
+  await searchDemoLiterature(page)
+  await expect(page.getByTestId("paper-result")).not.toHaveCount(0)
+  await expect(page.getByTestId("paper-results-surface")).toBeVisible()
+  await expect(page.getByTestId("cluster-results-surface")).toHaveCount(0)
 })
 
 
-test("keeps sibling searches running after one query stops", async ({ page }) => {
-  await startWorkspace(page)
-  await page.getByRole("button", { name: "Load demo queries" }).click()
-  for (const query of DEMO_QUERIES) {
-    await page.getByRole("button", { name: new RegExp(query) }).click()
-  }
-
-  let injected = false
-  await page.route("**/search-progress?**", async (route) => {
-    const response = await route.fetch()
-    const payload = await response.json()
-    const stopped = payload.items.find(
-      (item: { kind: string; query?: string }) =>
-        item.kind === "query_completed" &&
-        item.query === DEMO_QUERIES[1],
-    )
-    if (!injected && stopped) {
-      stopped.kind = "query_failed"
-      stopped.message = `Search stopped for ${stopped.query}.`
-      stopped.reason = "rate_limited"
-      delete stopped.retrieved
-      injected = true
-    }
-    await route.fulfill({ response, json: payload })
-  })
-
-  await page.getByRole("button", { name: "Search papers (3 queries)" }).click()
-  const progress = page.getByTestId("retrieval-progress-panel")
-  await expect(progress).toContainText(
-    `Search stopped for "${DEMO_QUERIES[1]}".`,
-  )
-  await expect
-    .poll(async () => {
-      const texts = await progress
-        .getByTestId("query-progress-step")
-        .allTextContents()
-      const activeRows = texts.filter((text) =>
-        text.includes("Searching papers for"),
-      ).length
-      const spinnerCount = await progress.locator(".animate-spin").count()
-      return activeRows > 0 && spinnerCount === activeRows
-    })
-    .toBe(true)
-
-  await expect(page.getByText("Resistance ecology", { exact: true })).toBeVisible()
-})
-
-
-test("keeps unassigned density-noise papers inspectable", async ({ page }) => {
-  const { rootId } = await startWorkspace(page)
-  await page.getByRole("button", { name: "Load demo queries" }).click()
-  for (const query of DEMO_QUERIES) {
-    await page.getByRole("button", { name: new RegExp(query) }).click()
-  }
-  let unassignedTitle = ""
-  let representativeTitles: string[] = []
-  await page.route(`**/api/focused/sessions/${rootId}/search`, async (route) => {
-    const response = await route.fetch()
-    const payload = await response.json()
-    const active = payload.active
-    const sourceCluster = active.clusters[active.clusters.length - 1]
-    const paperId = sourceCluster.paper_ids[sourceCluster.paper_ids.length - 1]
-    const paper = active.papers.find(
-      (item: { id: string; title: string }) => item.id === paperId,
-    )
-    if (!paper) throw new Error("mocked unassigned paper was not found")
-    unassignedTitle = paper.title
-    const representativeCluster = active.clusters[0]
-    representativeCluster.representative_paper_ids.reverse()
-    representativeTitles = representativeCluster.representative_paper_ids.map(
-      (id: string) =>
-        active.papers.find((item: { id: string }) => item.id === id).title,
-    )
-    active.unassigned_paper_ids = [paperId]
-    for (const cluster of active.clusters) {
-      cluster.paper_ids = cluster.paper_ids.filter((id: string) => id !== paperId)
-      cluster.representative_paper_ids = cluster.representative_paper_ids.filter(
-        (id: string) => id !== paperId,
-      )
-    }
-    await route.fulfill({ response, json: payload })
-  })
-
-  await page.getByRole("button", { name: "Search papers (3 queries)" }).click()
-  const firstClusterHeading = page.getByRole("heading", {
-    name: "Resistance ecology",
-  })
-  await firstClusterHeading.click()
-  const firstClusterCard = firstClusterHeading.locator(
-    "xpath=ancestor::div[contains(@class, 'panel')][1]",
-  )
-  const clusterButtons = await firstClusterCard.getByRole("button").allTextContents()
-  const representativePositions = representativeTitles.map((title) =>
-    clusterButtons.findIndex((text) => text.includes(title)),
-  )
-  expect(representativePositions.every((position) => position >= 0)).toBe(true)
-  expect(representativePositions).toEqual(
-    [...representativePositions].sort((left, right) => left - right),
-  )
-  const unassigned = page.getByRole("button", {
-    name: /Unassigned literature/,
-  })
-  await expect(unassigned).toContainText("1 paper")
-  await unassigned.click()
-  expect(unassignedTitle).toBeTruthy()
-  await page.getByRole("button", { name: unassignedTitle }).click()
-  await expect(page.getByRole("dialog", { name: "Abstract evidence" })).toBeVisible()
-})
-
-
-test("keeps other matrix additions available while one loads", async ({ page }) => {
+test("builds a Perspective from the selected paper", async ({ page }) => {
   const { rootId } = await startWorkspace(page)
   await searchDemoLiterature(page)
-
-  const firstResponseReady = Promise.withResolvers<void>()
-  const releaseFirstResponse = Promise.withResolvers<void>()
-  const firstResponseDelivered = Promise.withResolvers<void>()
-  const secondResponseDelivered = Promise.withResolvers<void>()
-  let requestCount = 0
+  const source: {
+    current: { paper_id?: string; cluster_id?: string | null } | null
+  } = { current: null }
   await page.route(
     `**/api/focused/sessions/${rootId}/perspectives`,
     async (route) => {
-      if (route.request().method() !== "POST") {
-        await route.continue()
-        return
+      if (route.request().method() === "POST") {
+        source.current = route.request().postDataJSON()
       }
-      requestCount += 1
-      const position = requestCount
-      const response = await route.fetch()
-      if (position === 1) {
-        firstResponseReady.resolve()
-        await releaseFirstResponse.promise
-      }
-      await route.fulfill({ response })
-      if (position === 1) firstResponseDelivered.resolve()
-      else secondResponseDelivered.resolve()
+      await route.continue()
     },
   )
 
-  await page.getByRole("heading", { name: "Resistance ecology" }).click()
-  await page.getByRole("button", { name: "Build this Perspective", exact: true }).click()
-  await firstResponseReady.promise
-  await expect(
-    page.getByRole("button", { name: /Building/ }),
-  ).toBeVisible()
+  const paper = page.getByTestId("paper-result").first()
+  await paper.getByRole("button").first().click()
+  await paper.getByRole("button", { name: "Carry to Perspective" }).click()
+  await page.getByRole("button", { name: "Build Perspective" }).click()
 
-  await page.getByRole("heading", { name: "Host and microbiome" }).click()
-  const secondAdd = page.getByRole("button", {
-    name: "Build this Perspective",
-    exact: true,
-  })
-  await expect(secondAdd).toBeEnabled()
-  await secondAdd.click()
-  await secondResponseDelivered.promise
-  await expect(
-    page.getByText("Perspective matrix (2)", { exact: true }),
-  ).toBeVisible()
-
-  releaseFirstResponse.resolve()
-  await firstResponseDelivered.promise
-  await expect(
-    page.getByText("Perspective matrix (2)", { exact: true }),
-  ).toBeVisible()
-  await expect(
-    page.getByRole("button", {
-      name: "Remove Resistance ecology from the matrix",
-    }),
-  ).toBeVisible()
-  await expect(
-    page.getByRole("button", {
-      name: "Remove Host and microbiome from the matrix",
-    }),
-  ).toBeVisible()
+  await expect.poll(() => source.current?.paper_id ?? null).not.toBeNull()
+  expect(source.current?.cluster_id).toBeNull()
+  await expect(page.getByTestId("built-perspectives")).toBeVisible()
 })
 
 test("returns from a blocked research branch to its parent panel", async ({
@@ -590,10 +368,15 @@ test("returns from a blocked research branch to its parent panel", async ({
       facets: child.clusters[0].facets,
     },
   )
-  const nextCluster = child.clusters.find(
-    (cluster: { id: string }) => cluster.id !== child.perspectives[0].origin,
+  const usedPaperIds = new Set(
+    child.perspectives.flatMap(
+      (perspective: { sources: string[] }) => perspective.sources,
+    ),
   )
-  if (!nextCluster) throw new Error("Expected another child literature cluster.")
+  const nextPaper = child.papers.find(
+    (paper: { id: string }) => !usedPaperIds.has(paper.id),
+  )
+  if (!nextPaper) throw new Error("Expected another child paper.")
 
   await page.reload()
   await expect(page.getByText("Research branch", { exact: true })).toBeVisible()
@@ -613,8 +396,14 @@ test("returns from a blocked research branch to its parent panel", async ({
       responseDelivered.resolve()
     },
   )
-  await page.getByRole("heading", { name: nextCluster.name }).click()
-  await page.getByRole("button", { name: "Build this Perspective", exact: true }).click()
+  const nextPaperCard = page
+    .getByTestId("paper-result")
+    .filter({ hasText: nextPaper.title })
+  await nextPaperCard.getByRole("button").first().click()
+  await nextPaperCard
+    .getByRole("button", { name: "Carry to Perspective" })
+    .click()
+  await page.getByRole("button", { name: "Build Perspective" }).click()
   await responseReady.promise
   await expect(backToPanel).toBeDisabled()
   releaseResponse.resolve()
@@ -662,42 +451,15 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   })
   const { rootId, workspaceId } = await startWorkspace(page)
   await searchDemoLiterature(page)
-  await expect(
-    page.getByText("Perspective matrix (0)", { exact: true }),
-  ).toHaveCount(0)
-  await expect(
-    page.getByText("None yet — generate one from a cluster.", { exact: true }),
-  ).toHaveCount(0)
-  await page.getByRole("heading", { name: "Resistance ecology" }).click()
-  const paperRoute = `**/api/focused/sessions/${rootId}/papers/**`
-  await page.route(paperRoute, (route) =>
-    route.fulfill({
-      status: 503,
-      contentType: "application/json",
-      body: JSON.stringify({ detail: "Paper temporarily unavailable" }),
-    }),
-  )
-  await page
-    .getByRole("button", { name: /Horizontal gene transfer under sub-inhibitory exposure/ })
-    .click()
-  const paperDialog = page.getByRole("dialog", { name: "Abstract evidence" })
-  await expect(paperDialog).toContainText("could not be loaded")
-  await page.unroute(paperRoute)
-  await paperDialog.getByRole("button", { name: "Retry" }).click()
-  await expect(
-    page.getByRole("dialog", {
-      name: "Horizontal gene transfer under sub-inhibitory exposure",
-    }),
-  ).toBeVisible()
-  await page.keyboard.press("Escape")
-  await page.getByRole("button", { name: "Build this Perspective" }).click()
-  await expect(
-    page.getByRole("button", {
-      name: "Remove Resistance ecology from the matrix",
-    }),
-  ).toBeVisible()
+  await expect(page.getByTestId("built-perspectives")).toHaveCount(0)
+  await addPerspective(page, "Resistance ecology")
   await addPerspective(page, "Host and microbiome")
-  await expect(page.getByText("Perspective matrix (2)", { exact: true })).toBeVisible()
+  await expect(page.getByTestId("built-perspectives")).toContainText(
+    "Resistance ecology",
+  )
+  await expect(page.getByTestId("built-perspectives")).toContainText(
+    "Host and microbiome",
+  )
 
   // New workspaces route Continue to the Thread dialogue surface; the
   // legacy panel remains for workspaces that already carry deliberations,
@@ -861,7 +623,10 @@ test("continues an open question on the existing canvas", async ({ page }) => {
     "starts a new deliberation from scratch",
   )
   await expect(
-    addPerspectiveDialog.getByRole("button", { name: "Resistance ecology" }),
+    addPerspectiveDialog.getByRole("button", {
+      name: "Resistance ecology",
+      exact: true,
+    }),
   ).toHaveAttribute("aria-pressed", "true")
   await addPerspectiveDialog
     .getByRole("button", { name: "Add Acute outcomes" })
@@ -1094,7 +859,10 @@ test("continues an open question on the existing canvas", async ({ page }) => {
   await page.getByRole("button", { name: "Add to panel", exact: true }).click()
   const inviteDialog = page.getByRole("dialog", { name: "Start a new panel" })
   await expect(
-    inviteDialog.getByRole("button", { name: "Resistance ecology" }),
+    inviteDialog.getByRole("button", {
+      name: "Resistance ecology",
+      exact: true,
+    }),
   ).toHaveAttribute("aria-pressed", "true")
   await inviteDialog.getByRole("button", { name: "Add to panel" }).click()
   const activeParent = await requestJson(
@@ -1442,7 +1210,7 @@ test("restores a workspace from its URL and deletes it on reset", async ({ page 
   await expect(
     page.getByRole("button", { name: "Investigation map" }),
   ).toHaveCount(0)
-  await expect(page.getByRole("button", { name: "Load demo queries" })).toBeVisible()
+  await expect(page.getByRole("button", { name: "Suggest queries" })).toBeVisible()
   await expect(page.getByRole("spinbutton", { name: "Panel size" })).toHaveCount(0)
 
   const startOver = page.getByRole("button", { name: "Start over" })
@@ -1461,7 +1229,7 @@ test("restores a workspace from its URL and deletes it on reset", async ({ page 
   await startOver.click()
   await resetDialog.getByRole("button", { name: "Reset workspace" }).click()
   await expect(page.getByRole("spinbutton", { name: "Panel size" })).toHaveCount(0)
-  await expect(page.getByRole("button", { name: "Begin" })).toBeVisible()
+  await expect(page.getByRole("button", { name: "Continue" })).toBeVisible()
   await expect(page).not.toHaveURL(/workspace=/)
 
   const response = await page.request.get(
@@ -1487,7 +1255,7 @@ test("automatically recovers from a brief API restart", async ({ page }) => {
   })
 
   await page.reload()
-  await expect(page.getByRole("button", { name: "Load demo queries" })).toBeVisible()
+  await expect(page.getByRole("button", { name: "Suggest queries" })).toBeVisible()
   await expect(
     page.getByRole("heading", { name: "Couldn’t open this workspace" }),
   ).toHaveCount(0)
@@ -1527,7 +1295,7 @@ test("preserves a workspace pointer across transient restore failures", async ({
 
   await page.unroute(routePattern)
   await page.getByRole("button", { name: "Try again" }).click()
-  await expect(page.getByRole("button", { name: "Load demo queries" })).toBeVisible()
+  await expect(page.getByRole("button", { name: "Suggest queries" })).toBeVisible()
   await expect(
     page.getByRole("button", { name: "Investigation map" }),
   ).toHaveCount(0)
@@ -1678,7 +1446,9 @@ test("keeps repeated questions distinct while promoting the selected follow-up",
 })
 
 
-test("allows a focused panel with more than three Perspectives", async ({ page }) => {
+test("allows a focused panel with more than three Perspectives", async ({
+  page,
+}) => {
   const { rootId, workspaceId } = await startWorkspace(page)
   let state = await requestJson(
     page.request,
@@ -1686,51 +1456,20 @@ test("allows a focused panel with more than three Perspectives", async ({ page }
     "post",
     { queries: ALL_DEMO_QUERIES },
   )
-  expect(state.clusters.length).toBeGreaterThanOrEqual(5)
-  const sixthCluster = {
-    ...state.clusters[4],
-    id: "cluster-synthetic-sixth",
-    name: "Sixth cluster",
-    facets: state.clusters[4].facets.slice(0, 3),
-  }
-  const workspaceRoute = `**/api/focused/workspaces/${workspaceId}`
-  await page.route(workspaceRoute, async (route) => {
-    const response = await route.fetch()
-    const payload = await response.json()
-    payload.active.clusters = [...payload.active.clusters, sixthCluster]
-    await route.fulfill({ response, json: payload })
-  })
-  await page.reload()
-  const sixthHeading = page.getByRole("heading", { name: sixthCluster.name })
-  await sixthHeading.click()
-  const sixthCard = sixthHeading.locator(
-    "xpath=ancestor::div[contains(@class, 'panel')][1]",
-  )
-  await sixthCard.getByRole("button", { name: "Add text", exact: true }).click()
-  // Scoped by label: the card also holds the persona Job and Description.
-  const missingFacetInput = sixthCard.getByRole("textbox", {
-    name: /evidence$/,
-  })
-  await missingFacetInput.fill("Why this cluster matters")
-  await missingFacetInput.press("Enter")
-  await expect(
-    sixthCard.getByRole("button", { name: "Build this Perspective", exact: true }),
-  ).toBeVisible()
-  await page.unroute(workspaceRoute)
-  for (const cluster of state.clusters.slice(0, 5)) {
+  expect(state.papers.length).toBeGreaterThanOrEqual(5)
+  for (const paper of state.papers.slice(0, 5)) {
     state = await requestJson(
       page.request,
       `/api/focused/sessions/${rootId}/perspectives`,
       "post",
-      {
-        cluster_id: cluster.id,
-        facets: cluster.facets,
-      },
+      { paper_id: paper.id },
     )
   }
 
   await page.reload()
-  await expect(page.getByText("Perspective matrix (5)", { exact: true })).toBeVisible()
+  await expect(
+    page.getByTestId("built-perspectives").locator("article"),
+  ).toHaveCount(5)
   await requestJson(
     page.request,
     `/api/focused/sessions/${rootId}/deliberations`,
@@ -1742,6 +1481,7 @@ test("allows a focused panel with more than three Perspectives", async ({ page }
   ).toHaveCount(0)
   await expect(page.locator('[data-testid^="agent-node-"]')).toHaveCount(5)
   await expect(page.getByRole("button", { name: "Join" })).toBeEnabled()
+  await expect(page).toHaveURL(new RegExp(`workspace=${workspaceId}`))
 })
 
 

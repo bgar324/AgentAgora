@@ -37,51 +37,95 @@ function ErrorLine({ children }: { children: string }) {
 /* -------------------------------------------------------------------------- */
 /* Column 1 - the notepad                                                     */
 /* -------------------------------------------------------------------------- */
+type RegisterFlush = (flush: () => Promise<void>) => () => void
+
 
 function PartField({
   part,
   value,
   versionId,
   onCommit,
+  registerFlush,
 }: {
   part: NotepadPart
   value: string
   versionId: string
-  onCommit: (part: NotepadPart, text: string) => Promise<unknown>
+  onCommit: (
+    versionId: string,
+    part: NotepadPart,
+    text: string,
+  ) => Promise<unknown>
+  registerFlush: RegisterFlush
 }) {
   // "Changes take effect as they are typed; there is nothing to save."
-  // The textarea owns the keystrokes; the server catches up behind them.
+  // A queued edit keeps the version that owned the keystroke.
   const [text, setText] = useState(value)
   const timer = useRef<number | undefined>(undefined)
-  const pending = useRef(false)
+  const pending = useRef<{ text: string; revision: number } | null>(null)
+  const latestRevision = useRef(0)
+  const commitRef = useRef(onCommit)
+  const inFlight = useRef<Promise<void>>(Promise.resolve())
 
   useEffect(() => {
-    if (!pending.current) setText(value)
-  }, [value, versionId])
+    commitRef.current = onCommit
+  }, [onCommit])
 
-  useEffect(() => () => window.clearTimeout(timer.current), [])
+  useEffect(() => {
+    if (pending.current === null) setText(value)
+  }, [value])
+
+  const flush = useCallback(() => {
+    window.clearTimeout(timer.current)
+    const next = pending.current
+    if (next === null) return inFlight.current
+    pending.current = null
+    const operation = commitRef
+      .current(versionId, part, next.text)
+      .then(() => undefined)
+      .catch((cause: unknown) => {
+        if (
+          pending.current === null &&
+          latestRevision.current === next.revision
+        ) {
+          pending.current = next
+        }
+        throw cause
+      })
+    inFlight.current = operation
+    void operation.catch(() => undefined)
+    return operation
+  }, [part, versionId])
+
+  useEffect(() => registerFlush(flush), [flush, registerFlush])
+
+  useEffect(
+    () => () => {
+      window.clearTimeout(timer.current)
+      void flush().catch(() => undefined)
+    },
+    [flush],
+  )
 
   const change = (next: string) => {
     setText(next)
-    pending.current = true
+    latestRevision.current += 1
+    pending.current = { text: next, revision: latestRevision.current }
     window.clearTimeout(timer.current)
     timer.current = window.setTimeout(() => {
-      void onCommit(part, next).finally(() => {
-        pending.current = false
-      })
+      void flush().catch(() => undefined)
     }, 450)
   }
 
   return (
     <div>
       <label
-        htmlFor={`notepad-${part}`}
+        htmlFor={`notepad-${versionId}-${part}`}
         className="text-[11px] font-medium text-[var(--ink-2)]"
       >
         {NOTEPAD_LABELS[part]}
       </label>
       <textarea
-        id={`notepad-${part}`}
+        id={`notepad-${versionId}-${part}`}
         data-testid={`notepad-part-${part}`}
         value={text}
         rows={2}
@@ -102,6 +146,7 @@ function NotepadColumn({
 }) {
   const focused = useFocusedPanel()
   const [error, setError] = useState<string | null>(null)
+  const flushers = useRef(new Set<() => Promise<void>>())
   const version =
     notepad.versions.find((item) => item.id === notepad.active_version_id) ??
     notepad.versions[0]
@@ -112,10 +157,32 @@ function NotepadColumn({
       setError(cause instanceof Error ? cause.message : "Could not save"),
     )
   }
+  const registerFlush = useCallback<RegisterFlush>((flush) => {
+    flushers.current.add(flush)
+    return () => {
+      flushers.current.delete(flush)
+    }
+  }, [])
 
+  const flushThen = (action: () => Promise<unknown>) => {
+    guard(
+      Promise.all([...flushers.current].map((flush) => flush())).then(action),
+    )
+  }
+
+
+  const editNotepadPart = focused.editNotepadPart
   const commit = useCallback(
-    (part: NotepadPart, text: string) => focused.editNotepadPart(part, text),
-    [focused],
+    async (versionId: string, part: NotepadPart, text: string) => {
+      setError(null)
+      try {
+        return await editNotepadPart(versionId, part, text)
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "Could not save")
+        throw cause
+      }
+    },
+    [editNotepadPart],
   )
 
   if (!version) return null
@@ -136,7 +203,9 @@ function NotepadColumn({
                 data-testid={`notepad-version-${item.name}`}
                 aria-pressed={active}
                 disabled={busy !== null}
-                onClick={() => guard(focused.switchNotepadVersion(item.id))}
+                onClick={() =>
+                  flushThen(() => focused.switchNotepadVersion(item.id))
+                }
                 className="rounded-md border px-2 py-0.5 text-[11px] tabular-nums transition-colors"
                 style={{
                   borderColor: active ? "var(--line-strong)" : "var(--line)",
@@ -151,7 +220,9 @@ function NotepadColumn({
                   type="button"
                   aria-label={`Delete ${item.name}`}
                   disabled={busy !== null}
-                  onClick={() => guard(focused.deleteNotepadVersion(item.id))}
+                  onClick={() =>
+                    flushThen(() => focused.deleteNotepadVersion(item.id))
+                  }
                   className="ml-0.5 text-[var(--mute)] transition-opacity hover:opacity-70"
                 >
                   <X size={11} strokeWidth={2.2} />
@@ -163,7 +234,9 @@ function NotepadColumn({
         <button
           type="button"
           disabled={busy !== null}
-          onClick={() => guard(focused.addNotepadVersion(true))}
+          aria-label="Add version by copying the current version"
+          title="Copy the current version"
+          onClick={() => flushThen(() => focused.addNotepadVersion(true))}
           className="ml-1 flex items-center gap-1 rounded-md border border-dashed border-[var(--line)] px-2 py-0.5 text-[11px] text-[var(--mute)] transition-colors hover:border-[var(--line-strong)] hover:text-[var(--ink-2)]"
         >
           {busy === "Starting a version" ? (
@@ -173,6 +246,16 @@ function NotepadColumn({
           )}
           Version
         </button>
+        <button
+          type="button"
+          disabled={busy !== null}
+          aria-label="Add a blank version"
+          title="Start with four blank parts"
+          onClick={() => flushThen(() => focused.addNotepadVersion(false))}
+          className="flex items-center rounded-md border border-dashed border-[var(--line)] px-2 py-0.5 text-[11px] text-[var(--mute)] transition-colors hover:border-[var(--line-strong)] hover:text-[var(--ink-2)]"
+        >
+          Blank
+        </button>
       </div>
       <p className="mt-1.5 text-[10.5px] text-[var(--mute)]">
         Edits take effect as you type. Versions are independent.
@@ -180,11 +263,12 @@ function NotepadColumn({
       <div className="mt-3 min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
         {NOTEPAD_PARTS.map((part) => (
           <PartField
-            key={part}
+            key={`${version.id}:${part}`}
             part={part}
             versionId={version.id}
             value={version.doc[part]}
             onCommit={commit}
+            registerFlush={registerFlush}
           />
         ))}
       </div>
@@ -613,6 +697,13 @@ function PerspectiveCard({
   busy: string | null
 }) {
   const focused = useFocusedPanel()
+  const session = useFocusedStore((state) => state.session)
+  const openPaperSet = useFocusedStore((state) => state.openPaperSet)
+  const sources = perspective.sources.map((sourceId) => ({
+    id: sourceId,
+    title:
+      session?.papers.find((paper) => paper.id === sourceId)?.title ?? sourceId,
+  }))
   const [open, setOpen] = useState(false)
   const fragments = FACETS.filter((facet) => perspective.facets[facet])
 
@@ -659,6 +750,27 @@ function PerspectiveCard({
               {perspective.summary}
             </p>
           ) : null}
+          {sources.length > 0 ? (
+            <div>
+              <p className="text-[10.5px] font-medium uppercase tracking-wide text-[var(--mute)]">
+                Source {sources.length === 1 ? "paper" : "papers"}
+              </p>
+              <ul className="mt-1 space-y-1">
+                {sources.map((source) => (
+                  <li key={source.id}>
+                    <button
+                      type="button"
+                      aria-label={`Open source paper: ${source.title}`}
+                      onClick={() => openPaperSet(source.id)}
+                      className="text-left text-[11.5px] leading-snug text-[var(--ink-2)] underline decoration-[var(--line-strong)] underline-offset-2 hover:text-[var(--ink)]"
+                    >
+                      {source.title}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
           {/* The four Fragments: what the formative study identified and
               what a researcher can check, each with its source. */}
           {fragments.length > 0 ? (
@@ -672,11 +784,6 @@ function PerspectiveCard({
                     </dt>
                     <dd className="mt-0.5 text-[12px] leading-relaxed">
                       {evidence.text}
-                      {evidence.paper_id ? (
-                        <span className="ml-1 text-[10.5px] text-[var(--mute)]">
-                          {`[${evidence.paper_id}]`}
-                        </span>
-                      ) : null}
                     </dd>
                   </div>
                 )

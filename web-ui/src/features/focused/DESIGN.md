@@ -11,42 +11,23 @@ Persistent header: brand · step trail (Search, Perspectives, Panel) ·
 demo badge · Start over · one primary Continue or Add to panel action.
 
 Surfaces:
-- Start — centered 440px form (Problem, Demo, Begin). Research questions are
-  never typed by users; demo seeds its fixed set internally, live derives
-  queries from the problem alone.
-- Extraction — left rail (brief and question-linked queries), right clusters,
-  matrix below.
-  Every Perspective exposes Scope, Explanation, Approach, and Significance,
-  each grounded in an abstract sentence.
-  Complete SPECTER embeddings are grouped with lightweight UMAP/HDBSCAN; the
-  existing deterministic K-means path remains the fallback. Each cluster uses
-  five central-plus-DPP representatives for naming and grounded facet
-  extraction. Density noise and papers without embeddings remain explicit
-  under Unassigned literature, where every abstract stays inspectable.
-  Retrieval is breadth-preserving: answer-bearing papers rank first,
-  problem-angle papers second, and remaining question candidates third. The
-  corpus targets 90 papers, expands with at most four gap queries when
-  underfilled, and remains capped at 200. A corpus with at least 15 embedded
-  papers requests at least three Perspective-eligible clusters; a density
-  result below three falls back to deterministic three-way clustering.
-  Submitted and automatically expanded queries remain visible as a read-only
-  record beside the resulting clusters. During retrieval, the right cluster
-  panel centers a connected timeline. Only the active query has a spinner.
-  After the last query, the rows collapse into a Searched papers disclosure.
-  Opening the disclosure shows every query count and the result total before
-  duplicate papers were removed. A line connects that frozen stage to Creating
-  Perspectives. When both stages finish, one summary line stays above the
-  cluster cards.
-  Wrapped research-question lines are joined through their closing question
-  mark. A zero-result search stays retryable and never seals the Investigation.
-  Adding a Perspective inserts a pending matrix card immediately. Its own card
-  and button show progress while other clusters remain addable. Every cluster
-  editor renders all four hypothesis areas, including a blank editor when the
-  server omits an area. The server response replaces the pending card and
-  creates its matching canvas agent. A failed request removes only that card.
-  Continue opens the canvas directly with every matrix Perspective. There is no
-  separate panel-selection step. Before round 1, the researcher chooses a lead
-  Perspective and generates its baseline hypothesis.
+- Start — centered 440px form for the Problem and four-part position. Continue
+  creates the assigned study arm; participants never choose or see that arm.
+- Extraction — one three-column paper workflow. The left column keeps the
+  Problem and four position parts read-only, then offers five selectable search
+  queries derived from those five inputs. The middle column lists every
+  returned paper in one flat list; a paper expands its abstract inline and can
+  be carried to the Perspective editor. The right column prefills editable Job
+  and Description fields from that paper, builds one grounded Perspective, and
+  keeps the built list directly below the editor. Every Perspective exposes
+  Scope, Explanation, Approach, and Significance grounded in its source
+  abstract. Once one Perspective exists, Continue opens the group chat without
+  an interstitial.
+- Document — three columns for the editable four-part Document, group chat, and
+  Perspectives. Version creates a copy and Blank creates an empty alternative;
+  every debounced edit remains bound to the version where it was typed. Source
+  paper titles on Perspective cards open their paper detail. Baseline and
+  guided sessions share this structure and differ only in discussion guidance.
 - Panel — React Flow canvas (nodes/wires/dot grid) + guided drawer:
   while open, the canvas shows the Research Problem, Perspective agents, and
   panel. Adding a Perspective archives the current panel cycle and starts a new

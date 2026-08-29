@@ -94,6 +94,14 @@ def _active_doc(service: FocusedPanelService, session_id: str) -> NotepadDoc:
     return version.doc
 
 
+def _active_version_id(service: FocusedPanelService, session_id: str) -> str:
+    notepad = service.get(session_id).notepad
+    assert notepad is not None
+    version = notepad.active_version()
+    assert version is not None
+    return version.id
+
+
 def test_notepad_v1_is_seeded_from_the_input_screen() -> None:
     async def go() -> None:
         service, session_id = await _panel("guided")
@@ -112,7 +120,12 @@ def test_notepad_v1_is_seeded_from_the_input_screen() -> None:
 def test_researcher_edits_take_effect_without_a_save_step() -> None:
     async def go() -> None:
         service, session_id = await _panel("guided")
-        await service.edit_notepad_part(session_id, part="method", text="Rewritten.")
+        await service.edit_notepad_part(
+            session_id,
+            version_id=_active_version_id(service, session_id),
+            part="method",
+            text="Rewritten.",
+        )
         assert _active_doc(service, session_id).method == "Rewritten."
 
     asyncio.run(go())
@@ -122,7 +135,12 @@ def test_versions_are_independent_and_the_first_is_never_mutated() -> None:
     async def go() -> None:
         service, session_id = await _panel("guided")
         await service.add_notepad_version(session_id, copy_current=True)
-        await service.edit_notepad_part(session_id, part="framing", text="v2 wording.")
+        await service.edit_notepad_part(
+            session_id,
+            version_id=_active_version_id(service, session_id),
+            part="framing",
+            text="v2 wording.",
+        )
         notepad = service.get(session_id).notepad
         assert notepad is not None
         assert [version.name for version in notepad.versions] == ["v1", "v2"]
@@ -133,6 +151,41 @@ def test_versions_are_independent_and_the_first_is_never_mutated() -> None:
             session_id, version_id=notepad.versions[0].id
         )
         assert _active_doc(service, session_id).framing == POSITION["framing"]
+
+    asyncio.run(go())
+
+
+def test_a_blank_version_starts_with_four_empty_parts() -> None:
+    async def go() -> None:
+        service, session_id = await _panel("guided")
+        await service.add_notepad_version(session_id, copy_current=False)
+        assert _active_doc(service, session_id) == NotepadDoc()
+
+    asyncio.run(go())
+
+
+def test_a_queued_edit_stays_with_the_version_that_owned_it() -> None:
+    async def go() -> None:
+        service, session_id = await _panel("guided")
+        v1_id = _active_version_id(service, session_id)
+        await service.add_notepad_version(session_id, copy_current=True)
+        v2_id = _active_version_id(service, session_id)
+        await service.switch_notepad_version(session_id, version_id=v1_id)
+
+        await service.edit_notepad_part(
+            session_id,
+            version_id=v2_id,
+            part="framing",
+            text="Late edit for v2.",
+        )
+
+        notepad = service.get(session_id).notepad
+        assert notepad is not None
+        assert notepad.active_version_id == v1_id
+        assert notepad.active_version() is not None
+        assert notepad.active_version().doc.framing == POSITION["framing"]
+        v2 = next(version for version in notepad.versions if version.id == v2_id)
+        assert v2.doc.framing == "Late edit for v2."
 
     asyncio.run(go())
 
@@ -262,7 +315,12 @@ def test_approving_after_your_own_edit_keeps_both() -> None:
             proposal_id = notepad.pending_proposals()[0].id
 
             edit = f"{POSITION['prior']} And my own qualification."
-            await service.edit_notepad_part(session_id, part="prior", text=edit)
+            await service.edit_notepad_part(
+                session_id,
+                version_id=_active_version_id(service, session_id),
+                part="prior",
+                text=edit,
+            )
             await service.decide_notepad_proposal(
                 session_id, proposal_id=proposal_id, action="approve"
             )
@@ -534,9 +592,15 @@ def test_the_notepad_survives_a_cold_reload(tmp_path) -> None:
             text="Researcher wording only.",
         )
         await service.add_notepad_version(session_id, copy_current=True)
-        await service.edit_notepad_part(session_id, part="framing", text="v2 framing.")
+        await service.edit_notepad_part(
+            session_id,
+            version_id=_active_version_id(service, session_id),
+            part="framing",
+            text="v2 framing.",
+        )
 
-        restored = FocusedPanelService(persistence=store()).workspace_view(workspace_id)
+        reloaded_service = FocusedPanelService(persistence=store())
+        restored = reloaded_service.workspace_view(workspace_id)
         assert restored.active.arm == "guided"
         assert restored.active.position.framing == POSITION["framing"]
         reloaded = restored.active.notepad
@@ -550,6 +614,13 @@ def test_the_notepad_survives_a_cold_reload(tmp_path) -> None:
         assert [item.status for item in reloaded.proposals] == ["edited"]
         assert any(turn.citations for turn in reloaded.turns)
         assert len(reloaded.in_chat) == 3
+        exported = reloaded_service.export_workspace(workspace_id)
+        exported_notepad = exported["investigations"][0]["notepad"]
+        assert [version["name"] for version in exported_notepad["versions"]] == [
+            "v1",
+            "v2",
+        ]
+        assert exported_notepad["versions"][1]["doc"]["framing"] == "v2 framing."
         assert reloaded.turn_cursor == 4
 
     asyncio.run(go())

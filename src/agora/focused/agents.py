@@ -133,20 +133,25 @@ def compact_search_query(query: str, *, max_terms: int = 6) -> str:
     text = " ".join(query.split())
     content = _search_query_words(text)
     unsafe = (
-        "?" in text
+        len(text) > 500
+        or "?" in text
         or "？" in text
         or '"' in text
         or re.search(r"\b(?:AND|OR|NOT)\b", text) is not None
         or len(content) > max_terms
     )
     if not unsafe:
-        return text
-    terms = list(
-        dict.fromkeys(word for word in content if word not in SEARCH_QUERY_FILLER)
-    )
-    if len(terms) < 2:
-        terms = list(dict.fromkeys(content))
-    return " ".join(terms[:max_terms]) or text.rstrip("?？")
+        compacted = text
+    else:
+        terms = list(
+            dict.fromkeys(
+                word for word in content if word not in SEARCH_QUERY_FILLER
+            )
+        )
+        if len(terms) < 2:
+            terms = list(dict.fromkeys(content))
+        compacted = " ".join(terms[:max_terms]) or text.rstrip("?？")
+    return compacted[:500].strip()
 
 
 def relaxed_search_query(query: str, *, terms: int = 3) -> str:
@@ -207,41 +212,65 @@ def split_sentences(text: str | None) -> list[str]:
 
 
 def _fallback_queries(
-    problem: str, questions: list[str], count: int
+    problem: str,
+    questions: list[str],
+    position: NotepadDoc | None,
+    count: int,
 ) -> list[SuggestedQuery]:
     out: list[SuggestedQuery] = []
     seen: set[str] = set()
 
     def push(q: str, rationale: str) -> None:
-        q = " ".join(q.split())
+        q = compact_search_query(q)
         key = q.lower().rstrip("?")
         if len(q) > 12 and key not in seen:
             seen.add(key)
             out.append(SuggestedQuery(query=q, rationale=rationale))
 
-    words = _content_words(problem)
-    freq = [w for w, _ in Counter(words).most_common(6)]
+    source_texts = [problem]
+    push(
+        compact_search_query(problem),
+        "Drawn from the research problem.",
+    )
+    if position is not None:
+        for part in NOTEPAD_PARTS:
+            text = getattr(position, part).strip()
+            if not text:
+                continue
+            source_texts.append(text)
+            push(
+                compact_search_query(text),
+                f"Drawn from your {NOTEPAD_LABELS[part].lower()}.",
+            )
+    for question in questions:
+        source_texts.append(question)
+        push(
+            compact_search_query(question),
+            "Taken directly from your research questions.",
+        )
+
+    words = _content_words(" ".join(source_texts))
+    freq = [word for word, _ in Counter(words).most_common(6)]
     if freq:
         push(
             " ".join(freq[:4]) + " evidence",
-            "Core constructs of the problem statement.",
+            "Core constructs across the problem and position.",
         )
-    for q in questions:
-        push(compact_search_query(q), "Taken directly from your research questions.")
     if len(freq) >= 4:
         push(
             f"{freq[0]} versus {freq[min(2, len(freq) - 1)]}",
             "Opposes two constructs to reach the debate literature.",
         )
         push(
-            f"mechanisms of {freq[0]} and {freq[1]}", "Reaches mechanism-oriented work."
+            f"mechanisms of {freq[0]} and {freq[1]}",
+            "Reaches mechanism-oriented work.",
         )
-    i = 0
+    index = 0
     while len(out) < count and freq:
-        pair = f"{freq[i % len(freq)]} {freq[(i + 2) % len(freq)]} review"
+        pair = f"{freq[index % len(freq)]} {freq[(index + 2) % len(freq)]} review"
         push(pair, "Broad review literature for coverage.")
-        i += 1
-        if i > count * 3:
+        index += 1
+        if index > count * 3:
             break
     return out[:count]
 
@@ -293,7 +322,7 @@ async def suggest_queries(
             query.model_copy(update={"query": compact_search_query(query.query)})
             for query in parsed.queries[:count]
         ]
-    return _fallback_queries(problem, questions, count)
+    return _fallback_queries(problem, questions, position, count)
 
 
 async def derive_research_questions(

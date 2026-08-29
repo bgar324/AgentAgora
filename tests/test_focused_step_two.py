@@ -12,6 +12,7 @@ import asyncio
 import pytest
 
 from agora.focused import agents
+from agora.focused.demo_data import DEMO_QUERY_SUGGESTIONS
 from agora.focused.models import (
     FACETS,
     ClusterCard,
@@ -19,7 +20,7 @@ from agora.focused.models import (
     FacetEvidence,
     NotepadDoc,
 )
-from agora.focused.service import FocusedPanelService
+from agora.focused.service import FocusedPanelService, SessionError
 
 PROBLEM = "Should antibiotics be prescribed broadly?"
 POSITION = {
@@ -71,6 +72,113 @@ def test_query_suggestion_sees_the_four_parts(monkeypatch) -> None:
     # The problem and questions are still there; the parts are additive.
     assert PROBLEM in captured["user"]
     assert "Does breadth raise resistance?" in captured["user"]
+
+
+def test_providerless_queries_come_from_the_problem_and_each_position_part() -> None:
+    async def go() -> list[str]:
+        suggestions = await agents.suggest_queries(
+            PROBLEM,
+            [],
+            position=NotepadDoc(**POSITION),
+        )
+        return [suggestion.query for suggestion in suggestions]
+
+    queries = asyncio.run(go())
+    assert queries == [
+        agents.compact_search_query(PROBLEM),
+        *[
+            agents.compact_search_query(POSITION[part])
+            for part in ("framing", "prior", "method", "expected")
+        ],
+    ]
+
+def test_providerless_queries_bound_long_unbroken_input() -> None:
+    queries = asyncio.run(
+        agents.suggest_queries("x" * 501, [], position=NotepadDoc())
+    )
+    assert queries
+    assert all(1 <= len(suggestion.query) <= 500 for suggestion in queries)
+
+
+def test_changing_a_position_part_changes_the_corresponding_fallback_query() -> None:
+    async def go(position: dict[str, str]) -> list[str]:
+        suggestions = await agents.suggest_queries(
+            PROBLEM,
+            [],
+            position=NotepadDoc(**position),
+        )
+        return [suggestion.query for suggestion in suggestions]
+
+    changed = dict(POSITION)
+    changed["method"] = (
+        "Run a randomized de-escalation trial across intensive care units."
+    )
+    assert asyncio.run(go(changed))[3] != asyncio.run(go(dict(POSITION)))[3]
+
+
+def test_demo_query_buttons_use_the_entered_problem_and_four_parts() -> None:
+    async def go(position: dict[str, str]) -> list[str]:
+        service = FocusedPanelService()
+        state = service.create_workspace(
+            problem=PROBLEM,
+            research_questions=[],
+            position=position,
+            demo=True,
+        ).active
+        state = await service.suggest_queries(state.id)
+        return [suggestion.query for suggestion in state.suggested_queries]
+
+    changed = dict(POSITION)
+    changed["method"] = (
+        "Run a randomized de-escalation trial across intensive care units."
+    )
+    queries = asyncio.run(go(changed))
+    assert set(queries) == {
+        agents.compact_search_query(PROBLEM),
+        *(
+            agents.compact_search_query(changed[part])
+            for part in ("framing", "prior", "method", "expected")
+        ),
+    }
+    assert agents.compact_search_query(POSITION["method"]) not in queries
+
+def test_demo_queries_use_a_partly_entered_position() -> None:
+    async def go() -> list[str]:
+        service = FocusedPanelService()
+        state = service.create_workspace(
+            problem=PROBLEM,
+            research_questions=[],
+            position={"framing": "A one-part custom evolutionary framing."},
+            demo=True,
+        ).active
+        state = await service.suggest_queries(state.id)
+        return [suggestion.query for suggestion in state.suggested_queries]
+
+    queries = asyncio.run(go())
+    assert agents.compact_search_query(PROBLEM) in queries
+    assert agents.compact_search_query(
+        "A one-part custom evolutionary framing."
+    ) in queries
+    assert queries != [
+        suggestion.query for suggestion in DEMO_QUERY_SUGGESTIONS
+    ]
+
+
+def test_custom_demo_questions_do_not_relabel_fixture_queries() -> None:
+    question = "Does this custom boundary have direct evidence?"
+
+    async def go():
+        service = FocusedPanelService()
+        state = service.create_workspace(
+            problem=PROBLEM,
+            research_questions=[question],
+            demo=True,
+        ).active
+        return await service.suggest_queries(state.id)
+
+    state = asyncio.run(go())
+    assert all(suggestion.kind == "problem" for suggestion in state.suggested_queries)
+    assert state.question_reach[0].candidates == [question]
 
 
 def test_question_derivation_sees_the_four_parts(monkeypatch) -> None:
@@ -129,6 +237,94 @@ def _seeded_service() -> tuple[FocusedPanelService, str]:
     ]
     state.searched = True
     return service, session_id
+
+
+def test_a_paper_builds_one_grounded_editable_perspective() -> None:
+    async def go() -> None:
+        service, session_id = _seeded_service()
+        state = service.get(session_id)
+        state.papers.append(
+            ExpPaper(
+                id="paper-source",
+                title="Severity-matched resistance outcomes",
+                abstract=(
+                    "This cohort compares exposure by infection severity. "
+                    "Longer exposure selects resistance genes."
+                ),
+                abstract_sentences=[
+                    "This cohort compares exposure by infection severity.",
+                    "Longer exposure selects resistance genes.",
+                ],
+            )
+        )
+
+        await service.generate_perspective(
+            session_id,
+            paper_id="paper-source",
+            name="Resistance outcomes researcher",
+            description="I compare acute benefit with cumulative resistance.",
+        )
+
+        perspective = service.get(session_id).perspectives[0]
+        assert perspective.name == "Resistance outcomes researcher"
+        assert perspective.summary == (
+            "I compare acute benefit with cumulative resistance."
+        )
+        assert perspective.origin == "paper:paper-source"
+        assert perspective.sources == ["paper-source"]
+        assert set(perspective.facets) == set(FACETS)
+        assert {evidence.paper_id for evidence in perspective.facets.values()} == {
+            "paper-source"
+        }
+        with pytest.raises(
+            SessionError,
+            match="already has a Perspective",
+        ):
+            await service.generate_perspective(
+                session_id,
+                paper_id="paper-source",
+            )
+
+    asyncio.run(go())
+
+def test_a_duplicate_paper_is_rejected_before_extraction(monkeypatch) -> None:
+    async def go() -> None:
+        service, session_id = _seeded_service()
+        service.get(session_id).papers.append(
+            ExpPaper(
+                id="duplicate-source",
+                title="Severity-matched resistance outcomes",
+                abstract=(
+                    "This cohort compares exposure by infection severity. "
+                    "Longer exposure selects resistance genes."
+                ),
+                abstract_sentences=[
+                    "This cohort compares exposure by infection severity.",
+                    "Longer exposure selects resistance genes.",
+                ],
+            )
+        )
+        await service.generate_perspective(
+            session_id,
+            paper_id="duplicate-source",
+        )
+        calls = 0
+
+        async def fail_if_called(*_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            raise AssertionError("duplicate extraction should not run")
+
+        monkeypatch.setattr(agents, "extract_cluster_facets", fail_if_called)
+        with pytest.raises(SessionError, match="already has a Perspective") as error:
+            await service.generate_perspective(
+                session_id,
+                paper_id="duplicate-source",
+            )
+        assert error.value.status == 409
+        assert calls == 0
+
+    asyncio.run(go())
 
 
 def test_the_researchers_job_and_description_land_verbatim() -> None:

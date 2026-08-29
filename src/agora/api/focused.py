@@ -120,7 +120,8 @@ class SearchRequest(BaseModel):
 
 
 class PerspectiveRequest(BaseModel):
-    cluster_id: str = Field(min_length=1, max_length=200)
+    cluster_id: str | None = Field(default=None, min_length=1, max_length=200)
+    paper_id: str | None = Field(default=None, min_length=1, max_length=200)
     facets: list[FacetEvidence] | None = Field(default=None, max_length=4)
     name: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=2000)
@@ -219,6 +220,7 @@ NotepadPartName = Literal["framing", "prior", "method", "expected"]
 
 
 class NotepadEditRequest(BaseModel):
+    version_id: str = Field(min_length=1, max_length=200)
     part: NotepadPartName
     text: str = Field(default="", max_length=4000)
 
@@ -499,6 +501,7 @@ async def generate_perspective(
             session_id,
             invited_perspective_ids=request.invited_perspective_ids,
             cluster_id=request.cluster_id,
+            paper_id=request.paper_id,
             facets=request.facets,
             name=request.name,
             description=request.description,
@@ -698,7 +701,12 @@ async def edit_notepad_part(
 ) -> WorkspaceView:
     return await _acall_view(
         service,
-        service.edit_notepad_part(session_id, part=request.part, text=request.text),
+        service.edit_notepad_part(
+            session_id,
+            version_id=request.version_id,
+            part=request.part,
+            text=request.text,
+        ),
     )
 
 

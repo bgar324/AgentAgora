@@ -969,11 +969,14 @@ def test_child_research_starts_a_fresh_deliberation_cycle() -> None:
             child.id,
             [query.query for query in child.suggested_queries[:3]],
         )
-        for cluster in child.clusters[2:4]:
-            child = await service.generate_perspective(
-                child.id,
-                cluster_id=cluster.id,
-            )
+        child = await service.generate_perspective(
+            child.id,
+            paper_id=child.papers[0].id,
+        )
+        child = await service.generate_perspective(
+            child.id,
+            cluster_id=child.clusters[2].id,
+        )
 
         view = await service.integrate_child_investigation(
             parent.workspace_id,
@@ -1012,6 +1015,18 @@ def test_child_research_starts_a_fresh_deliberation_cycle() -> None:
             if perspective.source_question_id == question.id
         ]
         assert len(imported_perspectives) == 2
+        paper_import = next(
+            perspective
+            for perspective in imported_perspectives
+            if perspective.origin.startswith("paper:")
+        )
+        assert paper_import.sources
+        assert paper_import.origin == f"paper:{paper_import.sources[0]}"
+        with pytest.raises(SessionError, match="already has a Perspective"):
+            await service.generate_perspective(
+                parent.id,
+                paper_id=paper_import.sources[0],
+            )
         assert service.get(child.id).integrated_into_parent_at is not None
         with pytest.raises(SessionError, match="already continued"):
             await service.integrate_child_investigation(

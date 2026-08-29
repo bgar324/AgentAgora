@@ -1003,7 +1003,24 @@ class FocusedPanelService:
             )
 
         imported_perspective_ids: list[str] = []
+        parent_origins = {
+            perspective.origin
+            for perspective in parent.state.perspectives
+            if not perspective.evolved
+        }
         for perspective in child_state.perspectives:
+            if perspective.origin.startswith("paper:"):
+                source_paper_id = perspective.origin.removeprefix("paper:")
+                imported_origin = (
+                    f"paper:{paper_map.get(source_paper_id, source_paper_id)}"
+                )
+            else:
+                imported_origin = cluster_map.get(
+                    perspective.origin,
+                    f"{child_state.id[:8]}-{perspective.origin}",
+                )
+            if imported_origin in parent_origins and not perspective.evolved:
+                continue
             imported = perspective.model_copy(
                 deep=True,
                 update={
@@ -1011,10 +1028,7 @@ class FocusedPanelService:
                     "color": PERSONA_COLORS[
                         len(parent.state.perspectives) % len(PERSONA_COLORS)
                     ],
-                    "origin": cluster_map.get(
-                        perspective.origin,
-                        f"{child_state.id[:8]}-{perspective.origin}",
-                    ),
+                    "origin": imported_origin,
                     "source_question_id": child_state.origin_question_id,
                     "panel_cycle": 0,
                     "sources": [
@@ -1037,6 +1051,14 @@ class FocusedPanelService:
             )
             parent.state.perspectives.append(imported)
             imported_perspective_ids.append(imported.id)
+            if not imported.evolved:
+                parent_origins.add(imported.origin)
+
+        if not imported_perspective_ids:
+            raise SessionError(
+                "This research branch has no new Perspectives to add.",
+                status=409,
+            )
 
         source_question.status = "addressed"
         self._restart_deliberation(
@@ -1306,22 +1328,49 @@ class FocusedPanelService:
         self._ensure_searchable(state)
         reaches: list[QuestionReach] = []
         if self._demo(session):
-            paired_questions = state.research_questions == DEMO_RESEARCH_QUESTIONS
-            suggestions = []
-            for suggestion in DEMO_QUERY_SUGGESTIONS:
-                if (
-                    not paired_questions
-                    or suggestion.question_index is None
-                    or suggestion.question_index >= len(state.research_questions)
-                ):
-                    suggestions.append(
-                        suggestion.model_copy(
-                            deep=True,
-                            update={"kind": "problem", "question_index": None},
-                        )
+            position_written = any(
+                value.strip() for value in state.position.model_dump().values()
+            )
+            if position_written:
+                generated = await agents.suggest_queries(
+                    state.problem,
+                    [],
+                    position=state.position,
+                    provider=None,
+                    count=MAX_SUGGESTED_QUERIES,
+                )
+                if len(generated) == MAX_SUGGESTED_QUERIES:
+                    # Keep the established Demo corpus lanes near the front
+                    # while every query still comes from current user input.
+                    generated = [generated[index] for index in (1, 0, 3, 2, 4)]
+            else:
+                # API-created Demo workspaces can predate the four-part input.
+                # Keep their established corpus-matched reach plan.
+                generated = [
+                    suggestion.model_copy(deep=True)
+                    for suggestion in DEMO_QUERY_SUGGESTIONS
+                ]
+
+            paired_fixture = (
+                not position_written
+                and state.research_questions == DEMO_RESEARCH_QUESTIONS
+            )
+            suggestions = (
+                generated
+                if paired_fixture
+                else [
+                    suggestion.model_copy(
+                        deep=True,
+                        update={
+                            "kind": "problem",
+                            "question_index": None,
+                            "round": 1,
+                        },
                     )
-                else:
-                    suggestions.append(suggestion.model_copy(deep=True))
+                    for suggestion in generated
+                ]
+            )
+
             demo_terms: dict[int, list[str]] = {}
             for suggestion in suggestions:
                 if (
@@ -2454,7 +2503,8 @@ class FocusedPanelService:
         self,
         session_id: str,
         *,
-        cluster_id: str,
+        cluster_id: str | None = None,
+        paper_id: str | None = None,
         facets: list[FacetEvidence] | None = None,
         name: str | None = None,
         description: str | None = None,
@@ -2467,31 +2517,69 @@ class FocusedPanelService:
                 "This research branch was already continued.",
                 status=409,
             )
-        cluster = next((item for item in state.clusters if item.id == cluster_id), None)
-        if cluster is None:
-            raise SessionError(f"cluster '{cluster_id}' not found", status=404)
+        if (cluster_id is None) == (paper_id is None):
+            raise SessionError(
+                "Choose exactly one source paper or literature cluster.",
+                status=400,
+            )
+        origin = f"paper:{paper_id}" if paper_id is not None else cluster_id
+        duplicate_message = (
+            "This paper already has a Perspective."
+            if paper_id is not None
+            else "This cluster already has a perspective in the matrix."
+        )
 
-        def cluster_in_matrix() -> bool:
+        def source_in_matrix() -> bool:
             return any(
-                perspective.origin == cluster.id and not perspective.evolved
+                perspective.origin == origin and not perspective.evolved
                 for perspective in state.perspectives
             )
 
-        if cluster_in_matrix():
-            raise SessionError(
-                "This cluster already has a perspective in the matrix.",
-                status=409,
-            )
 
-        final = facets if facets is not None else cluster.facets
-        cluster_papers = {
-            paper.id: paper for paper in state.papers if paper.id in cluster.paper_ids
-        }
+        if paper_id is not None:
+            if facets is not None:
+                raise SessionError(
+                    "Paper-based Perspectives derive their facets from the paper.",
+                    status=400,
+                )
+            paper = next((item for item in state.papers if item.id == paper_id), None)
+            if paper is None:
+                raise SessionError(f"paper '{paper_id}' not found", status=404)
+            if source_in_matrix():
+                raise SessionError(duplicate_message, status=409)
+            origin = f"paper:{paper.id}"
+            source_papers = {paper.id: paper}
+            default_name = paper.title
+            demo_evidence = DEMO_FACETS.get(paper.id) if self._demo(session) else None
+            final = await agents.extract_cluster_facets(
+                [paper],
+                provider=self._provider_for(session),
+                demo_facets=[demo_evidence] if demo_evidence else None,
+            )
+        else:
+            assert cluster_id is not None
+            cluster = next(
+                (item for item in state.clusters if item.id == cluster_id),
+                None,
+            )
+            if cluster is None:
+                raise SessionError(f"cluster '{cluster_id}' not found", status=404)
+            if source_in_matrix():
+                raise SessionError(duplicate_message, status=409)
+            origin = cluster.id
+            source_papers = {
+                paper.id: paper
+                for paper in state.papers
+                if paper.id in cluster.paper_ids
+            }
+            default_name = cluster.name
+            final = facets if facets is not None else cluster.facets
+
         by_facet: dict[Facet, FacetEvidence] = {}
         for evidence in final:
             if evidence.facet in by_facet:
                 continue
-            validated = self._validate_facet_source(evidence, cluster_papers)
+            validated = self._validate_facet_source(evidence, source_papers)
             if not validated.text.strip():
                 continue
             by_facet[evidence.facet] = validated
@@ -2505,7 +2593,7 @@ class FocusedPanelService:
         color = PERSONA_COLORS[len(state.perspectives) % len(PERSONA_COLORS)]
         perspective = Perspective(
             id=session.next_perspective_id(),
-            name=name or cluster.name,
+            name=name or default_name,
             color=color,
             facets=by_facet,
             sources=sorted(
@@ -2515,7 +2603,7 @@ class FocusedPanelService:
                     if evidence.paper_id
                 }
             ),
-            origin=cluster.id,
+            origin=origin,
             panel_cycle=0,
         )
         perspective.framing = await agents.derive_framing(
@@ -2529,11 +2617,8 @@ class FocusedPanelService:
         # Authoritative re-check with NO await between check and append:
         # two racing requests can both pass the pre-check above, but only
         # one survives this synchronous window.
-        if cluster_in_matrix():
-            raise SessionError(
-                "This cluster already has a perspective in the matrix.",
-                status=409,
-            )
+        if source_in_matrix():
+            raise SessionError(duplicate_message, status=409)
         state.perspectives.append(perspective)
         if state.notepad is not None:
             # "A dashed box at the bottom leads to building a new one, which
@@ -4207,12 +4292,22 @@ class FocusedPanelService:
 
     @_serialized_session_mutation
     async def edit_notepad_part(
-        self, session_id: str, *, part: str, text: str
+        self,
+        session_id: str,
+        *,
+        version_id: str,
+        part: str,
+        text: str,
     ) -> SessionState:
         """Researcher edit. Never reviewed."""
         return self._notepad_call(
             session_id,
-            lambda mod, state: mod.edit_part(state, part=part, text=text),
+            lambda mod, state: mod.edit_part(
+                state,
+                version_id=version_id,
+                part=part,
+                text=text,
+            ),
         )
 
     @_serialized_session_mutation

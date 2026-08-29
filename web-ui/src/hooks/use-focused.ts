@@ -8,7 +8,6 @@ import type {
   FacetEvidence,
   HypothesisConfirmationMode,
   HypothesisDev,
-  HypothesisPart,
   NotepadDoc,
   PaperDetail,
   Perspective,
@@ -52,6 +51,8 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   }
   return res.json() as Promise<T>
 }
+
+const notepadEditQueues = new Map<string, Promise<void>>()
 
 /**
  * Most mutations are exclusive. Perspective generation may run concurrently;
@@ -105,7 +106,7 @@ export function useFocusedPanel() {
             const latest = await api<WorkspaceView>(
               `workspaces/${currentWorkspaceId}`,
             )
-            workspaceViewSet(latest)
+            applyView(latest)
           }
         }
         throw cause
@@ -286,8 +287,9 @@ export function useFocusedPanel() {
 
   const generatePerspective = useCallback(
     async (
-      clusterId: string,
-      facets: FacetEvidence[] | null,
+      source:
+        | { paperId: string }
+        | { clusterId: string; facets: FacetEvidence[] | null },
       persona?: { name?: string; description?: string },
       invitedPerspectiveIds?: string[],
     ) => {
@@ -296,41 +298,56 @@ export function useFocusedPanel() {
         throw new Error("Wait for the current action to finish.")
       }
       const session = current.session
-      const cluster = session?.clusters.find((item) => item.id === clusterId)
-      if (!session || !cluster) {
-        throw new Error("This literature cluster is no longer available.")
+      const paper =
+        session && "paperId" in source
+          ? session.papers.find((item) => item.id === source.paperId)
+          : null
+      const cluster =
+        session && "clusterId" in source
+          ? session.clusters.find((item) => item.id === source.clusterId)
+          : null
+      if (!session || (!paper && !cluster)) {
+        throw new Error("This literature source is no longer available.")
       }
+
+      const origin = paper ? `paper:${paper.id}` : cluster!.id
       if (
         session.perspectives.some(
           (perspective) =>
-            perspective.origin === clusterId && !perspective.evolved,
+            perspective.origin === origin && !perspective.evolved,
         )
       ) {
         throw new Error("This Perspective is already in the matrix.")
       }
 
-      const finalFacets = facets ?? cluster.facets
+      const finalFacets =
+        cluster && "facets" in source
+          ? (source.facets ?? cluster.facets)
+          : []
       const optimisticFacets: Partial<Record<Facet, FacetEvidence>> = {}
       for (const evidence of finalFacets) {
         optimisticFacets[evidence.facet] = evidence
       }
-      const optimisticId = `optimistic:${session.id}:${clusterId}`
+      const sourceId = paper?.id ?? cluster!.id
+      const optimisticId = `optimistic:${session.id}:${sourceId}`
       const optimisticPerspective: Perspective = {
         id: optimisticId,
-        name: persona?.name?.trim() || cluster.name,
+        name: persona?.name?.trim() || paper?.title || cluster!.name,
         color: "#98a2b3",
         facets: optimisticFacets,
-        sources: [
-          ...new Set(
-            finalFacets.flatMap((evidence) =>
-              evidence.paper_id ? [evidence.paper_id] : [],
-            ),
-          ),
-        ].sort(),
+        sources: paper
+          ? [paper.id]
+          : [
+              ...new Set(
+                finalFacets.flatMap((evidence) =>
+                  evidence.paper_id ? [evidence.paper_id] : [],
+                ),
+              ),
+            ].sort(),
         framing: null,
         summary: persona?.description?.trim() ?? "",
         evolved: false,
-        origin: clusterId,
+        origin,
         source_question_id: null,
         panel_cycle:
           session.deliberations[0]?.completion_history.length ?? 0,
@@ -343,8 +360,9 @@ export function useFocusedPanel() {
           {
             method: "POST",
             body: JSON.stringify({
-              cluster_id: clusterId,
-              facets,
+              cluster_id: cluster?.id ?? null,
+              paper_id: paper?.id ?? null,
+              facets: cluster && "facets" in source ? source.facets : null,
               name: persona?.name?.trim() || null,
               description: persona?.description?.trim() || null,
               invited_perspective_ids: invitedPerspectiveIds,
@@ -740,12 +758,41 @@ export function useFocusedPanel() {
   )
 
   const editNotepadPart = useCallback(
-    (part: string, text: string) =>
-      notepadCall("Saving the document", "part", {
-        method: "PATCH",
-        body: JSON.stringify({ part, text }),
-      }),
-    [notepadCall],
+    async (versionId: string, part: string, text: string) => {
+      const queueKey = `${sessionId}:${versionId}:${part}`
+      const previous = notepadEditQueues.get(queueKey) ?? Promise.resolve()
+      const request = previous.then(() =>
+        requestView(
+          `sessions/${sessionId}/notepad/part`,
+          {
+            method: "PATCH",
+            body: JSON.stringify({ version_id: versionId, part, text }),
+          },
+          (view) => {
+            const current = useFocusedStore.getState()
+            if (
+              current.sessionId === sessionId &&
+              current.workspace?.id === view.workspace.id
+            ) {
+              workspaceViewSet(view)
+            }
+          },
+        ),
+      )
+      const settled = request.then(
+        () => undefined,
+        () => undefined,
+      )
+      notepadEditQueues.set(queueKey, settled)
+      void settled.then(() => {
+        if (notepadEditQueues.get(queueKey) === settled) {
+          notepadEditQueues.delete(queueKey)
+        }
+      })
+      const view = await request
+      return view.active
+    },
+    [requestView, sessionId, workspaceViewSet],
   )
 
   const addNotepadVersion = useCallback(

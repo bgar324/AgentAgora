@@ -122,12 +122,21 @@ def _require(state: SessionState) -> NotepadState:
     return state.notepad
 
 
-def edit_part(state: SessionState, *, part: NotepadPart, text: str) -> NotepadState:
+def edit_part(
+    state: SessionState,
+    *,
+    version_id: str,
+    part: NotepadPart,
+    text: str,
+) -> NotepadState:
     """Researcher edit. Never reviewed, never blocked."""
     notepad = _require(state)
-    version = notepad.active_version()
+    version = next(
+        (item for item in notepad.versions if item.id == version_id),
+        None,
+    )
     if version is None:
-        raise NotepadError("No notepad version is open.")
+        raise NotepadError(f"Notepad version '{version_id}' was not found.")
     setattr(version.doc, part, text)
     return notepad
 

@@ -68,7 +68,6 @@ async function notepadWorkspace(page: Page, arm: "baseline" | "guided") {
 
 async function openGroupChat(page: Page) {
   await page.getByRole("button", { name: "Continue", exact: true }).click()
-  await page.getByRole("button", { name: /Open the discussion/ }).click()
   await expect(page.getByTestId("notepad-conversation")).toBeVisible({
     timeout: 30_000,
   })
@@ -111,7 +110,7 @@ for (const [query, expected] of [
     page,
   }) => {
     await page.goto(`/focused${query}`)
-    await page.getByRole("button", { name: "Begin" }).click()
+    await page.getByRole("button", { name: "Continue" }).click()
     await expect(page).toHaveURL(/workspace=[a-f0-9]+/)
     const workspaceId = new URL(page.url()).searchParams.get("workspace")
     const view = await requestJson(
@@ -163,7 +162,9 @@ test("versions fork and stay independent", async ({ page }) => {
   await notepadWorkspace(page, "guided")
   await openGroupChat(page)
 
-  await page.getByRole("button", { name: "Version" }).click()
+  await page
+    .getByRole("button", { name: "Add version by copying the current version" })
+    .click()
   await expect(page.getByTestId("notepad-version-v2")).toBeVisible()
 
   await page
@@ -191,6 +192,162 @@ test("versions fork and stay independent", async ({ page }) => {
   await expect(page.getByTestId("notepad-part-framing")).toHaveValue(
     POSITION.framing,
   )
+})
+
+test("a blank version starts empty", async ({ page }) => {
+  await notepadWorkspace(page, "guided")
+  await openGroupChat(page)
+
+  await page.getByRole("button", { name: "Add a blank version" }).click()
+  await expect(page.getByTestId("notepad-version-v2")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  )
+  for (const part of ["framing", "prior", "method", "expected"]) {
+    await expect(page.getByTestId(`notepad-part-${part}`)).toHaveValue("")
+  }
+})
+
+
+test("a queued edit stays with the version where it was typed", async ({
+  page,
+}) => {
+  const { workspaceId } = await notepadWorkspace(page, "guided")
+  await openGroupChat(page)
+  await page
+    .getByRole("button", { name: "Add version by copying the current version" })
+    .click()
+
+  await page.getByTestId("notepad-part-framing").fill("Late v2 wording.")
+  await page.getByTestId("notepad-version-v1").click()
+  await expect(page.getByTestId("notepad-part-framing")).toHaveValue(
+    POSITION.framing,
+  )
+
+  await expect(async () => {
+    const state = await requestJson(
+      page.request,
+      `/api/focused/workspaces/${workspaceId}`,
+      "get",
+    )
+    expect(state.notepad.versions[0].doc.framing).toBe(POSITION.framing)
+    expect(state.notepad.versions[1].doc.framing).toBe("Late v2 wording.")
+  }).toPass({ timeout: 15_000 })
+})
+
+test("copy waits for the active version's queued edit", async ({ page }) => {
+  const { workspaceId } = await notepadWorkspace(page, "guided")
+  await openGroupChat(page)
+
+  await page
+    .getByTestId("notepad-part-framing")
+    .fill("Wording that must be present in both versions.")
+  await page
+    .getByRole("button", { name: "Add version by copying the current version" })
+    .click()
+
+  await expect(page.getByTestId("notepad-version-v2")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  )
+  await expect(page.getByTestId("notepad-part-framing")).toHaveValue(
+    "Wording that must be present in both versions.",
+  )
+  const state = await requestJson(
+    page.request,
+    `/api/focused/workspaces/${workspaceId}`,
+    "get",
+  )
+  expect(
+    state.notepad.versions.map(
+      (version: { doc: { framing: string } }) => version.doc.framing,
+    ),
+  ).toEqual([
+    "Wording that must be present in both versions.",
+    "Wording that must be present in both versions.",
+  ])
+})
+
+test("copy retries a queued edit after a failed autosave", async ({ page }) => {
+  await notepadWorkspace(page, "guided")
+  await openGroupChat(page)
+  let failFirst: () => void = () => undefined
+  const firstMayFail = new Promise<void>((resolve) => {
+    failFirst = resolve
+  })
+  let patchCount = 0
+  await page.route("**/api/focused/sessions/*/notepad/part", async (route) => {
+    patchCount += 1
+    if (patchCount === 1) {
+      await firstMayFail
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "Autosave failed." }),
+      })
+      return
+    }
+    await route.continue()
+  })
+
+  await page
+    .getByTestId("notepad-part-framing")
+    .fill("Retry this wording before copying.")
+  await expect.poll(() => patchCount).toBe(1)
+  const copy = page.getByRole("button", {
+    name: "Add version by copying the current version",
+  })
+  await copy.click()
+  failFirst()
+  await expect(
+    page.getByTestId("notepad-panel").getByRole("alert"),
+  ).toHaveText("Autosave failed.")
+  await expect(page.getByTestId("notepad-version-v2")).toHaveCount(0)
+
+  await copy.click()
+  await expect(page.getByTestId("notepad-version-v2")).toBeVisible()
+  await expect(page.getByTestId("notepad-part-framing")).toHaveValue(
+    "Retry this wording before copying.",
+  )
+})
+
+test("autosave ordering survives leaving and reopening the chat", async ({
+  page,
+}) => {
+  const { workspaceId } = await notepadWorkspace(page, "guided")
+  await openGroupChat(page)
+  let releaseFirst: () => void = () => undefined
+  const firstHeld = new Promise<void>((resolve) => {
+    releaseFirst = resolve
+  })
+  let patchCount = 0
+  await page.route("**/api/focused/sessions/*/notepad/part", async (route) => {
+    patchCount += 1
+    if (patchCount === 1) await firstHeld
+    await route.continue()
+  })
+
+  await page.getByTestId("notepad-part-framing").fill("First in-flight wording.")
+  await expect.poll(() => patchCount).toBe(1)
+  await page.getByTestId("notepad-part-framing").fill("Older queued wording.")
+  await page
+    .getByRole("button", { name: "Build another Perspective" })
+    .click()
+  await page.getByRole("button", { name: "Continue", exact: true }).click()
+  await page.getByTestId("notepad-part-framing").fill("Newest wording.")
+
+  await page.waitForTimeout(600)
+  expect(patchCount).toBe(1)
+  releaseFirst()
+  await expect.poll(() => patchCount).toBe(3)
+  await expect(async () => {
+    const state = await requestJson(
+      page.request,
+      `/api/focused/workspaces/${workspaceId}`,
+      "get",
+    )
+    expect(state.notepad.versions[0].doc.framing).toBe("Newest wording.")
+  }).toPass({ timeout: 15_000 })
 })
 
 test("the guided arm cites evidence and gates the notepad behind review", async ({
@@ -416,10 +573,9 @@ test("there is one surface: no flag reaches the old Thread board", async ({
   // rather than a second, competing surface.
   await page.goto(`/focused?workspace=${workspaceId}&surface=threads`)
   await page.getByRole("button", { name: "Continue", exact: true }).click()
-  // The document stage's own opening step, not a Thread-board intro dialog.
-  await expect(
-    page.getByRole("button", { name: /Open the discussion/ }),
-  ).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByTestId("notepad-conversation")).toBeVisible({
+    timeout: 30_000,
+  })
   await expect(
     page.getByRole("dialog", { name: "Set up the panel" }),
   ).toHaveCount(0)
