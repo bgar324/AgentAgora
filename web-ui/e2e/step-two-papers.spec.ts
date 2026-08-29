@@ -141,3 +141,47 @@ test("a built Perspective stops offering its editor", async ({ page }) => {
   // Step 3 concern, not a second build.
   await expect(page.getByLabel("Job", { exact: true })).toHaveCount(0)
 })
+
+test("the Perspectives rail routes back to Step 2 and rejoins on return", async ({
+  page,
+}) => {
+  const { workspaceId } = await atStepTwo(page)
+  await page.getByRole("heading", { name: "Resistance ecology" }).click()
+  await page.getByRole("button", { name: "Build this Perspective" }).click()
+  await expect(page.getByRole("button", { name: /Built/ })).toBeVisible({
+    timeout: 30_000,
+  })
+
+  await page.getByRole("button", { name: "Continue", exact: true }).click()
+  await page.getByRole("button", { name: /Open the discussion/ }).click()
+  await expect(page.getByTestId("notepad-conversation")).toBeVisible({
+    timeout: 30_000,
+  })
+  const roster = page.getByTestId("notepad-conversation")
+  await expect(roster).toContainText("Resistance ecology")
+  await expect(roster).not.toContainText("Host and microbiome")
+
+  // The dashed box is the way back to the papers step.
+  await page.getByTestId("notepad-build-perspective").click()
+  await expect(
+    page.getByRole("heading", { name: "Host and microbiome" }),
+  ).toBeVisible({ timeout: 30_000 })
+
+  await page.getByRole("heading", { name: "Host and microbiome" }).click()
+  await page
+    .getByRole("button", { name: "Build this Perspective" })
+    .first()
+    .click()
+  await expect(async () => {
+    const perspectives = await activePerspectives(page, workspaceId)
+    expect(
+      perspectives.filter((item) => !item.id.startsWith("optimistic:")),
+    ).toHaveLength(2)
+  }).toPass({ timeout: 30_000 })
+
+  // Back to the discussion: the newcomer is already taking part.
+  await page.getByRole("button", { name: "Continue", exact: true }).click()
+  await expect(roster).toContainText("Host and microbiome", {
+    timeout: 30_000,
+  })
+})

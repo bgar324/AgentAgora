@@ -2535,6 +2535,11 @@ class FocusedPanelService:
                 status=409,
             )
         state.perspectives.append(perspective)
+        if state.notepad is not None:
+            # "A dashed box at the bottom leads to building a new one, which
+            # joins the chat on return." A Perspective built after the
+            # discussion opened is otherwise silently excluded from it.
+            state.notepad.in_chat.append(perspective.id)
         if state.deliberations:
             current = state.deliberations[0]
             agent_by_iid = {agent.iid: agent for agent in state.agents}
@@ -2593,6 +2598,10 @@ class FocusedPanelService:
         # Cascade before round 1: agents built on the deleted perspective go
         # too, and every not-yet-started panel loses their wiring.
         state.agents = [a for a in state.agents if a.perspective_id != perspective_id]
+        if state.notepad is not None:
+            state.notepad.in_chat = [
+                item for item in state.notepad.in_chat if item != perspective_id
+            ]
         for d in state.deliberations:
             if orphaned:
                 d.agent_iids = [i for i in d.agent_iids if i not in orphaned]
