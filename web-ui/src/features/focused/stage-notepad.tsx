@@ -634,55 +634,89 @@ function ConversationColumn({
       </div>
 
       <div className="mt-3 space-y-2 border-t border-[var(--line)] pt-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={busy !== null || notepad.in_chat.length === 0}
-            onClick={() => guard(focused.discussNotepad(turns))}
-          >
-            {busy === "Agents discussing" ? <Spinner /> : null}Let agents
-            discuss
-          </Button>
-          <input
-            type="number"
-            min={1}
-            max={8}
-            value={turns}
-            aria-label="Turns"
-            onChange={(event) =>
-              setTurns(Math.min(8, Math.max(1, Number(event.target.value) || 1)))
-            }
-            className="field w-14 rounded-lg px-2 py-1 text-[12px] tabular-nums"
-          />
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={busy !== null}
-            onClick={() => guard(focused.summarizeNotepad(part))}
-          >
-            {busy === "Summarizing" ? <Spinner /> : null}Summarize so far
-          </Button>
-          <select
-            value={part}
-            aria-label="Which part the summary goes to"
-            onChange={(event) => setPart(event.target.value as NotepadPart)}
-            className="field rounded-lg px-2 py-1 text-[12px]"
-          >
-            {NOTEPAD_PARTS.map((item) => (
-              <option key={item} value={item}>
-                {NOTEPAD_LABELS[item]}
-              </option>
-            ))}
-          </select>
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={busy !== null || notepad.turns.length === 0}
-            onClick={() => guard(focused.clearNotepadChat())}
-          >
-            {busy === "Clearing the chat" ? <Spinner /> : null}Clear
-          </Button>
+        <div
+          data-testid="discussion-actions"
+          className="rounded-xl border border-[var(--line)] bg-[color-mix(in_srgb,var(--node)_3%,var(--panel))] p-2.5"
+        >
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--mute)]">
+              Panel actions
+            </span>
+            <button
+              type="button"
+              disabled={busy !== null || notepad.turns.length === 0}
+              onClick={() => guard(focused.clearNotepadChat())}
+              className="inline-flex h-6 items-center gap-1.5 rounded-md px-2 text-[11px] text-[var(--mute)] transition-colors hover:bg-[var(--red-bg)] hover:text-[var(--red)] disabled:pointer-events-none disabled:opacity-40"
+            >
+              {busy === "Clearing the chat" ? (
+                <Spinner className="size-3" />
+              ) : null}
+              Clear chat
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 gap-2 min-[480px]:grid-cols-[minmax(0,1fr)_104px]">
+            <Button
+              variant="primary"
+              size="md"
+              disabled={busy !== null || notepad.in_chat.length === 0}
+              onClick={() => guard(focused.discussNotepad(turns))}
+              className="w-full justify-center"
+            >
+              {busy === "Agents discussing" ? <Spinner /> : null}
+              Let agents discuss
+            </Button>
+            <label className="field flex h-8 items-center rounded-lg px-2.5">
+              <span className="sr-only">Turns</span>
+              <select
+                value={turns}
+                aria-label="Turns"
+                disabled={busy !== null}
+                onChange={(event) => setTurns(Number(event.target.value))}
+                className="w-full bg-transparent text-[12px] font-medium tabular-nums text-[var(--ink-2)] outline-none"
+              >
+                {Array.from({ length: 8 }, (_, index) => index + 1).map(
+                  (count) => (
+                    <option key={count} value={count}>
+                      {`${count} ${count === 1 ? "turn" : "turns"}`}
+                    </option>
+                  ),
+                )}
+              </select>
+            </label>
+          </div>
+
+          <div className="mt-2 grid grid-cols-1 gap-2 min-[480px]:grid-cols-[minmax(0,1fr)_auto]">
+            <label className="field flex h-8 min-w-0 items-center rounded-lg px-2.5">
+              <span className="mr-2 shrink-0 text-[10px] font-semibold uppercase tracking-[0.06em] text-[var(--mute)]">
+                Summary to
+              </span>
+              <select
+                value={part}
+                aria-label="Which part the summary goes to"
+                disabled={busy !== null}
+                onChange={(event) =>
+                  setPart(event.target.value as NotepadPart)
+                }
+                className="min-w-0 flex-1 bg-transparent text-[12px] font-medium text-[var(--ink-2)] outline-none"
+              >
+                {NOTEPAD_PARTS.map((item) => (
+                  <option key={item} value={item}>
+                    {NOTEPAD_LABELS[item]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <Button
+              variant="outline"
+              size="md"
+              disabled={busy !== null}
+              onClick={() => guard(focused.summarizeNotepad(part))}
+            >
+              {busy === "Summarizing" ? <Spinner /> : null}
+              Summarize so far
+            </Button>
+          </div>
         </div>
         <div className="relative">
           <textarea
