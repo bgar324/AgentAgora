@@ -31,7 +31,6 @@ type FocusedState = {
 
 type FocusedActions = {
   workspaceViewSet: (view: WorkspaceView) => void
-  perspectiveViewSet: (view: WorkspaceView) => void
   optimisticPerspectiveAdd: (perspective: Perspective) => void
   optimisticPerspectiveRemove: (id: string) => void
   workspaceScreenSet: (screen: WorkspaceScreen) => void
@@ -63,7 +62,6 @@ const initialState: FocusedState = {
 function workspaceViewPatch(
   state: FocusedState,
   view: WorkspaceView,
-  monotonicPerspectives = false,
 ): Partial<FocusedState> {
   const currentWorkspace = state.workspace
   const sameWorkspace = currentWorkspace?.id === view.workspace.id
@@ -80,16 +78,6 @@ function workspaceViewPatch(
   const representedOrigins = new Set(
     view.active.perspectives.map((perspective) => perspective.origin),
   )
-  if (
-    monotonicPerspectives &&
-    currentSession?.perspectives.some(
-      (perspective) =>
-        !perspective.id.startsWith("optimistic:") &&
-        !representedOrigins.has(perspective.origin),
-    )
-  ) {
-    return {}
-  }
   const pendingPerspectives =
     currentSession?.perspectives.filter(
       (perspective) =>
@@ -127,8 +115,6 @@ export const useFocusedStore = create<FocusedState & FocusedActions>()(
     ...initialState,
     workspaceViewSet: (view) =>
       set((state) => workspaceViewPatch(state, view)),
-    perspectiveViewSet: (view) =>
-      set((state) => workspaceViewPatch(state, view, true)),
     optimisticPerspectiveAdd: (perspective) =>
       set((state) => {
         if (

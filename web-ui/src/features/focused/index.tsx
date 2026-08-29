@@ -141,10 +141,22 @@ export function FocusedWorkspace() {
       return
     }
     if (usesDocument && !isResearchBranch) {
-      // The document stage carries its own opening step. A research branch
-      // falls through instead: Continue means "take these Perspectives back
-      // to the parent panel", which is the block below.
-      stageSet("deliberation")
+      if (session.notepad !== null) {
+        stageSet("deliberation")
+        return
+      }
+      void focused
+        .startNotepad()
+        .then(() => stageSet("deliberation"))
+        .catch((cause) =>
+          setActionError({
+            sessionId: session.id,
+            message:
+              cause instanceof Error
+                ? cause.message
+                : "Could not open the group chat",
+          }),
+        )
       return
     }
     if (session.parent_investigation_id && session.origin_question_id) {
@@ -315,9 +327,10 @@ export function FocusedWorkspace() {
                   : undefined
             }
           >
-            {busy === "Setting up the panel" ? (
+            {busy === "Setting up the panel" ||
+            busy === "Opening the group chat" ? (
               <>
-                <Spinner /> Continuing panel…
+                <Spinner /> Opening group chat…
               </>
             ) : busy === "Adding research branch to panel" ? (
               <>
@@ -733,7 +746,7 @@ function StartScreen() {
             disabled={starting || problem.trim().length < 3}
             className="mt-1"
           >
-            {starting ? <><Spinner /> Starting…</> : "Begin"}
+            {starting ? <><Spinner /> Continuing…</> : "Continue"}
           </Button>
         </div>
       </div>
