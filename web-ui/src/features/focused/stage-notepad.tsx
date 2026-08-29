@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { ChevronRight, Plus, Trash2, UserRound, X } from "lucide-react"
+import { ArrowUp, ChevronRight, Plus, Trash2, UserRound, X } from "lucide-react"
 
 import { useFocusedPanel } from "@/hooks/use-focused"
 import { notepadDraftKey, useFocusedStore } from "@/store/focused"
@@ -648,14 +648,15 @@ function ConversationColumn({
           <div className="field flex h-8 min-w-0 overflow-hidden rounded-lg">
             <button
               type="button"
+              aria-label="Let agents discuss"
               disabled={busy !== null || notepad.in_chat.length === 0}
               onClick={() => guard(focused.discussNotepad(turns))}
-              className="inline-flex min-w-0 flex-1 items-center justify-center gap-1.5 px-3 text-[12px] font-medium text-[var(--ink)] transition-colors hover:bg-[color-mix(in_srgb,var(--node)_5%,transparent)] disabled:opacity-40"
+              className="inline-flex min-w-0 flex-1 items-center justify-center gap-1.5 whitespace-nowrap px-3 text-[12px] font-medium text-[var(--ink)] transition-colors hover:bg-[color-mix(in_srgb,var(--node)_5%,transparent)] disabled:opacity-40"
             >
               {busy === "Agents discussing" ? <Spinner /> : null}
-              Let agents discuss
+              Discuss
             </button>
-            <label className="flex w-[94px] shrink-0 items-center border-l border-[var(--line)] px-2.5">
+            <label className="flex w-[88px] shrink-0 items-center border-l border-[var(--line)] px-2.5">
               <span className="sr-only">Turns</span>
               <select
                 value={turns}
@@ -724,16 +725,15 @@ function ConversationColumn({
               busy !== null || notepad.in_chat.length === 0 || !message.trim()
             }
             onClick={send}
-            className="absolute bottom-2 right-2 grid size-7 place-items-center rounded-full bg-[var(--node)] text-white transition-opacity hover:opacity-90 disabled:opacity-35"
+            className="absolute bottom-2 right-2 grid size-8 place-items-center rounded-lg bg-[var(--node)] text-white transition-opacity hover:opacity-90 disabled:opacity-35"
           >
             {busy === "Sending" ? (
               <Spinner className="size-3.5" />
             ) : (
-              <ChevronRight
-                size={14}
-                strokeWidth={2.2}
+              <ArrowUp
+                size={15}
+                strokeWidth={2.1}
                 aria-hidden
-                className="-rotate-90"
               />
             )}
           </button>
