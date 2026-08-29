@@ -651,7 +651,7 @@ function ConversationColumn({
               aria-label="Let agents discuss"
               disabled={busy !== null || notepad.in_chat.length === 0}
               onClick={() => guard(focused.discussNotepad(turns))}
-              className="inline-flex min-w-0 flex-1 items-center justify-center gap-1.5 whitespace-nowrap px-3 text-[12px] font-medium text-[var(--ink)] transition-colors hover:bg-[color-mix(in_srgb,var(--node)_5%,transparent)] disabled:opacity-40"
+              className="inline-flex min-w-0 flex-1 items-center justify-center gap-1.5 whitespace-nowrap px-3 text-[13px] font-medium text-[var(--ink)] transition-colors hover:bg-[color-mix(in_srgb,var(--node)_5%,transparent)] disabled:opacity-40"
             >
               {busy === "Agents discussing" ? <Spinner /> : null}
               Discuss
@@ -663,7 +663,7 @@ function ConversationColumn({
                 aria-label="Turns"
                 disabled={busy !== null}
                 onChange={(event) => setTurns(Number(event.target.value))}
-                className="w-full bg-transparent text-[12px] font-medium tabular-nums text-[var(--ink-2)] outline-none"
+                className="w-full bg-transparent text-[13px] font-medium tabular-nums text-[var(--ink-2)] outline-none"
               >
                 {Array.from({ length: 8 }, (_, index) => index + 1).map(
                   (count) => (
