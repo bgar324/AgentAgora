@@ -1,5 +1,10 @@
 import { FocusedWorkspace } from "@/features/focused"
 
-export default function FocusedPage() {
-  return <FocusedWorkspace />
+type FocusedPageProps = {
+  searchParams: Promise<{ demo?: string | string[] }>
+}
+
+export default async function FocusedPage({ searchParams }: FocusedPageProps) {
+  const params = await searchParams
+  return <FocusedWorkspace demo={params.demo === "1"} />
 }

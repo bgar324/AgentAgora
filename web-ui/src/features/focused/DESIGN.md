@@ -1,145 +1,69 @@
-# Focused Panel design system
+# Focused study design reference
 
-Premium-minimal (Linear-grade): one typeface, near-monochrome neutrals,
-hairline borders, compact controls, restrained semantic color. Hierarchy
-comes from weight, size, and the gray ramp — never uppercase, never
-decoration.
+## Product boundary
 
-## Information architecture
+The focused surface has one baseline flow. The URL keeps `arm=baseline` for study assignment, but the API stores no arm and the UI shows no condition control. `demo=1` selects deterministic QA data. Demo and live sessions use the same query, clustering, Perspective, and discussion state transitions.
 
-Persistent header: brand · step trail (Search, Perspectives, Panel) ·
-demo badge · Start over · one primary Continue or Add to panel action.
+## Flow
 
-Surfaces:
-- Start — centered 440px form for the Problem and four-part position. Continue
-  creates the assigned study arm; participants never choose or see that arm.
-- Extraction — one three-column paper workflow. The left column keeps the
-  Problem and four position parts read-only, then offers five selectable search
-  queries derived from those five inputs. The middle column lists every
-  returned paper in one flat list; a paper expands its abstract inline and can
-  be carried to the Perspective editor. The right column prefills editable Job
-  and Description fields from that paper, builds one grounded Perspective, and
-  keeps the built list directly below the editor. Every Perspective exposes
-  Scope, Explanation, Approach, and Significance grounded in its source
-  abstract. Once one Perspective exists, Continue opens the group chat without
-  an interstitial.
-- Document — three columns for the editable four-part Document, group chat, and
-  Perspectives. Version creates a copy and Blank creates an empty alternative;
-  every debounced edit remains bound to the version where it was typed. Source
-  paper titles on Perspective cards open their paper detail. Baseline and
-  guided sessions share this structure and differ only in discussion guidance.
-- Panel — React Flow canvas (nodes/wires/dot grid) + guided drawer:
-  while open, the canvas shows the Research Problem, Perspective agents, and
-  panel. Adding a Perspective archives the current panel cycle and starts a new
-  deliberation with no rounds, chat, questions, or working hypothesis. The new
-  Perspective always participates; the researcher chooses which existing
-  Perspectives to invite. Archived rounds and hypotheses remain inspectable.
-  Each round examines exactly one area, and the same lead opens every exchange.
-  A round runs up to three exchanges. After each complete exchange, the
-  moderator proposes concrete shared ground and every Perspective accepts,
-  qualifies, or rejects it. Unanimous acceptance ends the loop; otherwise the
-  third exchange returns the disagreement or unsettled boundary without forcing
-  consensus. The drawer reports each stage, groups agent turns by exchange, and
-  shows every moderator check. Researchers can ask a question before or between
-  rounds. A question submitted during a round waits until that round finishes.
-  Each final moderator summary follows its exchanges. Shared ground shows
-  explicit Before and accented Proposed values for every changed hypothesis
-  part. The researcher selects which proposed parts to apply; unselected parts
-  retain the current text. Saving creates an immutable checkpoint. Review and
-  end becomes available after any completed round with a saved hypothesis.
-  Selected open questions become Research Problem nodes; unselected questions
-  remain in panel history. Confirm and end closes the round, chat, and edit
-  lifecycle, then opens the deliberation-level divergent and convergent scoring
-  dialog.
-  Selected open questions expose Start paper search in the drawer and on their
-  Research Problem node. Unselected open questions remain available in history.
-  A Research Problem opens a temporary literature branch. Back to panel returns
-  to the parent without changing the branch. After the current parent
-  deliberation ends, Add to panel imports the branch’s evidence and Perspectives
-  into a fresh deliberation. Imported Perspectives always participate; existing
-  Perspectives are optional invitations. The prior panel cycle, score, and final
-  outputs remain in history.
-  Representative papers appear first in every cluster. The researcher can
-  expand the remaining cluster library and inspect every paper in the
-  Perspective. Perspectives imported from a Research Problem branch render
-  beneath that Research Problem; they never attach to the root problem. Saved
-  Hypothesis nodes use the restrained green success surface.
+The header shows two steps: **Find papers** and **Discuss**. **Start over** deletes the current workspace. The primary action moves between the paper workflow and the discussion.
 
-Overlays: modals (add Perspective, Perspective detail, apply changes,
-hypothesis, scoring, reset) share ModalShell; the 1180px/96vw panel drawer is
-the only side sheet.
-The header exposes one Investigation map action when research branches exist.
-It does not expose a second Investigation picker.
+### Start
 
+The centered form collects the problem and four position fields:
 
-IA rules:
-- One primary action per surface; it advances the flow.
-- Identity and status at a glance; prose one click away.
-- Metadata (counts, states) are quiet labels, never sentences.
-- Start over remains a quiet secondary header action; the flow has one primary action.
-- Every list row has exactly one affordance, visible without hover.
-- A Perspective's name is its speaker identity; never expose ordinal
-  agent labels such as A1 or A2.
-- Start creates a new Investigation and is the intentional reset target.
-  The Brief may be edited inline until its first paper search; after that
-  evidence boundary is fixed and changing it requires a new Investigation.
-- Question-specific retrieval records both answering papers and misses and
-  runs only the queries the researcher selected.
-- Model-supplied source IDs, abstract indices, citations, and moderator
-  evidence references are validated before they become user-visible provenance.
-- A completed Investigation's literature cannot be replaced in place. New
-  searches begin from a Research Problem node and preserve the parent canvas.
+- Framing
+- Previous work
+- Methodology
+- Expected results
 
-## Tokens (app/focused/layout.tsx)
+The researcher writes these fields. Agents never update them.
 
-Neutrals: --bg #fafafa · --panel #fff · --ink #101828 · --ink-2 #475467 ·
---mute #98a2b3 · --line 8% · --line-strong 16% · --hover #f5f5f5.
-Inverted surface: --node #101828, captions on it --on-node #b6bfcc,
-accent on it --on-node-accent #7cc5ab.
-Semantic: --green #067647 (+bg) consensus/success · --amber #b54708
-(+bg) unsettled/highlight · --red #d92d20 disagreement/error/destructive.
-Wires: --wire #d0d5dd. Perspective identity colors arrive from data
-(PERSONA_COLORS) and are the only free color in the UI.
+### Find papers
 
-Radius: 6 inputs inside rows · 8 default (cards, buttons, fields) ·
-12 modals. Shadows: cards none (borders only); modals
---shadow-modal 0 20px 50px rgba(16,24,40,.16).
+The desktop surface has three independently scrolling columns:
 
-Type: Inter only. Scale (px) — 11 micro/meta, 12 labels/body-sm,
-13 body/default, 14 emphasis, 16 modal titles, 22 hero. No other sizes.
-Weights: 400 body · 500 buttons/labels/emphasis · 600 titles. No 700+.
-Tracking -0.01em on 13px+ headings.
+1. The **Problem** column shows the problem, the four position fields, and five suggested searches.
+2. The **Papers** column shows a flat paper list. A paper expands its abstract inline.
+3. The **Perspective** column edits the selected paper's Job and Description, then builds the Perspective.
 
-Controls: h-7 sm / h-8 md; text 12 sm / 13 md; icon 13px lucide.
-Motion: 120ms micro-interactions; 180–260ms entry using opacity and
-at most 8px translation. Lists stagger 36–45ms; drawers travel 18px.
-Every entry class resolves instantly under `prefers-reduced-motion`.
+One selected paper anchors one hidden literature cluster. The server derives Scope, Explanation, Approach, Significance, Framing, and Position from that cluster. The participant sees only the Perspective name, Description, anchor paper, and related-paper count. A study holds at most six Perspectives.
 
-## Components (features/focused/ui.tsx)
+### Discuss
 
-Button(variant primary|outline|ghost|danger, size sm|md) — primary is --node
-fill; ghost transparent, hover --hover; outline hairline + hover bg; danger
-red-tinted outline for destructive actions (reject/discard).
-Spinner. ModalShell(title, onClose): 640px/92vw, 48px minimum header,
-12px vertical padding, 16px 600 title. SectionLabel: 12px 500 mute.
-EmptyLine: 13px mute.
-EvidenceHighlight(label): amber evidence mark with a portal tooltip on hover
-and keyboard focus.
-IdentityChip(color, name, selected?, lead?) — person icon + colored name,
-or a tilted crown when lead; selected
-fills --node with white text. ListRow(disabled?, onClick) — hover bg +
-border affordance. CheckRow(checked, onToggle) — 13px checklist row.
+The surface has three columns:
 
-## Content rules
+1. **Document** contains independent versions of the four researcher-authored fields. **Copy current** forks the active version. **Start blank** creates an empty version.
+2. **Discussion** runs the active version's persisted agenda.
+3. **Perspectives** shows the active speakers as plain identity cards. Expanded cards show only the Description, anchor paper, and related-paper count.
 
-Sentence case, never uppercase labels. No arrows, no emojis, plain language;
-prefer "panel" in explanatory copy. The terminal actions are "Review and end"
-and "Confirm and end." Empty states are one actionable line. Buttons say what
-they do, such as Generate search queries, Add Perspective, Start round, Apply
-shared ground, Apply selected parts, Review and end, and Confirm and end.
-Busy = spinner inside the triggering button.
-Visible labels start with a capital letter. Internal agent and paper IDs
-never render; use the Perspective name and complete, wrapping
-bibliographic title. Sources remain visible as dotted, clickable title
-links. Computed cosine-distance metrics are exported for analysis but never
-shown to participants; scoring reflects the completed deliberation as a whole.
+For each Document field, every Perspective gives independent feedback before any Perspective compares the feedback. Every Perspective then gives one comparison. The agenda advances through Framing, Previous work, Methodology, and Expected results. A click emits exactly the selected number of turns and resumes from the persisted agenda.
+
+A researcher question adds one researcher message and one reply from every active Perspective. The common agenda does not reset. A Perspective added later joins the current field. A completed review stops until the researcher starts another review.
+
+**Copy feedback** writes text only to the clipboard. Feedback, comparison, direct replies, and summaries never mutate the Document.
+
+**Finish study** flushes pending edits, snapshots every Document version, and makes the study read-only. Reloading preserves the finished output.
+
+## Interface rules
+
+- One primary action advances each surface.
+- Use Document, Discussion, and Perspectives in participant copy.
+- Never show Fragment names, cluster names, cluster IDs, source IDs, embeddings, or study-condition names.
+- Show the Perspective name instead of an ordinal agent label.
+- Keep counts and state as quiet labels.
+- Keep every list-row action visible without hover.
+- Use sentence case. Do not use arrows or emoji.
+
+## Visual system
+
+Use Inter, near-monochrome neutrals, hairline borders, compact controls, and restrained semantic color. Hierarchy comes from weight, size, and the gray ramp.
+
+Core tokens live in `app/focused/layout.tsx`:
+
+- Neutrals: `--bg`, `--panel`, `--ink`, `--ink-2`, `--mute`, `--line`, and `--line-strong`.
+- Inverted controls: `--node` and `--on-node`.
+- Semantic states: `--green`, `--amber`, and `--red` with their background tokens.
+- Perspective identity colors come from `PERSONA_COLORS` and are the only free colors.
+
+Inputs use a 6px radius. Cards, buttons, and fields use 8px. Modals use 12px. Cards use borders without shadows. Motion lasts 120ms for controls and 180–260ms for entry. Every entry class resolves immediately under `prefers-reduced-motion`.

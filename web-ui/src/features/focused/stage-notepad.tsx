@@ -1,17 +1,31 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { ArrowUp, ChevronRight, Plus, Trash2, UserRound, X } from "lucide-react"
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
+import {
+  ArrowUp,
+  Check,
+  ChevronRight,
+  Clipboard,
+  Plus,
+  Trash2,
+  UserRound,
+  X,
+} from "lucide-react"
 
 import { useFocusedPanel } from "@/hooks/use-focused"
 import { notepadDraftKey, useFocusedStore } from "@/store/focused"
 import {
-  FACETS,
-  FACET_LABELS,
+  MAX_PERSPECTIVES,
   NOTEPAD_LABELS,
   NOTEPAD_PARTS,
   type NotepadPart,
-  type NotepadProposal,
   type NotepadState,
   type NotepadTurn,
   type Perspective,
@@ -26,6 +40,8 @@ const PART_PLACEHOLDERS: Record<NotepadPart, string> = {
   expected: "What you expect to find, and why it would matter.",
 }
 
+type RegisterFlush = (flush: () => Promise<void>) => () => void
+
 function ErrorLine({ children }: { children: string }) {
   return (
     <p role="alert" className="mt-2 text-[12px] text-[var(--red)]">
@@ -34,12 +50,6 @@ function ErrorLine({ children }: { children: string }) {
   )
 }
 
-/* -------------------------------------------------------------------------- */
-/* Column 1 - the notepad                                                     */
-/* -------------------------------------------------------------------------- */
-type RegisterFlush = (flush: () => Promise<void>) => () => void
-
-
 function PartField({
   part,
   value,
@@ -47,9 +57,10 @@ function PartField({
   versionId,
   onCommit,
   onStage,
-  registerFlush,
   onFocus,
+  registerFlush,
   disabled,
+  readOnly,
 }: {
   part: NotepadPart
   value: string
@@ -61,25 +72,36 @@ function PartField({
     text: string,
   ) => Promise<unknown>
   onStage: (versionId: string, part: NotepadPart, text: string) => void
-  registerFlush: RegisterFlush
   onFocus: (part: NotepadPart) => void
+  registerFlush: RegisterFlush
   disabled: boolean
+  readOnly: boolean
 }) {
-  // "Changes take effect as they are typed; there is nothing to save."
-  // A queued edit keeps the version that owned the keystroke.
   const timer = useRef<number | undefined>(undefined)
   const pending = useRef<{ text: string; revision: number } | null>(null)
   const latestRevision = useRef(0)
   const commitRef = useRef(onCommit)
   const inFlight = useRef<Promise<void>>(Promise.resolve())
+  const readOnlyRef = useRef(readOnly)
 
   useEffect(() => {
     commitRef.current = onCommit
   }, [onCommit])
+  useLayoutEffect(() => {
+    readOnlyRef.current = readOnly
+    if (readOnly) {
+      window.clearTimeout(timer.current)
+      pending.current = null
+    }
+  }, [readOnly])
 
 
   const flush = useCallback(() => {
     window.clearTimeout(timer.current)
+    if (readOnlyRef.current) {
+      pending.current = null
+      return inFlight.current
+    }
     const next = pending.current
     if (next === null) return inFlight.current
     pending.current = null
@@ -88,6 +110,7 @@ function PartField({
       .then(() => undefined)
       .catch((cause: unknown) => {
         if (
+          !readOnlyRef.current &&
           pending.current === null &&
           latestRevision.current === next.revision
         ) {
@@ -101,19 +124,17 @@ function PartField({
   }, [part, versionId])
 
   useEffect(() => registerFlush(flush), [flush, registerFlush])
-
   useEffect(
     () => () => {
       window.clearTimeout(timer.current)
-      void flush().catch(() => undefined)
     },
-    [flush],
+    [],
   )
 
-  const change = (next: string) => {
-    onStage(versionId, part, next)
+  const change = (text: string) => {
+    onStage(versionId, part, text)
     latestRevision.current += 1
-    pending.current = { text: next, revision: latestRevision.current }
+    pending.current = { text, revision: latestRevision.current }
     window.clearTimeout(timer.current)
     timer.current = window.setTimeout(() => {
       void flush().catch(() => undefined)
@@ -147,16 +168,19 @@ function NotepadColumn({
   notepad,
   busy,
   onPartFocus,
+  onFinish,
 }: {
   notepad: NotepadState
   busy: string | null
   onPartFocus: (part: NotepadPart) => void
+  onFinish: () => void
 }) {
   const focused = useFocusedPanel()
-  const notepadDrafts = useFocusedStore((state) => state.notepadDrafts)
+  const drafts = useFocusedStore((state) => state.notepadDrafts)
   const [error, setError] = useState<string | null>(null)
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
   const flushers = useRef(new Set<() => Promise<void>>())
+  const finished = notepad.final_snapshot !== null
   const version =
     notepad.versions.find((item) => item.id === notepad.active_version_id) ??
     notepad.versions[0]
@@ -173,24 +197,21 @@ function NotepadColumn({
       flushers.current.delete(flush)
     }
   }, [])
-
   const flushThen = (action: () => Promise<unknown>) => {
-    guard(
-      Promise.all([...flushers.current].map((flush) => flush())).then(action),
-    )
+    guard(Promise.all([...flushers.current].map((flush) => flush())).then(action))
   }
-
 
   const editNotepadPart = focused.editNotepadPart
   const stageNotepadPart = focused.stageNotepadPart
   const flushNotepadEdits = focused.flushNotepadEdits
   useEffect(() => {
+    if (finished) return
     void flushNotepadEdits().then(
       () => setFieldErrors({}),
       (cause) =>
         setError(cause instanceof Error ? cause.message : "Could not save"),
     )
-  }, [flushNotepadEdits])
+  }, [finished, flushNotepadEdits])
   const commit = useCallback(
     async (versionId: string, part: NotepadPart, text: string) => {
       const key = `${versionId}:${part}`
@@ -232,9 +253,13 @@ function NotepadColumn({
                 data-testid={`notepad-version-${item.name}`}
                 aria-pressed={active}
                 disabled={busy !== null}
-                onClick={() =>
+                onClick={() => {
+                  if (finished) {
+                    guard(focused.switchNotepadVersion(item.id, true))
+                    return
+                  }
                   flushThen(() => focused.switchNotepadVersion(item.id))
-                }
+                }}
                 className="rounded-md border px-2 py-0.5 text-[11px] tabular-nums transition-colors"
                 style={{
                   borderColor: active ? "var(--line-strong)" : "var(--line)",
@@ -244,7 +269,7 @@ function NotepadColumn({
               >
                 {item.name}
               </button>
-              {notepad.versions.length > 1 ? (
+              {notepad.versions.length > 1 && !finished ? (
                 <button
                   type="button"
                   aria-label={`Delete ${item.name}`}
@@ -252,7 +277,7 @@ function NotepadColumn({
                   onClick={() =>
                     flushThen(() => focused.deleteNotepadVersion(item.id))
                   }
-                  className="ml-0.5 text-[var(--mute)] transition-opacity hover:opacity-70"
+                  className="ml-0.5 text-[var(--mute)] hover:text-[var(--red)]"
                 >
                   <X size={11} strokeWidth={2.2} />
                 </button>
@@ -260,34 +285,40 @@ function NotepadColumn({
             </span>
           )
         })}
-        <button
-          type="button"
-          disabled={busy !== null}
-          aria-label="Add version by copying the current version"
-          title="Copy the current version"
-          onClick={() => flushThen(() => focused.addNotepadVersion(true))}
-          className="ml-1 flex items-center gap-1 rounded-md border border-dashed border-[var(--line)] px-2 py-0.5 text-[11px] text-[var(--mute)] transition-colors hover:border-[var(--line-strong)] hover:text-[var(--ink-2)]"
-        >
-          {busy === "Starting a version" ? (
-            <Spinner className="size-3" />
-          ) : (
-            <Plus size={11} strokeWidth={2.2} />
-          )}
-          Copy current
-        </button>
-        <button
-          type="button"
-          disabled={busy !== null}
-          aria-label="Add a blank version"
-          title="Start with four blank parts"
-          onClick={() => flushThen(() => focused.addNotepadVersion(false))}
-          className="flex items-center rounded-md border border-dashed border-[var(--line)] px-2 py-0.5 text-[11px] text-[var(--mute)] transition-colors hover:border-[var(--line-strong)] hover:text-[var(--ink-2)]"
-        >
-          Start blank
-        </button>
+        {!finished ? (
+          <>
+            <button
+              type="button"
+              disabled={busy !== null}
+              aria-label="Add version by copying the current version"
+              title="Copy the current version"
+              onClick={() => flushThen(() => focused.addNotepadVersion(true))}
+              className="ml-1 flex items-center gap-1 rounded-md border border-dashed border-[var(--line)] px-2 py-0.5 text-[11px] text-[var(--mute)] hover:border-[var(--line-strong)] hover:text-[var(--ink-2)]"
+            >
+              {busy === "Starting a version" ? (
+                <Spinner className="size-3" />
+              ) : (
+                <Plus size={11} strokeWidth={2.2} />
+              )}
+              Copy current
+            </button>
+            <button
+              type="button"
+              disabled={busy !== null}
+              aria-label="Add a blank version"
+              title="Start with four blank parts"
+              onClick={() => flushThen(() => focused.addNotepadVersion(false))}
+              className="flex items-center rounded-md border border-dashed border-[var(--line)] px-2 py-0.5 text-[11px] text-[var(--mute)] hover:border-[var(--line-strong)] hover:text-[var(--ink-2)]"
+            >
+              Start blank
+            </button>
+          </>
+        ) : null}
       </div>
       <p className="mt-1.5 text-[10.5px] text-[var(--mute)]">
-        Edits take effect as you type. Versions are independent.
+        {finished
+          ? "Study complete. These versions are the final output."
+          : "Edits take effect as you type. Versions are independent."}
       </p>
       <div className="mt-3 min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
         {NOTEPAD_PARTS.map((part) => (
@@ -296,11 +327,14 @@ function NotepadColumn({
             part={part}
             versionId={version.id}
             value={version.doc[part]}
-            draft={notepadDrafts[notepadDraftKey(version.id, part)]}
+            draft={
+              finished ? undefined : drafts[notepadDraftKey(version.id, part)]
+            }
+            readOnly={finished}
             onCommit={commit}
             onStage={stageNotepadPart}
             registerFlush={registerFlush}
-            disabled={busy !== null}
+            disabled={busy !== null || finished}
             onFocus={onPartFocus}
           />
         ))}
@@ -308,26 +342,61 @@ function NotepadColumn({
       {error || Object.values(fieldErrors)[0] ? (
         <ErrorLine>{error || Object.values(fieldErrors)[0]}</ErrorLine>
       ) : null}
+      <div className="mt-3 border-t border-[var(--line)] pt-3">
+        <Button
+          variant={finished ? "outline" : "primary"}
+          size="sm"
+          disabled={finished || busy !== null}
+          onClick={onFinish}
+          className="w-full"
+        >
+          {busy === "Finishing study" ? <Spinner /> : null}
+          {finished ? "Study finished" : "Finish study"}
+        </Button>
+      </div>
     </section>
   )
 }
 
-/* -------------------------------------------------------------------------- */
-/* Column 2 - the conversation                                                */
-/* -------------------------------------------------------------------------- */
+function CopyFeedback({ text }: { text: string }) {
+  const [state, setState] = useState<"idle" | "copied" | "error">("idle")
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setState("copied")
+      window.setTimeout(() => setState("idle"), 1600)
+    } catch {
+      setState("error")
+    }
+  }
+  return (
+    <button
+      type="button"
+      onClick={() => void copy()}
+      className="mt-2 inline-flex items-center gap-1 rounded-md border border-[var(--line)] px-2 py-1 text-[10.5px] font-medium text-[var(--ink-2)] hover:border-[var(--line-strong)]"
+    >
+      {state === "copied" ? (
+        <Check size={11} aria-hidden />
+      ) : (
+        <Clipboard size={11} aria-hidden />
+      )}
+      {state === "copied"
+        ? "Copied"
+        : state === "error"
+          ? "Copy failed"
+          : "Copy feedback"}
+    </button>
+  )
+}
 
-function TurnRow({
-  turn,
-  color,
-}: {
-  turn: NotepadTurn
-  color: string | undefined
-}) {
+function TurnRow({ turn, color }: { turn: NotepadTurn; color?: string }) {
   const isResearcher = turn.role === "researcher"
   const isSummary = turn.role === "summary"
+  const copyable = turn.role === "perspective" || isSummary
   return (
     <div className={isResearcher ? "flex justify-end" : ""}>
-      <div
+      <article
+        data-testid={`notepad-turn-${turn.kind}`}
         className={
           isResearcher
             ? "w-fit max-w-[78%] rounded-xl border border-[var(--line)] bg-[color-mix(in_srgb,var(--node)_6%,var(--panel))] px-3 py-2.5"
@@ -336,182 +405,48 @@ function TurnRow({
               : "rounded-xl border border-[var(--line)] px-3 py-2.5"
         }
       >
-        <div className="mb-1 flex items-baseline gap-1.5">
-          {!isResearcher && !isSummary ? (
-            <UserRound
-              aria-hidden
-              size={12}
-              strokeWidth={2.2}
-              className="shrink-0"
-              style={{ color: color ?? "var(--ink-2)" }}
-            />
-          ) : null}
-          <span className="text-[11px] font-medium text-[var(--ink-2)]">
+        <div className="mb-1 flex items-baseline justify-between gap-2">
+          <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-[var(--ink-2)]">
+            {!isResearcher && !isSummary ? (
+              <UserRound
+                aria-hidden
+                size={12}
+                strokeWidth={2.2}
+                style={{ color: color ?? "var(--ink-2)" }}
+              />
+            ) : null}
             {isResearcher ? "You" : turn.author_label}
           </span>
+          {turn.part ? (
+            <span className="text-[10px] text-[var(--mute)]">
+              {NOTEPAD_LABELS[turn.part]}
+            </span>
+          ) : null}
         </div>
         <p className="text-[12.5px] leading-relaxed">{turn.text}</p>
-      </div>
+        {copyable ? <CopyFeedback text={turn.text} /> : null}
+      </article>
     </div>
   )
 }
 
-function ProposalCard({
-  proposal,
-  live,
-  guided,
-  busy,
-}: {
-  proposal: NotepadProposal
-  live: string
-  guided: boolean
-  busy: string | null
-}) {
-  const focused = useFocusedPanel()
-  // What the panel contributes, apart from the wording it was raised
-  // against. Approval folds this onto whatever the part says at that moment.
-  const addition = proposal.addition || proposal.proposed_text
-  const merged = live ? `${live} ${addition}` : addition
-  // One state, not an `editing` flag beside a draft string: the draft is
-  // created when the editor opens, so it can never hold wording from
-  // before the researcher's latest edit to this part.
-  const [draft, setDraft] = useState<string | null>(null)
-  const [reason, setReason] = useState("")
-  const [error, setError] = useState<string | null>(null)
-  const deciding = busy === "Recording your decision"
-
-  const decide = (
-    action: "approve" | "edit" | "reject",
-    extra?: { text?: string; reason?: string },
-  ) => {
-    setError(null)
-    focused
-      .decideNotepadProposal(proposal.id, action, extra)
-      .catch((cause) =>
-        setError(
-          cause instanceof Error ? cause.message : "Could not record that",
-        ),
-      )
+function AgendaStatus({ notepad }: { notepad: NotepadState }) {
+  const version = notepad.active_version_id
+    ? notepad.versions.find((item) => item.id === notepad.active_version_id)
+    : notepad.versions[0]
+  if (!version) return null
+  const agenda = version.agenda
+  if (agenda.phase === "complete") {
+    return <span>Draft review complete</span>
   }
-
-  if (!guided) {
-    // The baseline seam: one button, blind append, no diff and no evidence.
-    return (
-      <div
-        data-testid="notepad-proposal"
-        className="ep-card-enter rounded-xl border border-dashed border-[var(--line)] px-3 py-2.5"
-      >
-        <p className="text-[11px] text-[var(--mute)]">
-          {`Adds the summary above to ${NOTEPAD_LABELS[proposal.part]}.`}
-        </p>
-        <div className="mt-2.5">
-          <Button
-            variant="primary"
-            size="sm"
-            disabled={busy !== null}
-            onClick={() => decide("approve")}
-          >
-            {deciding ? <Spinner /> : null}Copy into the document
-          </Button>
-        </div>
-        {error ? <ErrorLine>{error}</ErrorLine> : null}
-      </div>
-    )
-  }
-
+  const done =
+    agenda.phase === "feedback"
+      ? agenda.feedback_done_ids.length
+      : agenda.comparison_done_ids.length
   return (
-    <div
-      data-testid="notepad-proposal"
-      className="ep-card-enter rounded-xl border border-[var(--line)] px-3 py-2.5"
-    >
-      <SectionLabel>
-        {`Proposed for ${NOTEPAD_LABELS[proposal.part]} - your review`}
-      </SectionLabel>
-      {/* The notepad stays editable while this sits here, so the diff reads
-          the live wording: approval folds the addition onto it. */}
-      {live ? (
-        <p className="mt-1.5 text-[12px] leading-relaxed text-[var(--mute)] line-through">
-          {live}
-        </p>
-      ) : null}
-      <p className="mt-1 text-[12.5px] leading-relaxed">
-        {live ? `${live} ${addition}` : addition}
-      </p>
-      {proposal.reason ? (
-        <p className="mt-1.5 text-[12px] leading-relaxed text-[var(--ink-2)]">
-          {proposal.reason}
-        </p>
-      ) : null}
-      {proposal.citations.length > 0 ? (
-        <p className="mt-1 text-[10.5px] text-[var(--mute)]">
-          {`Cites ${proposal.citations.join(", ")}`}
-        </p>
-      ) : null}
-      {draft !== null ? (
-        <div className="mt-2.5 space-y-2">
-          <textarea
-            value={draft}
-            rows={4}
-            aria-label="Your wording"
-            onChange={(event) => setDraft(event.target.value)}
-            className="field w-full resize-none rounded-lg px-3 py-2 text-[12.5px] leading-relaxed"
-          />
-          <div className="flex items-center gap-2">
-            <Button
-              variant="primary"
-              size="sm"
-              disabled={busy !== null || !draft.trim()}
-              onClick={() => decide("edit", { text: draft.trim() })}
-            >
-              {deciding ? <Spinner /> : null}Accept with this wording
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={busy !== null}
-              onClick={() => setDraft(null)}
-            >
-              Cancel
-            </Button>
-          </div>
-        </div>
-      ) : (
-        <div className="mt-2.5 flex flex-wrap items-center gap-2">
-          <Button
-            variant="primary"
-            size="sm"
-            disabled={busy !== null}
-            onClick={() => decide("approve")}
-          >
-            {deciding ? <Spinner /> : null}Approve
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={busy !== null}
-            onClick={() => setDraft(merged)}
-          >
-            Edit
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={busy !== null}
-            onClick={() => decide("reject", { reason: reason.trim() })}
-          >
-            Reject
-          </Button>
-          <input
-            value={reason}
-            aria-label="Why you are rejecting"
-            placeholder="Why? The panel reads this."
-            onChange={(event) => setReason(event.target.value)}
-            className="field min-w-0 flex-1 rounded-lg px-2.5 py-1.5 text-[12px]"
-          />
-        </div>
-      )}
-      {error ? <ErrorLine>{error}</ErrorLine> : null}
-    </div>
+    <span>
+      {`${agenda.phase === "feedback" ? "Reviewing" : "Comparing"} ${NOTEPAD_LABELS[agenda.part]} · ${done}/${agenda.participant_ids.length}`}
+    </span>
   )
 }
 
@@ -519,49 +454,43 @@ function ConversationColumn({
   session,
   notepad,
   busy,
-  summaryPart,
 }: {
   session: SessionState
   notepad: NotepadState
   busy: string | null
-  summaryPart: NotepadPart
 }) {
   const focused = useFocusedPanel()
-  const notepadDrafts = useFocusedStore((state) => state.notepadDrafts)
   const [message, setMessage] = useState("")
-  const [turns, setTurns] = useState(4)
   const [error, setError] = useState<string | null>(null)
-  const guided = session.arm === "guided"
-
-  const colors = useMemo(() => {
-    const map = new Map<string, string>()
-    for (const perspective of session.perspectives) {
-      map.set(perspective.id, perspective.color)
-    }
-    return map
-  }, [session.perspectives])
-
-  const activeVersionId =
-    notepad.active_version_id ?? notepad.versions[0]?.id
-  const pending = notepad.proposals.filter(
-    (item) =>
-      item.status === "pending" && item.version_id === activeVersionId,
+  const [turnBudgets, setTurnBudgets] = useState<Record<string, number>>({})
+  const version = notepad.active_version_id
+    ? notepad.versions.find((item) => item.id === notepad.active_version_id)
+    : notepad.versions[0]
+  const versionId = version?.id ?? ""
+  const turns = turnBudgets[versionId] ?? version?.agenda.turn_budget ?? 4
+  const finished = notepad.final_snapshot !== null
+  const colors = useMemo(
+    () => new Map(session.perspectives.map((item) => [item.id, item.color])),
+    [session.perspectives],
   )
-  const liveDoc =
-    notepad.versions.find((item) => item.id === activeVersionId)?.doc ??
-    notepad.versions[0]?.doc
+  const visibleTurns = notepad.turns
+    .filter((turn) => turn.version_id === versionId)
+    .slice(version?.visible_turn_start ?? 0)
+  const visibleFeedbackCount = visibleTurns.filter(
+    (turn) => turn.role === "perspective",
+  ).length
+
   const guard = (action: Promise<unknown>) => {
     setError(null)
     action.catch((cause) =>
       setError(cause instanceof Error ? cause.message : "Could not do that"),
     )
   }
-
   const send = () => {
     const text = message.trim()
-    if (!text || notepad.in_chat.length === 0) return
+    if (!text || !versionId) return
     setMessage("")
-    guard(focused.askNotepad(text))
+    guard(focused.askNotepad(versionId, text))
   }
 
   return (
@@ -572,75 +501,53 @@ function ConversationColumn({
       <SectionLabel>Discussion</SectionLabel>
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         <span className="text-[11px] text-[var(--mute)]">In the chat</span>
-        {session.perspectives.map((perspective) => {
-          const inChat = notepad.in_chat.includes(perspective.id)
-          return (
-            <button
-              key={perspective.id}
-              type="button"
-              disabled={busy !== null}
-              aria-pressed={inChat}
-              aria-label={`${inChat ? "Remove" : "Add"} ${perspective.name}`}
-              onClick={() =>
-                guard(
-                  focused.setNotepadParticipant(perspective.id, !inChat),
-                )
-              }
-              className="flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors"
-              style={{
-                borderColor: inChat ? "var(--line-strong)" : "var(--line)",
-                color: inChat ? "var(--ink)" : "var(--mute)",
-              }}
-            >
-              <UserRound
-                aria-hidden
-                size={11}
-                strokeWidth={2.2}
-                style={{ color: inChat ? perspective.color : "var(--mute)" }}
-              />
-              {perspective.name}
-              {inChat ? (
-                <X size={10} strokeWidth={2.2} />
-              ) : (
-                <Plus size={10} strokeWidth={2.2} />
-              )}
-            </button>
-          )
-        })}
+        {session.perspectives.map((perspective) => (
+          <span
+            key={perspective.id}
+            className="inline-flex items-center gap-1 rounded-full border border-[var(--line-strong)] px-2 py-0.5 text-[11px] text-[var(--ink)]"
+          >
+            <UserRound
+              aria-hidden
+              size={11}
+              strokeWidth={2.2}
+              style={{ color: perspective.color }}
+            />
+            {perspective.name}
+          </span>
+        ))}
+      </div>
+      <div className="mt-2 text-[10.5px] font-medium text-[var(--mute)]">
+        <AgendaStatus notepad={notepad} />
       </div>
 
       <div className="mt-3 min-h-0 flex-1 space-y-2.5 overflow-y-auto pr-1">
-        {notepad.turns.length === 0 && pending.length === 0 ? (
+        {visibleTurns.length === 0 ? (
           <EmptyLine>
-            No one has spoken yet. Let the agents discuss, or ask them
-            something.
+            Start the draft review, or ask the Perspectives a specific question.
           </EmptyLine>
         ) : null}
-        {notepad.turns.map((turn) => (
+        {visibleTurns.map((turn) => (
           <TurnRow
             key={turn.id}
             turn={turn}
             color={turn.author_id ? colors.get(turn.author_id) : undefined}
           />
         ))}
-        {pending.map((proposal) => (
-          <ProposalCard
-            key={proposal.id}
-            proposal={proposal}
-            live={
-              activeVersionId
-                ? (notepadDrafts[
-                    notepadDraftKey(activeVersionId, proposal.part)
-                  ] ?? liveDoc?.[proposal.part] ?? "")
-                : (liveDoc?.[proposal.part] ?? "")
-            }
-            guided={guided}
-            busy={busy}
-          />
-        ))}
       </div>
 
       <div className="mt-3 space-y-2 border-t border-[var(--line)] pt-3">
+        {version?.agenda.phase === "complete" && !finished ? (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={busy !== null}
+            onClick={() => guard(focused.restartNotepadReview(version.id))}
+            className="w-full"
+          >
+            {busy === "Restarting review" ? <Spinner /> : null}
+            Start another review
+          </Button>
+        ) : null}
         <div
           data-testid="discussion-actions"
           className="grid grid-cols-[minmax(0,1fr)_32px] gap-2 min-[480px]:grid-cols-[minmax(0,1fr)_auto_32px]"
@@ -649,9 +556,14 @@ function ConversationColumn({
             <button
               type="button"
               aria-label="Let agents discuss"
-              disabled={busy !== null || notepad.in_chat.length === 0}
-              onClick={() => guard(focused.discussNotepad(turns))}
-              className="inline-flex min-w-0 flex-1 items-center justify-center gap-1.5 whitespace-nowrap px-3 text-[13px] font-medium text-[var(--ink)] transition-colors hover:bg-[color-mix(in_srgb,var(--node)_5%,transparent)] disabled:opacity-40"
+              disabled={
+                finished ||
+                busy !== null ||
+                !versionId ||
+                version?.agenda.phase === "complete"
+              }
+              onClick={() => guard(focused.discussNotepad(versionId, turns))}
+              className="inline-flex min-w-0 flex-1 items-center justify-center gap-1.5 whitespace-nowrap px-3 text-[13px] font-medium text-[var(--ink)] hover:bg-[color-mix(in_srgb,var(--node)_5%,transparent)] disabled:opacity-40"
             >
               {busy === "Agents discussing" ? <Spinner /> : null}
               Discuss
@@ -661,8 +573,13 @@ function ConversationColumn({
               <select
                 value={turns}
                 aria-label="Turns"
-                disabled={busy !== null}
-                onChange={(event) => setTurns(Number(event.target.value))}
+                disabled={finished || busy !== null || !versionId}
+                onChange={(event) =>
+                  setTurnBudgets((current) => ({
+                    ...current,
+                    [versionId]: Number(event.target.value),
+                  }))
+                }
                 className="w-full bg-transparent text-[13px] font-medium tabular-nums text-[var(--ink-2)] outline-none"
               >
                 {Array.from({ length: 8 }, (_, index) => index + 1).map(
@@ -675,25 +592,23 @@ function ConversationColumn({
               </select>
             </label>
           </div>
-
           <Button
             variant="outline"
             size="md"
-            disabled={busy !== null}
-            onClick={() => guard(focused.summarizeNotepad(summaryPart))}
+            disabled={finished || busy !== null || visibleFeedbackCount < 2}
+            onClick={() => guard(focused.summarizeNotepad(versionId))}
             className="col-span-2 row-start-2 justify-center min-[480px]:col-span-1 min-[480px]:row-auto"
           >
             {busy === "Summarizing" ? <Spinner /> : null}
             Summarize so far
           </Button>
-
           <button
             type="button"
             aria-label="Clear chat"
             title="Clear chat"
-            disabled={busy !== null || notepad.turns.length === 0}
+            disabled={finished || busy !== null || visibleTurns.length === 0}
             onClick={() => guard(focused.clearNotepadChat())}
-            className="col-start-2 row-start-1 grid size-8 place-items-center rounded-lg text-[var(--mute)] transition-colors hover:bg-[var(--red-bg)] hover:text-[var(--red)] disabled:pointer-events-none disabled:opacity-35 min-[480px]:col-auto min-[480px]:row-auto"
+            className="col-start-2 row-start-1 grid size-8 place-items-center rounded-lg text-[var(--mute)] hover:bg-[var(--red-bg)] hover:text-[var(--red)] disabled:pointer-events-none disabled:opacity-35 min-[480px]:col-auto min-[480px]:row-auto"
           >
             {busy === "Clearing the chat" ? (
               <Spinner className="size-3" />
@@ -708,7 +623,7 @@ function ConversationColumn({
             rows={2}
             aria-label="Message the panel"
             placeholder="Ask the panel something..."
-            disabled={busy !== null || notepad.in_chat.length === 0}
+            disabled={finished || busy !== null || !versionId}
             onChange={(event) => setMessage(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
@@ -721,20 +636,14 @@ function ConversationColumn({
           <button
             type="button"
             aria-label="Send"
-            disabled={
-              busy !== null || notepad.in_chat.length === 0 || !message.trim()
-            }
+            disabled={finished || busy !== null || !message.trim() || !versionId}
             onClick={send}
-            className="absolute bottom-2 right-2 grid size-8 place-items-center rounded-lg bg-[var(--node)] text-white transition-opacity hover:opacity-90 disabled:opacity-35"
+            className="absolute bottom-2 right-2 grid size-8 place-items-center rounded-lg bg-[var(--node)] text-white hover:opacity-90 disabled:opacity-35"
           >
             {busy === "Sending" ? (
               <Spinner className="size-3.5" />
             ) : (
-              <ArrowUp
-                size={15}
-                strokeWidth={2.1}
-                aria-hidden
-              />
+              <ArrowUp size={15} strokeWidth={2.1} aria-hidden />
             )}
           </button>
         </div>
@@ -744,148 +653,69 @@ function ConversationColumn({
   )
 }
 
-/* -------------------------------------------------------------------------- */
-/* Column 3 - the perspectives                                                */
-/* -------------------------------------------------------------------------- */
-
 function PerspectiveCard({
   perspective,
-  inChat,
-  busy,
+  papers,
 }: {
   perspective: Perspective
-  inChat: boolean
-  busy: string | null
+  papers: SessionState["papers"]
 }) {
-  const focused = useFocusedPanel()
-  const session = useFocusedStore((state) => state.session)
-  const openPaperSet = useFocusedStore((state) => state.openPaperSet)
-  const sources = perspective.sources.map((sourceId) => ({
-    id: sourceId,
-    title:
-      session?.papers.find((paper) => paper.id === sourceId)?.title ?? sourceId,
-  }))
   const [open, setOpen] = useState(false)
-  const fragments = FACETS.filter((facet) => perspective.facets[facet])
-
+  const openPaperSet = useFocusedStore((state) => state.openPaperSet)
+  const anchor = papers.find((paper) => paper.id === perspective.anchor_paper_id)
   return (
-    <div className="ep-card-enter rounded-xl border border-[var(--line)] px-3 py-2.5">
-      <div className="flex items-start justify-between gap-2">
-        <button
-          type="button"
-          onClick={() => setOpen((value) => !value)}
-          aria-expanded={open}
-          className="flex min-w-0 flex-1 items-baseline gap-1.5 text-left"
-        >
-          <UserRound
-            aria-hidden
-            size={12}
-            strokeWidth={2.2}
-            className="shrink-0"
-            style={{ color: perspective.color }}
-          />
-          <span className="truncate text-[12.5px] font-medium">
-            {perspective.name}
-          </span>
-        </button>
-        <button
-          type="button"
-          disabled={busy !== null}
-          aria-label={`${inChat ? "Remove from" : "Add to"} the chat`}
-          onClick={() =>
-            focused.setNotepadParticipant(perspective.id, !inChat)
-          }
-          className="shrink-0 rounded-md border px-1.5 py-0.5 text-[10.5px] transition-colors"
-          style={{
-            borderColor: inChat ? "var(--line-strong)" : "var(--line)",
-            color: inChat ? "var(--ink)" : "var(--mute)",
-          }}
-        >
-          {inChat ? "in chat" : "add"}
-        </button>
-      </div>
+    <article className="rounded-lg border border-[var(--line)]">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className="flex w-full items-center gap-2 px-3 py-2.5 text-left"
+      >
+        <UserRound size={12} aria-hidden style={{ color: perspective.color }} />
+        <span className="min-w-0 flex-1 text-[12.5px] font-medium">
+          {perspective.name}
+        </span>
+        <ChevronRight
+          size={13}
+          aria-hidden
+          className={open ? "rotate-90" : ""}
+        />
+      </button>
       {open ? (
-        <div className="mt-2.5 space-y-3">
+        <div className="border-t border-[var(--line)] px-3 py-2.5">
           {perspective.summary ? (
             <p className="text-[12px] leading-relaxed text-[var(--ink-2)]">
               {perspective.summary}
             </p>
           ) : null}
-          {sources.length > 0 ? (
-            <div>
-              <p className="text-[10.5px] font-medium uppercase tracking-wide text-[var(--mute)]">
-                Source {sources.length === 1 ? "paper" : "papers"}
-              </p>
-              <ul className="mt-1 space-y-1">
-                {sources.map((source) => (
-                  <li key={source.id}>
-                    <button
-                      type="button"
-                      aria-label={`Open source paper: ${source.title}`}
-                      onClick={() => openPaperSet(source.id)}
-                      className="text-left text-[11.5px] leading-snug text-[var(--ink-2)] underline decoration-[var(--line-strong)] underline-offset-2 hover:text-[var(--ink)]"
-                    >
-                      {source.title}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-          {/* The four Fragments: what the formative study identified and
-              what a researcher can check, each with its source. */}
-          {fragments.length > 0 ? (
-            <dl className="space-y-2">
-              {fragments.map((facet) => {
-                const evidence = perspective.facets[facet]!
-                return (
-                  <div key={facet}>
-                    <dt className="text-[10.5px] font-medium uppercase tracking-wide text-[var(--mute)]">
-                      {FACET_LABELS[facet]}
-                    </dt>
-                    <dd className="mt-0.5 text-[12px] leading-relaxed">
-                      {evidence.text}
-                    </dd>
-                  </div>
-                )
-              })}
-            </dl>
-          ) : null}
-          {/* Framing and Position: the synthesis of the Fragments, one
-              level up. Absent only while the Perspective is still building. */}
-          {perspective.framing ? (
-            <div className="rounded-lg border border-[var(--line)] bg-[var(--hover)] px-2.5 py-2">
-              <p className="text-[10.5px] font-medium uppercase tracking-wide text-[var(--mute)]">
-                Framing &amp; Position
-              </p>
-              <p className="mt-1 text-[12px] leading-relaxed">
-                {perspective.framing.framing}
-              </p>
-              <p className="mt-1 text-[12px] leading-relaxed text-[var(--ink-2)]">
-                {perspective.framing.position}
-              </p>
-            </div>
-          ) : (
-            <p className="text-[11px] text-[var(--mute)]">
-              Synthesizing framing and position…
-            </p>
-          )}
+          <div className="mt-2 text-[10.5px] text-[var(--mute)]">
+            {anchor ? (
+              <button
+                type="button"
+                onClick={() => openPaperSet(anchor.id)}
+                className="underline underline-offset-2"
+              >
+                {anchor.title}
+              </button>
+            ) : (
+              "Anchor paper unavailable"
+            )}
+            {` · ${perspective.related_paper_count} related ${
+              perspective.related_paper_count === 1 ? "paper" : "papers"
+            }`}
+          </div>
         </div>
       ) : null}
-    </div>
+    </article>
   )
 }
 
 function PerspectivesColumn({
   session,
-  notepad,
-  busy,
   onCollapse,
   onBuildAnother,
 }: {
   session: SessionState
-  notepad: NotepadState
-  busy: string | null
   onCollapse: () => void
   onBuildAnother: () => void
 }) {
@@ -900,7 +730,7 @@ function PerspectivesColumn({
           type="button"
           aria-label="Collapse the perspectives"
           onClick={onCollapse}
-          className="hidden text-[var(--mute)] transition-opacity hover:opacity-70 lg:block"
+          className="hidden text-[var(--mute)] hover:text-[var(--ink)] lg:block"
         >
           <ChevronRight size={14} strokeWidth={2.2} />
         </button>
@@ -910,38 +740,36 @@ function PerspectivesColumn({
           <PerspectiveCard
             key={perspective.id}
             perspective={perspective}
-            inChat={notepad.in_chat.includes(perspective.id)}
-            busy={busy}
+            papers={session.papers}
           />
         ))}
-        <button
-          type="button"
-          data-testid="notepad-build-perspective"
-          onClick={onBuildAnother}
-          className="w-full rounded-xl border border-dashed border-[var(--line)] px-3 py-2.5 text-left transition-colors hover:border-[var(--line-strong)]"
-        >
-          <span className="flex items-center gap-1.5 text-[12.5px] font-medium">
-            <Plus size={12} strokeWidth={2.2} aria-hidden />
-            Build another Perspective
-          </span>
-          <span className="mt-0.5 block text-[11px] leading-relaxed text-[var(--mute)]">
-            Opens the papers step. It joins the discussion when you return.
-          </span>
-        </button>
+        {session.notepad?.final_snapshot === null &&
+        session.perspectives.length < MAX_PERSPECTIVES ? (
+          <button
+            type="button"
+            data-testid="notepad-build-perspective"
+            onClick={onBuildAnother}
+            className="w-full rounded-xl border border-dashed border-[var(--line)] px-3 py-2.5 text-left hover:border-[var(--line-strong)]"
+          >
+            <span className="flex items-center gap-1.5 text-[12.5px] font-medium">
+              <Plus size={12} strokeWidth={2.2} aria-hidden />
+              Build another Perspective
+            </span>
+            <span className="mt-0.5 block text-[11px] leading-relaxed text-[var(--mute)]">
+              Opens the papers step. It joins the current draft review.
+            </span>
+          </button>
+        ) : null}
       </div>
     </section>
   )
 }
-/* -------------------------------------------------------------------------- */
-/* The stage                                                                  */
-/* -------------------------------------------------------------------------- */
 
 export function StageNotepad({ session }: { session: SessionState }) {
   const focused = useFocusedPanel()
-  const busy = useFocusedStore((s) => s.busy)
-  const stageSet = useFocusedStore((s) => s.stageSet)
+  const busy = useFocusedStore((state) => state.busy)
+  const stageSet = useFocusedStore((state) => state.stageSet)
   const [collapsed, setCollapsed] = useState(false)
-  const [summaryPart, setSummaryPart] = useState<NotepadPart>("framing")
   const [error, setError] = useState<string | null>(null)
   const notepad = session.notepad
 
@@ -951,34 +779,27 @@ export function StageNotepad({ session }: { session: SessionState }) {
         <section className="ep-enter panel rounded-xl px-4 py-3.5">
           <SectionLabel>Discussion</SectionLabel>
           <p className="mt-1.5 text-[12.5px] leading-relaxed">
-            Your document carries the four parts you wrote. The panel discusses
-            them, and nothing reaches the document without your decision.
+            The Perspectives will review the four notepad elements in order.
           </p>
-          <div className="mt-3">
-            <Button
-              variant="primary"
-              size="sm"
-              disabled={busy !== null || session.perspectives.length === 0}
-              onClick={() => {
-                setError(null)
-                focused
-                  .startNotepad()
-                  .catch((cause) =>
-                    setError(
-                      cause instanceof Error
-                        ? cause.message
-                        : "Could not open the chat",
-                    ),
-                  )
-              }}
-            >
-              {busy === "Opening the discussion" ? <Spinner /> : null}Open the
-              discussion
-            </Button>
-          </div>
-          {session.perspectives.length === 0 ? (
-            <EmptyLine>Build at least one Perspective first.</EmptyLine>
-          ) : null}
+          <Button
+            variant="primary"
+            size="sm"
+            className="mt-3"
+            disabled={busy !== null || session.perspectives.length === 0}
+            onClick={() => {
+              setError(null)
+              focused.startNotepad().catch((cause) =>
+                setError(
+                  cause instanceof Error
+                    ? cause.message
+                    : "Could not open the discussion",
+                ),
+              )
+            }}
+          >
+            {busy === "Opening the discussion" ? <Spinner /> : null}
+            Open discussion
+          </Button>
           {error ? <ErrorLine>{error}</ErrorLine> : null}
         </section>
       </main>
@@ -996,21 +817,22 @@ export function StageNotepad({ session }: { session: SessionState }) {
       <NotepadColumn
         notepad={notepad}
         busy={busy}
-        onPartFocus={setSummaryPart}
+        onPartFocus={() => undefined}
+        onFinish={() => {
+          setError(null)
+          void focused.finishNotepadStudy().catch((cause) =>
+            setError(
+              cause instanceof Error ? cause.message : "Could not finish study",
+            ),
+          )
+        }}
       />
-      <ConversationColumn
-        session={session}
-        notepad={notepad}
-        busy={busy}
-        summaryPart={summaryPart}
-      />
+      <ConversationColumn session={session} notepad={notepad} busy={busy} />
       {collapsed ? (
         <>
           <div className="lg:hidden">
             <PerspectivesColumn
               session={session}
-              notepad={notepad}
-              busy={busy}
               onCollapse={() => setCollapsed(true)}
               onBuildAnother={() => stageSet("extraction")}
             />
@@ -1029,12 +851,11 @@ export function StageNotepad({ session }: { session: SessionState }) {
       ) : (
         <PerspectivesColumn
           session={session}
-          notepad={notepad}
-          busy={busy}
           onCollapse={() => setCollapsed(true)}
           onBuildAnother={() => stageSet("extraction")}
         />
       )}
+      {error ? <ErrorLine>{error}</ErrorLine> : null}
     </main>
   )
 }

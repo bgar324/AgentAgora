@@ -1,129 +1,11 @@
 """Hermetic abstract-grounded corpus for the focused-panel study flow."""
 
-from agora.focused.models import FACETS, ExpPaper, Facet, FacetEvidence, SuggestedQuery
+from agora.focused.models import ExpPaper
 
 DEMO_RESEARCH_QUESTIONS = [
     "Does broad-spectrum use raise resistance enough to matter at population level?",
     "Does it harm the patient's own flora in ways that outlast the infection?",
     "When does speed to cure outweigh both?",
-]
-
-DEMO_SHARED_GROUND: dict[Facet, str] = {
-    "scope": (
-        "patients and populations exposed to broad antibiotics, stratified by "
-        "infection severity and treatment duration"
-    ),
-    "explanation": (
-        "Broader and longer exposure can improve immediate pathogen coverage while "
-        "increasing selection pressure and disrupting protective microbial communities."
-    ),
-    "approach": (
-        "The trade-off should be tested by pairing acute cure and mortality outcomes "
-        "with longitudinal resistance and microbiome measures, stratified by severity "
-        "and exposure."
-    ),
-    "significance": (
-        "The decision connects immediate patient benefit to delayed harms that can "
-        "persist beyond the infection and accumulate across populations."
-    ),
-}
-
-DEMO_QUERY_SUGGESTIONS = [
-    SuggestedQuery(
-        query="broad-spectrum antibiotic use antimicrobial resistance population",
-        rationale="Population-level resistance consequences.",
-        kind="question",
-        question_index=0,
-    ),
-    SuggestedQuery(
-        query="broad-spectrum antibiotics gut microbiome recovery",
-        rationale="Host-microbiome consequences after treatment.",
-        kind="question",
-        question_index=1,
-    ),
-    SuggestedQuery(
-        query="early broad coverage sepsis mortality cure",
-        rationale="Immediate clinical benefit and under-treatment risk.",
-        kind="question",
-        question_index=2,
-    ),
-    SuggestedQuery(
-        query="rapid diagnostics antibiotic de-escalation",
-        rationale="Information and targeting alternatives.",
-    ),
-    SuggestedQuery(
-        query="antibiotic stewardship resistance cost policy",
-        rationale="Institutional and societal trade-offs.",
-    ),
-]
-
-DEMO_CLUSTERS: list[dict[str, object]] = [
-    {
-        "name": "Resistance ecology",
-        "terms": [
-            "resistance",
-            "genes",
-            "resistome",
-            "selection",
-            "stewardship",
-            "spectrum",
-        ],
-        "blurb": "Reads prescribing as evolutionary pressure and tracks what accumulates across populations.",
-    },
-    {
-        "name": "Host and microbiome",
-        "terms": [
-            "microbiome",
-            "commensal",
-            "flora",
-            "dysbiosis",
-            "diversity",
-            "colonization",
-        ],
-        "blurb": "Treats the patient's microbial ecology as a durable treatment outcome.",
-    },
-    {
-        "name": "Acute outcomes",
-        "terms": ["mortality", "sepsis", "survival", "cure", "coverage", "delay"],
-        "blurb": "Weighs prescribing by immediate cure, adequate coverage, and survival.",
-    },
-    {
-        "name": "Diagnostics and targeting",
-        "terms": [
-            "diagnostic",
-            "rapid",
-            "identification",
-            "prediction",
-            "model",
-            "narrow",
-        ],
-        "blurb": "Recasts antibiotic breadth as an information and targeting problem.",
-    },
-    {
-        "name": "Systems and policy",
-        "terms": [
-            "cost",
-            "policy",
-            "programme",
-            "program",
-            "agricultural",
-            "societal",
-            "community",
-        ],
-        "blurb": "Sets the unit of analysis above one patient or one prescription.",
-    },
-    {
-        "name": "Treatment alternatives",
-        "terms": [
-            "phage",
-            "combination",
-            "biomarker",
-            "duration",
-            "targeted",
-            "therapy",
-        ],
-        "blurb": "Tests whether narrower or shorter interventions can escape the efficacy-harm trade-off.",
-    },
 ]
 
 
@@ -372,19 +254,3 @@ DEMO_PAPERS: list[ExpPaper] = [
         "Reliable prediction could personalize empiric breadth instead of applying one policy to everyone.",
     ),
 ]
-
-# Each demo facet is a verbatim abstract sentence. This keeps the provenance
-# surface honest while allowing the no-provider path to exercise every stage.
-DEMO_FACETS: dict[str, list[FacetEvidence]] = {
-    paper.id: [
-        FacetEvidence(
-            facet=facet,
-            text=paper.abstract_sentences[index],
-            paper_id=paper.id,
-            sentence_index=index,
-            sentence=paper.abstract_sentences[index],
-        )
-        for index, facet in enumerate(FACETS)
-    ]
-    for paper in DEMO_PAPERS
-}

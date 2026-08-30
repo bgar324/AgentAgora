@@ -1,17 +1,13 @@
 "use client"
 
 import {
-  useCallback,
   useEffect,
   useId,
   useState,
   useRef,
   type ButtonHTMLAttributes,
-  type LabelHTMLAttributes,
   type ReactNode,
 } from "react"
-import { createPortal } from "react-dom"
-import { Crown, User } from "lucide-react"
 
 /** Design-system primitives — the only sanctioned building blocks for
  * Focused Panel surfaces. See ./DESIGN.md. */
@@ -69,104 +65,7 @@ export function SectionLabel({
     </div>
   )
 }
-type EvidenceTooltipPosition = {
-  left: number
-  top: number
-  above: boolean
-}
 
-export function EvidenceHighlight({
-  label,
-  children,
-}: {
-  label: string
-  children: ReactNode
-}) {
-  const tooltipId = useId()
-  const markRef = useRef<HTMLElement>(null)
-  const [position, setPosition] = useState<EvidenceTooltipPosition | null>(null)
-
-  const showTooltip = useCallback((pointer?: { x: number; y: number }) => {
-    const mark = markRef.current
-    if (!mark) return
-    const rect = mark.getBoundingClientRect()
-    let scrollParent = mark.parentElement
-    while (scrollParent && scrollParent !== document.body) {
-      const overflowY = getComputedStyle(scrollParent).overflowY
-      if (overflowY === "auto" || overflowY === "scroll") break
-      scrollParent = scrollParent.parentElement
-    }
-    const scrollTop =
-      scrollParent && scrollParent !== document.body
-        ? scrollParent.getBoundingClientRect().top
-        : 0
-    const anchorX = pointer?.x ?? rect.left + rect.width / 2
-    const anchorTop = pointer?.y ?? rect.top
-    const anchorBottom = pointer?.y ?? rect.bottom
-    const above = anchorTop - scrollTop >= 48
-    const edge = Math.min(128, window.innerWidth / 2)
-    setPosition({
-      left: Math.min(Math.max(anchorX, edge), window.innerWidth - edge),
-      top: above ? anchorTop - 8 : anchorBottom + 8,
-      above,
-    })
-  }, [])
-
-  useEffect(() => {
-    if (!position) return
-    const handleViewportChange = () => {
-      if (document.activeElement === markRef.current) {
-        window.requestAnimationFrame(() => showTooltip())
-      } else {
-        setPosition(null)
-      }
-    }
-    window.addEventListener("scroll", handleViewportChange, true)
-    window.addEventListener("resize", handleViewportChange)
-    return () => {
-      window.removeEventListener("scroll", handleViewportChange, true)
-      window.removeEventListener("resize", handleViewportChange)
-    }
-  }, [position, showTooltip])
-
-  return (
-    <>
-      <mark
-        ref={markRef}
-        tabIndex={0}
-        aria-describedby={position ? tooltipId : undefined}
-        onPointerEnter={(event) =>
-          showTooltip({ x: event.clientX, y: event.clientY })
-        }
-        onPointerLeave={() => setPosition(null)}
-        onFocus={() => showTooltip()}
-        onBlur={() => setPosition(null)}
-        className="rounded-[3px] bg-[var(--amber-bg)] px-0.5 text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ink-2)]"
-        style={{ boxShadow: "inset 0 -2px 0 #f2c979" }}
-      >
-        {children}
-      </mark>
-      {position &&
-        createPortal(
-          <span
-            id={tooltipId}
-            role="tooltip"
-            className="pointer-events-none fixed z-[100] w-max max-w-[min(240px,calc(100vw-16px))] rounded bg-[var(--ink)] px-2 py-1 text-center text-[11px] font-medium leading-tight text-white shadow-sm"
-            style={{
-              left: position.left,
-              top: position.top,
-              transform: position.above
-                ? "translate(-50%, -100%)"
-                : "translate(-50%, 0)",
-            }}
-          >
-            {label}
-          </span>,
-          document.querySelector<HTMLElement>(".focused") ?? document.body,
-        )}
-    </>
-  )
-}
 
 
 export function EmptyLine({ children }: { children: ReactNode }) {
@@ -307,108 +206,3 @@ export function ModalShell({
     </div>
   )
 }
-
-export function IdentityChip({
-  color,
-  name,
-  selected = false,
-  lead = false,
-  onClick,
-}: {
-  color: string
-  name: string
-  selected?: boolean
-  lead?: boolean
-  onClick?: () => void
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={lead ? "Lead Perspective" : undefined}
-      className={`flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[12px] font-medium transition-colors ${
-        onClick ? "hover:bg-[var(--hover)]" : "cursor-default"
-      }`}
-      style={
-        selected ? { background: "var(--node)", color: "#fff" } : { color }
-      }
-    >
-      {lead ? (
-        <Crown
-          size={12}
-          strokeWidth={2}
-          className="-rotate-12 shrink-0"
-          aria-label="Lead"
-          style={{ color: selected ? "#fff" : color }}
-        />
-      ) : (
-        <User
-          size={12}
-          strokeWidth={2}
-          className="shrink-0"
-          aria-hidden="true"
-          style={{ color: selected ? "#fff" : color }}
-        />
-      )}
-      {name}
-    </button>
-  )
-}
-
-export function ListRow({
-  disabled = false,
-  onClick,
-  children,
-  ...rest
-}: ButtonHTMLAttributes<HTMLButtonElement> & {
-  disabled?: boolean
-  onClick?: () => void
-  children: ReactNode
-}) {
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={onClick}
-      {...rest}
-      className="flex w-full items-center gap-2.5 rounded-lg border border-transparent px-2.5 py-2 text-left transition-colors not-disabled:hover:border-[var(--line-strong)] not-disabled:hover:bg-[var(--hover)] disabled:cursor-default"
-    >
-      {children}
-    </button>
-  )
-}
-
-type CheckRowProps = LabelHTMLAttributes<HTMLLabelElement> & {
-  checked: boolean
-  onToggle: () => void
-  disabled?: boolean
-}
-
-export function CheckRow({
-  checked,
-  onToggle,
-  children,
-  disabled = false,
-  ...rest
-}: CheckRowProps) {
-  return (
-    <label
-      {...rest}
-      className={`flex items-start gap-2.5 py-1 text-[13px] leading-snug ${
-        disabled
-          ? "cursor-default text-[var(--mute)]"
-          : "cursor-pointer text-[var(--ink-2)]"
-      }`}
-    >
-      <input
-        type="checkbox"
-        checked={checked}
-        disabled={disabled}
-        onChange={onToggle}
-        className="mt-0.5 size-3.5 shrink-0 accent-[var(--node)]"
-      />
-      {children}
-    </label>
-  )
-}
-

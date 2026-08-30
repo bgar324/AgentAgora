@@ -1,53 +1,16 @@
-"""Domain contracts for abstract-grounded, facet-led perspective deliberation."""
+"""Private and public contracts for the baseline focused study."""
 
 from datetime import UTC, datetime
-from enum import Enum
-from typing import Annotated, Any, Literal, Self
+from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
-
-from agora.schemas.deliberation import (
-    Contribution as CanonContribution,
-)
-from agora.schemas.deliberation import (
-    PanelReview as CanonPanelReview,
-)
-from agora.schemas.deliberation import (
-    PerspectiveState as CanonPerspectiveState,
-)
-from agora.schemas.deliberation import (
-    Proposal as CanonProposal,
-)
-from agora.schemas.deliberation import (
-    Refinement as CanonRefinement,
-)
-from agora.schemas.deliberation import (
-    Reflection as CanonReflection,
-)
-from agora.schemas.deliberation import (
-    Resolution as CanonResolution,
-)
-from agora.schemas.deliberation import (
-    Revision as CanonRevision,
-)
-from agora.schemas.deliberation import (
-    Suggestion as CanonSuggestion,
-)
-from agora.schemas.deliberation import (
-    Thread as CanonThread,
-)
-from agora.schemas.deliberation import (
-    WorkingDocument as CanonWorkingDocument,
-)
-from agora.schemas.panel import Observation as CanonObservation
+from pydantic import BaseModel, Field, model_validator
 
 Facet = Literal["scope", "explanation", "approach", "significance"]
 ResearchQuestion = Annotated[str, Field(min_length=1, max_length=4000)]
 RetrievalTier = Literal["answer", "problem", "candidate"]
 SearchQuery = Annotated[str, Field(min_length=1, max_length=500)]
 
-# Stable wire and display order. A Perspective always carries all four facets;
-# each deliberation round activates exactly one.
+# Stable wire and display order. A hidden Perspective profile carries all four.
 FACETS: list[Facet] = ["scope", "explanation", "approach", "significance"]
 
 PERSONA_COLORS = [
@@ -122,6 +85,9 @@ class Perspective(BaseModel):
     color: str
     facets: dict[Facet, FacetEvidence] = Field(default_factory=dict)
     sources: list[str] = Field(default_factory=list)
+    anchor_paper_id: str | None = None
+    related_paper_count: int = Field(default=0, ge=0)
+    cluster_id: str | None = None
     framing: FramingPosition | None = None
     summary: str = Field(default="", max_length=4000)
     evolved: bool = False
@@ -148,380 +114,6 @@ class ClusteringDiagnostics(BaseModel):
     cluster_sizes: list[int] = Field(default_factory=list)
     silhouette: float | None = None
     retrieval_tier_counts: dict[RetrievalTier, int] = Field(default_factory=dict)
-
-
-class HypothesisDev(BaseModel):
-    """One testable solution candidate for the research problem."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    hypothesis: str = Field(min_length=1, max_length=4000)
-
-
-HypothesisPart = Literal["hypothesis"]
-HypothesisConfirmationMode = Literal[
-    "apply_pending",
-    "edit_applied",
-    "reject_pending",
-]
-HypothesisDecision = Literal["accepted", "edited", "rejected"]
-
-
-class HypothesisVersion(BaseModel):
-    """An immutable, traceable hypothesis checkpoint in a workspace."""
-
-    id: str
-    workspace_id: str
-    investigation_id: str
-    parent_ids: list[str] = Field(default_factory=list)
-    steps: HypothesisDev
-    step_sources: dict[HypothesisPart, str] = Field(default_factory=dict)
-    source_kind: Literal["applied", "edit", "merge"] = "applied"
-    source_deliberation_id: str | None = None
-    source_round: int | None = None
-    archived: bool = False
-    created_at: datetime = Field(default_factory=utcnow)
-
-    @model_validator(mode="after")
-    def validate_ancestry(self) -> Self:
-        if len(set(self.parent_ids)) != len(self.parent_ids):
-            raise ValueError("hypothesis parent IDs must be unique")
-        if self.id in self.parent_ids:
-            raise ValueError("a hypothesis cannot be its own parent")
-        return self
-
-
-class TurnKind(str, Enum):
-    open = "open"
-    answer = "answer"
-    support = "support"
-    user = "user"
-    system = "system"
-    challenge = "challenge"
-    reply = "reply"
-
-
-class Turn(BaseModel):
-    id: int
-    agent_iid: int | None = None
-    agent_label: str = ""
-    role: Literal["lead", "other", "user", "system"] = "other"
-    kind: TurnKind
-    facet: Facet | None = None
-    text: str
-    citations: list[str] = Field(default_factory=list)
-    exchange_n: int | None = Field(default=None, ge=1)
-    reply_to_turn_id: int | None = None
-    relation: Literal["answer", "reply", "support", "challenge"] | None = None
-    assumption: str = ""
-    hypothesis_fragments: list[str] = Field(default_factory=list)
-
-
-class ThreadVerdict(BaseModel):
-    """Moderator finding for one scientific Thread.
-
-    ``facets`` is traceability metadata: it names the Perspective facets the
-    finding touches. It never constrains what the Thread may discuss.
-    """
-
-    facets: list[Facet] = Field(default_factory=list, max_length=4)
-    status: Literal["consensus", "disagreement", "unsettled"]
-    summary: str
-    proposed_shared_ground: str = ""
-    consensus: str = ""
-    disagreement: str = ""
-    unsettled: str = ""
-    supporting: list[str] = Field(default_factory=list)
-    contested_by: list[str] = Field(default_factory=list)
-    positions: dict[str, str] = Field(default_factory=dict)
-    evidence: dict[str, list[str]] = Field(default_factory=dict)
-
-
-class SharedGroundAssent(BaseModel):
-    agent_iid: int
-    agent_label: str
-    decision: Literal["accept", "qualify", "reject"]
-    reason: str = ""
-    challenge_turn_id: int | None = None
-    challenge: str = ""
-
-
-class ModeratorCheck(BaseModel):
-    exchange_n: int = Field(ge=1)
-    proposed_shared_ground: str
-    verdict: ThreadVerdict
-    assents: list[SharedGroundAssent] = Field(default_factory=list)
-    unanimous: bool = False
-
-    @model_validator(mode="after")
-    def validate_unanimous(self) -> Self:
-        expected = bool(self.proposed_shared_ground.strip()) and bool(self.assents)
-        expected = expected and all(
-            assent.decision == "accept" for assent in self.assents
-        )
-        if self.unanimous != expected:
-            raise ValueError("unanimous must match the recorded assents")
-        return self
-
-
-class DeliberationPoint(BaseModel):
-    facets: list[Facet] = Field(default_factory=list, max_length=4)
-    text: str
-    rationale: str = ""
-    perspective_names: list[str] = Field(default_factory=list)
-    citations: list[str] = Field(default_factory=list)
-
-
-class ThreadPerspectiveLink(BaseModel):
-    """Which fragments of one Perspective a Thread relates to (traceability)."""
-
-    perspective_name: str = Field(min_length=1, max_length=200)
-    facets: list[Facet] = Field(default_factory=list, max_length=4)
-
-
-class DeliberationThread(BaseModel):
-    """One scientific issue, disagreement, or open question under deliberation.
-
-    The ``question`` drives the discussion. ``related`` and ``facets`` are the
-    representation/traceability layer: they surface where Perspectives differ
-    and what changed afterward, but never determine the conversation.
-    """
-
-    id: str
-    title: str = Field(min_length=1, max_length=200)
-    question: str = Field(min_length=1, max_length=1000)
-    context: str = Field(default="", max_length=2000)
-    facets: list[Facet] = Field(default_factory=list, max_length=4)
-    related: list[ThreadPerspectiveLink] = Field(default_factory=list)
-    perspective_names: list[str] = Field(default_factory=list)
-    hypothesis_fragments: list[str] = Field(default_factory=list)
-    source_round: int | None = Field(default=None, ge=1)
-
-
-class RoundResolution(BaseModel):
-    summary: str = Field(
-        description=(
-            "Two or three sentences: how the discussion developed, what evidence "
-            "mattered, and the resulting conclusion."
-        ),
-        max_length=2000,
-    )
-    consensus_points: list[DeliberationPoint] = Field(default_factory=list)
-    disagreement_points: list[DeliberationPoint] = Field(default_factory=list)
-    unsettled_points: list[DeliberationPoint] = Field(default_factory=list)
-
-
-class FacetDistance(BaseModel):
-    facet: Facet
-    distance: float = Field(ge=0.0, le=2.0)
-    participant_count: int = Field(ge=0)
-
-
-class RoundMetrics(BaseModel):
-    method: str
-    before: list[FacetDistance] = Field(default_factory=list)
-    after: list[FacetDistance] = Field(default_factory=list)
-    overall_before: float | None = Field(default=None, ge=0.0, le=2.0)
-    overall_after: float | None = Field(default=None, ge=0.0, le=2.0)
-    delta: float | None = Field(default=None, ge=-2.0, le=2.0)
-    direction: Literal["convergent", "divergent", "stable", "insufficient"] = (
-        "insufficient"
-    )
-
-
-class FacetRevision(BaseModel):
-    facet: Facet
-    text: str
-
-
-class ParticipantReflection(BaseModel):
-    agent_iid: int
-    perspective_name: str
-    decision: Literal["unchanged", "revised"]
-    reason: str
-    revisions: list[FacetRevision] = Field(default_factory=list)
-
-
-class DeliberationRating(BaseModel):
-    divergent: int = Field(ge=1, le=7)
-    convergent: int = Field(ge=1, le=7)
-    note: str = Field(default="", max_length=1000)
-    submitted_at: datetime = Field(default_factory=utcnow)
-
-
-class DeliberationRound(BaseModel):
-    n: int
-    lead_iid: int
-    participant_iids: list[int] = Field(default_factory=list)
-    facets: list[Facet] = Field(default_factory=list, max_length=4)
-    thread_id: str | None = None
-    turns: list[Turn] = Field(default_factory=list)
-    verdict: ThreadVerdict | None = None
-    resolution: RoundResolution | None = None
-    reflections: list[ParticipantReflection] = Field(default_factory=list)
-    metrics: RoundMetrics | None = None
-    completed: bool = False
-    hypothesis_before: HypothesisDev | None = None
-    hypothesis_proposal: HypothesisDev | None = None
-    hypothesis_decision: HypothesisDecision | None = None
-    moderator_checks: list[ModeratorCheck] = Field(default_factory=list)
-    stop_reason: Literal["unanimous", "exchange_limit"] | None = None
-    resolution_decision: Literal["accepted", "edited", "kept_open"] | None = None
-    resolution_note: str = Field(default="", max_length=2000)
-
-
-QuestionStatus = Literal["open", "investigating", "addressed", "archived"]
-
-
-class RecommendedQuestion(BaseModel):
-    id: str = ""
-    question: ResearchQuestion
-    rationale: str = Field(max_length=4000)
-    source_kind: Literal["disagreement", "unsettled"]
-    source_point: str = Field(max_length=4000)
-    facets: list[Facet] = Field(default_factory=list)
-    source_round: int | None = Field(default=None, ge=1)
-    status: QuestionStatus = "open"
-    child_investigation_id: str | None = None
-    selected_for_followup: bool = False
-
-    @model_validator(mode="after")
-    def validate_status(self) -> Self:
-        if self.status == "open" and self.child_investigation_id is not None:
-            raise ValueError("an open question cannot already have a child")
-        if (
-            self.status in {"investigating", "addressed"}
-            and self.child_investigation_id is None
-        ):
-            raise ValueError(f"{self.status} questions require a child Investigation")
-        return self
-
-
-class DocumentSection(BaseModel):
-    """One resolved Thread rendered as a substantive research section."""
-
-    thread_id: str | None = None
-    title: str = Field(min_length=1, max_length=200)
-    hypothesis: str = Field(min_length=1, max_length=4000)
-    explanation: str = Field(default="", max_length=4000)
-
-
-class DeliberationDocument(BaseModel):
-    """The researcher-approved outcome of deliberation.
-
-    Resolved Threads contribute hypotheses and explanations; unresolved
-    scientific issues remain as open questions.
-    """
-
-    title: str = Field(min_length=1, max_length=4000)
-    sections: list[DocumentSection] = Field(default_factory=list)
-    open_questions: list[str] = Field(default_factory=list)
-
-
-class DeliberationCompletion(BaseModel):
-    archived_at: datetime = Field(default_factory=utcnow)
-    reason: Literal["completed", "restarted"] = "completed"
-    completed_at: datetime | None = None
-    final_hypothesis_version_id: str | None = None
-    round_count: int = Field(default=0, ge=0)
-    chat_count: int = Field(default=0, ge=0)
-    agent_iids: list[int] = Field(default_factory=list)
-    question_ids: list[str] = Field(default_factory=list)
-    lead_perspective_id: str | None = None
-    threads: list[DeliberationThread] = Field(default_factory=list)
-    baseline_hypothesis: HypothesisDev | None = None
-    selected_question_ids: list[str] = Field(default_factory=list)
-    document: DeliberationDocument | None = None
-    rating: DeliberationRating | None = None
-    rounds: list[DeliberationRound] = Field(default_factory=list)
-    recommended_questions: list[RecommendedQuestion] = Field(default_factory=list)
-    chat: list[Turn] = Field(default_factory=list)
-    revised_perspective: Perspective | None = None
-    hypothesis: HypothesisDev | None = None
-    applied_hypothesis_version_id: str | None = None
-    applied_hypothesis: HypothesisDev | None = None
-    hypothesis_confirmed: bool = False
-    no_agreement: bool = False
-
-    @model_validator(mode="after")
-    def validate_archive(self) -> Self:
-        if self.reason == "completed" and (
-            self.completed_at is None or self.final_hypothesis_version_id is None
-        ):
-            raise ValueError("a completed archive requires its final hypothesis")
-        if self.hypothesis_confirmed and (
-            self.hypothesis is None
-            or self.applied_hypothesis is None
-            or self.hypothesis != self.applied_hypothesis
-        ):
-            raise ValueError(
-                "a confirmed archived hypothesis must equal its applied hypothesis"
-            )
-        if self.rounds and self.round_count != len(self.rounds):
-            raise ValueError("archive round count must match its stored rounds")
-        if self.chat and self.chat_count != len(self.chat):
-            raise ValueError("archive chat count must match its stored chat")
-        return self
-
-
-class DeliberationState(BaseModel):
-    id: str
-    threads: list[DeliberationThread] = Field(default_factory=list)
-    agent_iids: list[int] = Field(default_factory=list)
-    lead_perspective_id: str | None = None
-    baseline_hypothesis: HypothesisDev | None = None
-    selected_question_ids: list[str] = Field(default_factory=list)
-    document: DeliberationDocument | None = None
-    rounds: list[DeliberationRound] = Field(default_factory=list)
-    revised_perspective: Perspective | None = None
-    hypothesis: HypothesisDev | None = None
-    applied_hypothesis: HypothesisDev | None = None
-    hypothesis_confirmed: bool = False
-    working_hypothesis_source_kind: Literal["applied", "edit"] | None = None
-    working_hypothesis_source_round: int | None = Field(default=None, ge=1)
-    no_agreement: bool = False
-    recommended_questions: list[RecommendedQuestion] = Field(default_factory=list)
-    questions_generated: bool = False
-    chat: list[Turn] = Field(default_factory=list)
-    completed_at: datetime | None = None
-    final_hypothesis_version_id: str | None = None
-    rating: DeliberationRating | None = None
-    completion_history: list[DeliberationCompletion] = Field(default_factory=list)
-
-    @model_validator(mode="after")
-    def validate_hypothesis_state(self) -> Self:
-        if self.completed_at is None and (
-            self.final_hypothesis_version_id is not None or self.rating is not None
-        ):
-            raise ValueError(
-                "final hypothesis and rating require a completed deliberation"
-            )
-        if self.completed_at is not None and self.final_hypothesis_version_id is None:
-            raise ValueError("a completed deliberation requires a final hypothesis")
-        if self.hypothesis_confirmed and (
-            self.hypothesis is None
-            or self.applied_hypothesis is None
-            or self.hypothesis != self.applied_hypothesis
-        ):
-            raise ValueError("a confirmed hypothesis must equal the applied hypothesis")
-        source = (
-            self.working_hypothesis_source_kind,
-            self.working_hypothesis_source_round,
-        )
-        if any(source) and (not all(source) or self.applied_hypothesis is None):
-            raise ValueError(
-                "unsaved hypothesis provenance requires an applied working hypothesis"
-            )
-        return self
-
-
-class AgentState(BaseModel):
-    iid: int
-    perspective_id: str
-    label: str
-    facets: dict[Facet, FacetEvidence] = Field(default_factory=dict)
-    facet_version: int = 1
-    hypothesis: HypothesisDev | None = None
 
 
 class SuggestedQuery(BaseModel):
@@ -556,10 +148,6 @@ class QuestionReach(BaseModel):
     reached: bool = False
 
 
-DialogueStage = Literal["opening", "selection", "deliberation"]
-DialogueWaiting = Literal["proposal_selection", "resolution_decision"]
-
-
 NotepadPart = Literal["framing", "prior", "method", "expected"]
 
 # Youngseung's baseline notepad: the researcher's position in four parts,
@@ -582,32 +170,29 @@ class NotepadDoc(BaseModel):
     expected: str = Field(default="", max_length=4000)
 
 
-class NotepadProposal(BaseModel):
-    """A panel-proposed change to one notepad part, awaiting the researcher.
+AgendaPhase = Literal["feedback", "comparison", "complete"]
+NotepadTurnKind = Literal[
+    "feedback",
+    "comparison",
+    "researcher",
+    "direct_reply",
+    "summary",
+    "system",
+]
 
-    Mirrors the canonical Suggestion decision shape (accept / edit /
-    reject) so the deliberation record stays comparable, while targeting a
-    notepad part rather than a document section.
-    """
 
-    id: str
-    version_id: str
-    part: NotepadPart
-    author_id: str
-    author_label: str = ""
-    current_text: str = Field(default="", max_length=4000)
-    proposed_text: str = Field(max_length=4000)
-    # What this proposal contributes, apart from the text it was raised
-    # against. The notepad is editable while a proposal is pending, so
-    # approval re-bases the addition onto the live wording instead of
-    # restoring a stale absolute string over the researcher's newer edit.
-    addition: str = Field(default="", max_length=4000)
-    reason: str = Field(default="", max_length=2000)
-    citations: list[str] = Field(default_factory=list)
-    status: Literal["pending", "accepted", "edited", "rejected"] = "pending"
-    decided_text: str | None = Field(default=None, max_length=4000)
-    decision_reason: str = Field(default="", max_length=2000)
-    created_at: datetime = Field(default_factory=utcnow)
+class NotepadAgenda(BaseModel):
+    review_n: int = Field(default=1, ge=1)
+    part: NotepadPart = "framing"
+    phase: AgendaPhase = "feedback"
+    subject_text: str = Field(default="", max_length=4000)
+    participant_ids: list[str] = Field(default_factory=list)
+    feedback_done_ids: list[str] = Field(default_factory=list)
+    comparison_done_ids: list[str] = Field(default_factory=list)
+    comparison_cycle: int = Field(default=1, ge=1)
+    turn_budget: int = Field(default=4, ge=1, le=8)
+    turns_emitted: int = Field(default=0, ge=0)
+    completed_at: datetime | None = None
 
 
 class NotepadVersion(BaseModel):
@@ -616,32 +201,44 @@ class NotepadVersion(BaseModel):
     id: str
     name: str = Field(min_length=1, max_length=40)
     doc: NotepadDoc = Field(default_factory=NotepadDoc)
+    agenda: NotepadAgenda = Field(default_factory=NotepadAgenda)
+    visible_turn_start: int = Field(default=0, ge=0)
     created_from: str | None = None
     created_at: datetime = Field(default_factory=utcnow)
 
 
 class NotepadTurn(BaseModel):
-    """One line of the group chat."""
+    """One version-scoped line of the baseline discussion."""
 
     id: str
+    version_id: str
+    kind: NotepadTurnKind
     role: Literal["researcher", "perspective", "system", "summary"]
     author_id: str | None = None
     author_label: str = ""
     text: str = Field(default="", max_length=8000)
     citations: list[str] = Field(default_factory=list)
+    review_n: int | None = Field(default=None, ge=1)
+    part: NotepadPart | None = None
+    comparison_cycle: int | None = Field(default=None, ge=1)
+    reply_to_turn_id: str | None = None
     created_at: datetime = Field(default_factory=utcnow)
 
 
+class NotepadFinalSnapshot(BaseModel):
+    versions: list[NotepadVersion]
+    finished_at: datetime = Field(default_factory=utcnow)
+
+
 class NotepadState(BaseModel):
-    """The group-chat stage: notepad versions, conversation, and roster."""
+    """Versioned draft, baseline discussion, and terminal study snapshot."""
 
     id: str
     versions: list[NotepadVersion] = Field(default_factory=list)
     active_version_id: str | None = None
     turns: list[NotepadTurn] = Field(default_factory=list)
-    proposals: list[NotepadProposal] = Field(default_factory=list)
     in_chat: list[str] = Field(default_factory=list)
-    turn_cursor: int = 0
+    final_snapshot: NotepadFinalSnapshot | None = None
 
     def active_version(self) -> NotepadVersion | None:
         for version in self.versions:
@@ -649,73 +246,17 @@ class NotepadState(BaseModel):
                 return version
         return self.versions[0] if self.versions else None
 
-    def pending_proposals(self) -> list[NotepadProposal]:
-        return [item for item in self.proposals if item.status == "pending"]
-
-
-class DialogueState(BaseModel):
-    """Canonical Perspectra-style deliberation state for one Investigation.
-
-    Every collection holds objects from ``agora.schemas.deliberation``
-    verbatim, so the engine, the wire format, and persistence share one
-    contract. Versioned objects are append-only: the latest version of an
-    id wins, and history stays readable.
-    """
-
-    id: str
-    stage: DialogueStage = "opening"
-    waiting_for: DialogueWaiting | None = None
-    active_thread_id: str | None = None
-    perspective_states: list[CanonPerspectiveState] = Field(default_factory=list)
-    observations: list[CanonObservation] = Field(default_factory=list)
-    proposals: list[CanonProposal] = Field(default_factory=list)
-    reviews: list[CanonPanelReview] = Field(default_factory=list)
-    refinements: list[CanonRefinement] = Field(default_factory=list)
-    selected_proposal_ids: list[str] = Field(default_factory=list)
-    document: CanonWorkingDocument | None = None
-    threads: list[CanonThread] = Field(default_factory=list)
-    contributions: list[CanonContribution] = Field(default_factory=list)
-    resolutions: list[CanonResolution] = Field(default_factory=list)
-    suggestions: list[CanonSuggestion] = Field(default_factory=list)
-    revisions: list[CanonRevision] = Field(default_factory=list)
-    reflections: list[CanonReflection] = Field(default_factory=list)
-
-    def latest_thread(self, thread_id: str) -> CanonThread | None:
-        for thread in reversed(self.threads):
-            if thread.id == thread_id:
-                return thread
-        return None
-
-    def latest_resolution(self, resolution_id: str) -> CanonResolution | None:
-        for resolution in reversed(self.resolutions):
-            if resolution.id == resolution_id:
-                return resolution
-        return None
-
-    def current_threads(self) -> list[CanonThread]:
-        latest: dict[str, CanonThread] = {}
-        for thread in self.threads:
-            latest[thread.id] = thread
-        return list(latest.values())
-
 
 class SessionState(BaseModel):
-    """Full wire state for one focused-panel Investigation."""
+    """Private aggregate for one baseline study."""
 
     id: str
     workspace_id: str
     created_at: datetime = Field(default_factory=utcnow)
-    demo: bool = True
+    demo: bool = False
     problem: str = Field(default="", max_length=4000)
     research_questions: list[ResearchQuestion] = Field(default_factory=list)
-    parent_investigation_id: str | None = None
-    origin_question_id: str | None = None
-    origin_question: ResearchQuestion | None = None
-    integrated_into_parent_at: datetime | None = None
     position: NotepadDoc = Field(default_factory=NotepadDoc)
-    arm: Literal["baseline", "guided"] = "guided"
-    applied_hypothesis: HypothesisDev | None = None
-    applied_hypothesis_version_id: str | None = None
     suggested_queries: list[SuggestedQuery] = Field(default_factory=list)
     searched_queries: list[SearchQuery] = Field(default_factory=list)
     question_reach: list[QuestionReach] = Field(default_factory=list)
@@ -723,105 +264,112 @@ class SessionState(BaseModel):
     clusters: list[ClusterCard] = Field(default_factory=list)
     unassigned_paper_ids: list[str] = Field(default_factory=list)
     perspectives: list[Perspective] = Field(default_factory=list)
-    agents: list[AgentState] = Field(default_factory=list)
-    deliberations: list[DeliberationState] = Field(default_factory=list)
-    dialogue: DialogueState | None = None
+    perspective_sequence: int = Field(default=0, ge=0)
     notepad: NotepadState | None = None
     searched: bool = False
     clustering: ClusteringDiagnostics | None = None
 
     @model_validator(mode="after")
-    def validate_lineage(self) -> Self:
-        if (self.applied_hypothesis is None) != (
-            self.applied_hypothesis_version_id is None
-        ):
-            raise ValueError(
-                "applied hypothesis and version ID must be present together"
-            )
-        origin = (self.origin_question_id, self.origin_question)
-        if self.parent_investigation_id is None and any(origin):
-            raise ValueError("a root Investigation cannot have an origin question")
-        if self.parent_investigation_id is not None and not all(origin):
-            raise ValueError("a child Investigation requires its origin question")
-        if (
-            self.integrated_into_parent_at is not None
-            and self.parent_investigation_id is None
-        ):
-            raise ValueError("only a child Investigation can be integrated")
+    def validate_paper_partition(self) -> Self:
         known_papers = {paper.id for paper in self.papers}
         unassigned = set(self.unassigned_paper_ids)
         if len(unassigned) != len(self.unassigned_paper_ids):
             raise ValueError("unassigned paper IDs must be unique")
         if not unassigned <= known_papers:
             raise ValueError("unassigned IDs must reference retrieved papers")
-        clustered = {
+        clustered_list = [
             paper_id for cluster in self.clusters for paper_id in cluster.paper_ids
-        }
+        ]
+        clustered = set(clustered_list)
+        if len(clustered) != len(clustered_list):
+            raise ValueError("a paper cannot belong to more than one cluster")
+        if not clustered <= known_papers:
+            raise ValueError("cluster IDs must reference retrieved papers")
         if unassigned & clustered:
             raise ValueError("a paper cannot be clustered and unassigned")
+        if self.searched and clustered | unassigned != known_papers:
+            raise ValueError("every retrieved paper must belong to a cluster")
+        if any(
+            perspective.anchor_paper_id not in known_papers
+            for perspective in self.perspectives
+        ):
+            raise ValueError("Perspective anchors must reference retrieved papers")
         return self
-
-
-class InvestigationSummary(BaseModel):
-    id: str
-    parent_investigation_id: str | None = None
-    origin_question_id: str | None = None
-    origin_question: str | None = None
-    created_at: datetime
-    searched: bool
-    paper_count: int
-    perspective_count: int
-    completed_rounds: int
-    open_question_count: int
-    applied_hypothesis_version_id: str | None = None
 
 
 class WorkspaceState(BaseModel):
     id: str
     created_at: datetime = Field(default_factory=utcnow)
     revision: int = Field(default=0, ge=0)
-    schema_version: Literal[6] = 6
+    schema_version: Literal[7]
     problem: str = Field(max_length=4000)
     root_investigation_id: str
     active_investigation_id: str
     investigation_ids: list[str] = Field(default_factory=list)
-    promoted_hypothesis_version_id: str | None = None
-    hypothesis_versions: list[HypothesisVersion] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def validate_graph(self) -> Self:
-        investigation_ids = set(self.investigation_ids)
-        if len(investigation_ids) != len(self.investigation_ids):
-            raise ValueError("Investigation IDs must be unique")
-        if self.root_investigation_id not in investigation_ids:
-            raise ValueError("workspace root must belong to the workspace")
-        if self.active_investigation_id not in investigation_ids:
-            raise ValueError("active Investigation must belong to the workspace")
-        versions = {version.id: version for version in self.hypothesis_versions}
-        if len(versions) != len(self.hypothesis_versions):
-            raise ValueError("hypothesis version IDs must be unique")
-        for version in self.hypothesis_versions:
-            if version.workspace_id != self.id:
-                raise ValueError("hypothesis version belongs to another workspace")
-            if version.investigation_id not in investigation_ids:
-                raise ValueError("hypothesis version owner is outside the workspace")
-            if any(parent_id not in versions for parent_id in version.parent_ids):
-                raise ValueError("hypothesis parent is missing from the workspace")
-            if any(
-                source_id not in versions for source_id in version.step_sources.values()
-            ):
-                raise ValueError("hypothesis step source is missing from the workspace")
-        if self.promoted_hypothesis_version_id is not None:
-            promoted = versions.get(self.promoted_hypothesis_version_id)
-            if promoted is None or promoted.archived:
-                raise ValueError("promoted hypothesis must exist and be active")
+    def validate_single_study(self) -> Self:
+        if self.investigation_ids != [self.root_investigation_id]:
+            raise ValueError("a baseline workspace contains exactly one study")
+        if self.active_investigation_id != self.root_investigation_id:
+            raise ValueError("the baseline study must be active")
         return self
 
 
+class PaperView(BaseModel):
+    """Participant-visible paper metadata; internal retrieval fields stay hidden."""
+
+    id: str
+    title: str
+    abstract: str | None = None
+    abstract_sentences: list[str] = Field(default_factory=list)
+    year: int | None = None
+    venue: str | None = None
+    authors: list[str] = Field(default_factory=list)
+    tldr: str | None = None
+    open_access_pdf_url: str | None = None
+
+
+class PerspectiveView(BaseModel):
+    """Participant-visible identity and anchor, never the hidden profile."""
+
+    id: str
+    name: str
+    color: str
+    summary: str = ""
+    anchor_paper_id: str | None = None
+    related_paper_count: int = Field(default=0, ge=0)
+
+
+class SuggestedQueryView(BaseModel):
+    query: SearchQuery
+    rationale: str = ""
+
+
+class SessionView(BaseModel):
+    id: str
+    workspace_id: str
+    created_at: datetime
+    problem: str
+    position: NotepadDoc
+    suggested_queries: list[SuggestedQueryView] = Field(default_factory=list)
+    searched_queries: list[SearchQuery] = Field(default_factory=list)
+    papers: list[PaperView] = Field(default_factory=list)
+    perspectives: list[PerspectiveView] = Field(default_factory=list)
+    notepad: NotepadState | None = None
+    searched: bool = False
+
+
+class WorkspaceSummary(BaseModel):
+    id: str
+    created_at: datetime
+    revision: int
+    problem: str
+
+
 class WorkspaceView(BaseModel):
-    workspace: WorkspaceState
-    investigations: list[InvestigationSummary]
-    active: SessionState
+    workspace: WorkspaceSummary
+    active: SessionView
 
 
 # ---------------------------------------------------------------------------
@@ -887,100 +435,13 @@ class FacetExtraction(BaseModel):
 
 class Statement(BaseModel):
     text: str = Field(description="One short spoken turn, 1-3 sentences.")
-    assumption: str = Field(
-        default="",
-        description="The assumption or causal belief supporting this turn.",
-    )
-    relation: Literal["answer", "reply", "support", "challenge"] = "answer"
-    hypothesis_fragments: list[str] = Field(
-        default_factory=list,
-        description="Exact excerpts from the current hypothesis addressed by the turn.",
-    )
+    relation: Literal["answer", "reply"] = "answer"
     citations: list[str] = Field(
         default_factory=list,
         description="Paper IDs or titles supporting the statement.",
     )
 
 
-class SupportSearch(BaseModel):
-    query: str = Field(description="A literature-search query for the claim.")
-
-
-class SupportPassage(BaseModel):
-    passage: str = Field(description="The passage worth citing, verbatim.")
-    reason: str = Field(description="Why this passage supports the statement.")
-
-
-class ThreadVerdictDraft(BaseModel):
-    status: Literal["consensus", "disagreement", "unsettled"]
-    summary: str
-    proposed_shared_ground: str = ""
-    consensus: str = ""
-    disagreement: str = ""
-    unsettled: str = ""
-    supporting: list[str] = Field(default_factory=list)
-    contested_by: list[str] = Field(default_factory=list)
-
-
-class ThreadVerdictOutput(BaseModel):
-    verdict: ThreadVerdictDraft
-
-
-class SharedGroundAssentDraft(BaseModel):
-    decision: Literal["accept", "qualify", "reject"]
-    reason: str
-    challenge_turn_id: int | None = None
-    challenge: str = ""
-
-
-class DeliberationThreadDraft(BaseModel):
-    title: str
-    question: str
-    context: str
-    related: list[ThreadPerspectiveLink] = Field(
-        default_factory=list,
-        description="Per-Perspective fragments this Thread relates to.",
-    )
-    facets: list[Facet] = Field(default_factory=list, max_length=4)
-    perspective_names: list[str] = Field(default_factory=list)
-    hypothesis_fragments: list[str] = Field(default_factory=list)
-
-
-class DeliberationThreads(BaseModel):
-    threads: list[DeliberationThreadDraft] = Field(default_factory=list)
-
-
-class DocumentSectionDraft(BaseModel):
-    thread_title: str = Field(description="The resolved Thread's topic title.")
-    hypothesis: str = Field(description="The hypothesis this Thread supports.")
-    explanation: str = Field(
-        description="Why the hypothesis is warranted, without the transcript."
-    )
-
-
-class DocumentDraft(BaseModel):
-    sections: list[DocumentSectionDraft] = Field(default_factory=list)
-    open_questions: list[str] = Field(default_factory=list)
-
-
-class ReflectionDraft(BaseModel):
-    decision: Literal["unchanged", "revised"]
-    reason: str
-    revisions: list[FacetRevision] = Field(default_factory=list)
-
-
-class QuestionRecommendations(BaseModel):
-    questions: list[RecommendedQuestion] = Field(default_factory=list)
-
-
-class HypothesisSteps(BaseModel):
-    steps: HypothesisDev
-
-
 class ChatReply(BaseModel):
     text: str
     citations: list[str] = Field(default_factory=list)
-
-
-def session_snapshot(state: SessionState) -> dict[str, Any]:
-    return state.model_dump(mode="json")

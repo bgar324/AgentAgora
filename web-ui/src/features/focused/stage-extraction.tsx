@@ -5,7 +5,11 @@ import { Check, ChevronDown } from "lucide-react"
 
 import { useFocusedPanel } from "@/hooks/use-focused"
 import { useFocusedStore } from "@/store/focused"
-import { NOTEPAD_LABELS, NOTEPAD_PARTS } from "@/types/focused"
+import {
+  MAX_PERSPECTIVES,
+  NOTEPAD_LABELS,
+  NOTEPAD_PARTS,
+} from "@/types/focused"
 import type { ExpPaper } from "@/types/focused"
 
 import { Button, EmptyLine, ModalShell, SectionLabel, Spinner } from "./ui"
@@ -25,8 +29,6 @@ export function StageExtraction() {
     runSearch,
     generatePerspective,
     removePerspective,
-    updateBrief,
-    switchInvestigation,
   } = useFocusedPanel()
   const [searchError, setSearchError] = useState<string | null>(null)
   const [buildError, setBuildError] = useState<string | null>(null)
@@ -43,11 +45,10 @@ export function StageExtraction() {
 
   if (!session) return null
 
-  const integrated = session.integrated_into_parent_at !== null
-  const parentInvestigationId = session.parent_investigation_id
   const hasPendingPerspectives = session.perspectives.some((perspective) =>
     perspective.id.startsWith("optimistic:"),
   )
+  const atPerspectiveLimit = session.perspectives.length >= MAX_PERSPECTIVES
   const queryOptions = session.suggested_queries.slice(0, 5)
   const selectedQueries = queryOptions
     .filter(({ query }) => picked.includes(query))
@@ -66,7 +67,6 @@ export function StageExtraction() {
   }
 
   const retrySearch = async () => {
-    await updateBrief(session.problem, session.research_questions)
     const refreshed = await suggestQueries()
     await runSearch(refreshed.suggested_queries.map(({ query }) => query))
   }
@@ -83,10 +83,10 @@ export function StageExtraction() {
     setBuildError(null)
     setBuildingPaperId(selectedPaper.id)
     try {
-      await generatePerspective(
-        { paperId: selectedPaper.id },
-        { name: job, description },
-      )
+      await generatePerspective(selectedPaper.id, {
+        name: job,
+        description,
+      })
       setSelectedPaperId(null)
       setJob("")
       setDescription("")
@@ -118,40 +118,9 @@ export function StageExtraction() {
 
   return (
     <div className="ep-fade-in flex min-h-0 flex-1 flex-col">
-      {parentInvestigationId && (
-        <div className="ep-card-enter mx-4 mt-4 flex flex-col gap-3 rounded-lg border border-[var(--line)] bg-[var(--panel)] px-4 py-3 sm:mx-6 sm:flex-row sm:items-center">
-          <div className="min-w-0 flex-1">
-            <div className="text-[11px] font-medium text-[var(--ink)]">
-              Research branch
-            </div>
-            <p className="mt-0.5 text-[11px] leading-relaxed text-[var(--ink-2)]">
-              {integrated
-                ? "This branch has already been added to the parent and is read-only."
-                : `Started from “${session.origin_question}”. Build Perspectives from fresh papers, then return to the panel.`}
-            </p>
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={busy !== null || hasPendingPerspectives}
-            onClick={() =>
-              void act(() => switchInvestigation(parentInvestigationId))
-            }
-            className="shrink-0 self-start sm:self-auto"
-          >
-            {busy === "Opening Investigation" ? (
-              <>
-                <Spinner /> Returning…
-              </>
-            ) : (
-              "Back to panel"
-            )}
-          </Button>
-        </div>
-      )}
 
       <main
-        className="grid min-h-0 flex-1 grid-cols-1 gap-3 p-4 lg:max-h-[calc(100dvh-49px)] lg:grid-cols-[minmax(250px,0.82fr)_minmax(320px,1.18fr)_minmax(290px,1fr)] lg:overflow-hidden lg:px-6 lg:py-5"
+        className="grid min-h-0 flex-1 grid-cols-1 gap-3 p-4 lg:max-h-[calc(100dvh-49px)] lg:grid-cols-[minmax(250px,0.82fr)_minmax(320px,1.18fr)_minmax(290px,1fr)] lg:grid-rows-[minmax(0,1fr)] lg:overflow-hidden lg:px-6 lg:py-5"
         data-testid="paper-workflow"
       >
         <section
@@ -190,7 +159,7 @@ export function StageExtraction() {
               <Button
                 variant="primary"
                 size="sm"
-                disabled={busy !== null || integrated}
+                disabled={busy !== null}
                 onClick={() => void act(suggestQueries)}
                 className="mt-3 w-full"
               >
@@ -256,7 +225,7 @@ export function StageExtraction() {
                 variant="primary"
                 size="sm"
                 disabled={
-                  selectedQueries.length === 0 || busy !== null || integrated
+                  selectedQueries.length === 0 || busy !== null
                 }
                 onClick={() => void act(() => runSearch(selectedQueries))}
                 className="mt-1 w-full"
@@ -324,7 +293,7 @@ export function StageExtraction() {
                 <Button
                   variant="outline"
                   size="sm"
-                  disabled={busy !== null || integrated}
+                  disabled={busy !== null}
                   onClick={() => void act(retrySearch)}
                 >
                   {busy !== null ? (
@@ -342,9 +311,7 @@ export function StageExtraction() {
                   const abstract = paperAbstract(paper)
                   const open = openPaperId === paper.id
                   const built = session.perspectives.some(
-                    (perspective) =>
-                      perspective.origin === `paper:${paper.id}` &&
-                      !perspective.evolved,
+                    (perspective) => perspective.anchor_paper_id === paper.id,
                   )
                   return (
                     <article
@@ -389,8 +356,8 @@ export function StageExtraction() {
                             disabled={
                               !abstract ||
                               built ||
-                              integrated ||
                               busy !== null ||
+                              atPerspectiveLimit ||
                               buildingPaperId !== null
                             }
                             onClick={() => carryPaper(paper)}
@@ -428,7 +395,7 @@ export function StageExtraction() {
                     value={job}
                     onChange={(event) => setJob(event.target.value)}
                     maxLength={200}
-                    disabled={buildingPaperId !== null || integrated}
+                    disabled={buildingPaperId !== null}
                     className="field mt-1 w-full px-3 py-2 text-[12.5px]"
                   />
                 </label>
@@ -441,7 +408,7 @@ export function StageExtraction() {
                     onChange={(event) => setDescription(event.target.value)}
                     maxLength={2000}
                     rows={8}
-                    disabled={buildingPaperId !== null || integrated}
+                    disabled={buildingPaperId !== null}
                     className="field mt-1 w-full resize-y px-3 py-2 text-[12px] leading-relaxed"
                   />
                 </label>
@@ -452,8 +419,8 @@ export function StageExtraction() {
                     !job.trim() ||
                     !description.trim() ||
                     buildingPaperId !== null ||
-                    busy !== null ||
-                    integrated
+                    atPerspectiveLimit ||
+                    busy !== null
                   }
                   onClick={() => void buildPerspective()}
                   className="mt-3 w-full"
@@ -482,7 +449,7 @@ export function StageExtraction() {
             <div className="flex items-baseline justify-between">
               <SectionLabel>Built Perspectives</SectionLabel>
               <span className="text-[11px] text-[var(--mute)]">
-                {session.perspectives.length}
+                {session.perspectives.length} / {MAX_PERSPECTIVES}
               </span>
             </div>
             {session.perspectives.length === 0 ? (
@@ -519,7 +486,6 @@ export function StageExtraction() {
                           }}
                           disabled={
                             busy !== null ||
-                            integrated ||
                             hasPendingPerspectives
                           }
                           aria-label={`Remove ${perspective.name}`}
@@ -534,24 +500,26 @@ export function StageExtraction() {
                         <span className="inline-flex items-center gap-1.5">
                           <Spinner /> Adding…
                         </span>
-                      ) : perspective.sources.length > 0 ? (
-                        perspective.sources.map((sourceId, index) => {
-                          const source = session.papers.find(
-                            (paper) => paper.id === sourceId,
-                          )
-                          return (
-                            <span key={sourceId}>
-                              {index > 0 && ", "}
-                              <button
-                                type="button"
-                                onClick={() => openPaperSet(sourceId)}
-                                className="underline decoration-[var(--line-strong)] underline-offset-2 hover:text-[var(--ink-2)]"
-                              >
-                                {source?.title ?? sourceId}
-                              </button>
-                            </span>
-                          )
-                        })
+                      ) : perspective.anchor_paper_id ? (
+                        <span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              openPaperSet(perspective.anchor_paper_id)
+                            }
+                            className="underline decoration-[var(--line-strong)] underline-offset-2 hover:text-[var(--ink-2)]"
+                          >
+                            {session.papers.find(
+                              (paper) =>
+                                paper.id === perspective.anchor_paper_id,
+                            )?.title ?? "Anchor paper"}
+                          </button>
+                          {` · ${perspective.related_paper_count} related ${
+                            perspective.related_paper_count === 1
+                              ? "paper"
+                              : "papers"
+                          }`}
+                        </span>
                       ) : (
                         "Source pending"
                       )}

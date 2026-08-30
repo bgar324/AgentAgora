@@ -1,4 +1,4 @@
-"""Supabase-backed aggregate snapshots for focused workspaces."""
+"""Supabase-backed aggregate snapshots for baseline studies."""
 
 from __future__ import annotations
 
@@ -9,10 +9,8 @@ from threading import Lock
 from typing import Any
 
 from postgrest import ReturnMethod
-from postgrest.exceptions import APIError
 from pydantic import ValidationError
 
-from agora.focused.migrations import LEGACY_SCHEMA_VERSION, migrate_v5_payloads
 from agora.focused.models import SessionState, WorkspaceState
 from agora.focused.persistence import FocusedPersistence, PersistenceConflict
 
@@ -20,7 +18,6 @@ logger = logging.getLogger(__name__)
 
 SNAPSHOT_TABLE = "focused_workspace_snapshots"
 QUARANTINE_TABLE = "focused_workspace_quarantine"
-ARCHIVE_TABLE = "focused_workspace_archives"
 
 
 class SupabaseFocusedPersistence:
@@ -86,10 +83,6 @@ class SupabaseFocusedPersistence:
         if workspace.revision != revision:
             raise ValueError("workspace row revision does not match payload")
         FocusedPersistence._validate_membership(workspace, investigations)
-        by_id = {investigation.id: investigation for investigation in investigations}
-        lineage_error = FocusedPersistence._lineage_error(workspace, by_id)
-        if lineage_error:
-            raise ValueError(lineage_error)
         return workspace, investigations
 
     def _quarantine(self, row: Mapping[str, Any], error: Exception) -> None:
@@ -122,66 +115,6 @@ class SupabaseFocusedPersistence:
             "Quarantined invalid focused workspace %s: %s", workspace_id, reason
         )
 
-    def _migrate_legacy_row(self, row: Mapping[str, Any]) -> dict[str, Any]:
-        workspace_id = str(row.get("workspace_id") or "")
-        revision = row.get("revision")
-        payload = row.get("payload")
-        if not workspace_id or not isinstance(revision, int):
-            raise ValueError("cannot migrate a snapshot without valid identity")
-        if not isinstance(payload, Mapping):
-            raise TypeError("snapshot payload must be an object")
-        workspace_payload = payload.get("workspace")
-        raw_investigations = payload.get("investigations")
-        if not isinstance(workspace_payload, Mapping) or not isinstance(
-            raw_investigations, list
-        ):
-            raise TypeError("snapshot aggregate has an invalid shape")
-        investigations = {
-            str(investigation.get("id") or ""): dict(investigation)
-            for investigation in raw_investigations
-            if isinstance(investigation, Mapping)
-        }
-        workspace, migrated_investigations, changed = migrate_v5_payloads(
-            dict(workspace_payload),
-            investigations,
-        )
-        if not changed:
-            return dict(row)
-
-        self._client.table(ARCHIVE_TABLE).upsert(
-            {
-                "workspace_id": workspace_id,
-                "schema_version": LEGACY_SCHEMA_VERSION,
-                "revision": revision,
-                "payload": dict(payload),
-                "archived_at": datetime.now(UTC).isoformat(),
-            },
-            on_conflict="workspace_id,schema_version",
-        ).execute()
-        migrated_payload = {
-            "workspace": workspace,
-            "investigations": list(migrated_investigations.values()),
-        }
-        response = (
-            self._client.table(SNAPSHOT_TABLE)
-            .update(
-                {"payload": migrated_payload},
-                returning=ReturnMethod.representation,
-            )
-            .eq("workspace_id", workspace_id)
-            .eq("revision", revision)
-            .execute()
-        )
-        if len(response.data or []) != 1:
-            raise PersistenceConflict(
-                f"workspace {workspace_id} changed during schema migration"
-            )
-        return {
-            "workspace_id": workspace_id,
-            "revision": revision,
-            "payload": migrated_payload,
-        }
-
     def load(self) -> tuple[list[WorkspaceState], list[SessionState]]:
         with self._lock:
             rows = (
@@ -194,25 +127,6 @@ class SupabaseFocusedPersistence:
             workspaces: list[WorkspaceState] = []
             investigations: list[SessionState] = []
             for row in rows:
-                try:
-                    row = self._migrate_legacy_row(row)
-                except APIError as error:
-                    # DDL for the archive table has not been applied to this
-                    # Supabase project. Leave the stored snapshot untouched
-                    # and keep the service up; the workspace returns after
-                    # the migration below runs and the service restarts.
-                    logger.error(
-                        "schema migration blocked for workspace %s: %s — "
-                        "apply supabase/migrations/"
-                        "20260825220000_focused_workspace_archives.sql "
-                        "and restart",
-                        row.get("workspace_id"),
-                        error,
-                    )
-                    continue
-                except (ValueError, TypeError, PersistenceConflict) as error:
-                    self._quarantine(row, error)
-                    continue
                 try:
                     workspace, states = self._parse_row(row)
                 except (ValidationError, ValueError, TypeError) as error:

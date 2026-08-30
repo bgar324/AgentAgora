@@ -10,7 +10,6 @@
     "test:e2e": "node scripts/run-e2e.mjs"
   },
   "dependencies": {
-    "@xyflow/react": "^12.10.2",
     "lucide-react": "^0.468.0",
     "next": "16.2.6",
     "react": "19.2.4",

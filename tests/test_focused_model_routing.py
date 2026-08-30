@@ -40,8 +40,7 @@ def routes() -> FocusedModelSettings:
     [
         (FocusedTask.assess_question_papers, "low", 6_000),
         (FocusedTask.suggest_queries, "low", 2_000),
-        (FocusedTask.open_statement, "medium", 2_000),
-        (FocusedTask.summarize_thread, "high", 4_000),
+        (FocusedTask.review_draft_element, "medium", 2_000),
     ],
 )
 def test_provider_routes_tasks_to_requested_models(task, effort, max_tokens) -> None:
