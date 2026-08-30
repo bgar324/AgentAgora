@@ -1,8 +1,7 @@
-"""SQLite snapshots for focused workspaces and their Investigations."""
+"""SQLite revisioned snapshots for baseline studies."""
 
 from __future__ import annotations
 
-import json
 import logging
 import sqlite3
 from datetime import UTC, datetime
@@ -11,7 +10,6 @@ from typing import Protocol
 
 from pydantic import ValidationError
 
-from agora.focused.migrations import LEGACY_SCHEMA_VERSION, migrate_v5_payloads
 from agora.focused.models import SessionState, WorkspaceState
 
 logger = logging.getLogger(__name__)
@@ -153,141 +151,8 @@ class FocusedPersistence:
                 reason,
             )
 
-    @staticmethod
-    def _lineage_error(
-        workspace: WorkspaceState,
-        investigations: dict[str, SessionState],
-    ) -> str | None:
-        ids = set(workspace.investigation_ids)
-        root = investigations[workspace.root_investigation_id]
-        if root.parent_investigation_id is not None:
-            return "workspace root cannot have a parent"
-        for investigation_id in ids:
-            state = investigations[investigation_id]
-            if investigation_id == workspace.root_investigation_id:
-                continue
-            parent_id = state.parent_investigation_id
-            if parent_id is None:
-                return f"child Investigation {investigation_id} has no parent"
-            if parent_id == investigation_id:
-                return f"Investigation {investigation_id} is its own parent"
-            if parent_id not in ids:
-                return (
-                    f"Investigation {investigation_id} has a parent outside "
-                    "the workspace"
-                )
-            seen: set[str] = set()
-            current = investigation_id
-            while current != workspace.root_investigation_id:
-                if current in seen:
-                    return f"Investigation lineage contains a cycle at {current}"
-                seen.add(current)
-                next_parent = investigations[current].parent_investigation_id
-                if next_parent is None or next_parent not in ids:
-                    return f"Investigation {investigation_id} does not reach the root"
-                current = next_parent
-        return None
-
-    def _migrate_legacy_snapshots(self) -> None:
-        workspace_rows = self._connection.execute(
-            "select workspace_id, revision, payload from focused_workspaces"
-        ).fetchall()
-        investigation_rows = self._connection.execute(
-            "select investigation_id, workspace_id, payload from focused_investigations"
-        ).fetchall()
-        investigations_by_workspace: dict[str, dict[str, dict]] = {}
-        for row in investigation_rows:
-            try:
-                payload = json.loads(row["payload"])
-            except (TypeError, json.JSONDecodeError):
-                continue
-            investigations_by_workspace.setdefault(row["workspace_id"], {})[
-                row["investigation_id"]
-            ] = payload
-
-        migrations: list[tuple] = []
-        for row in workspace_rows:
-            try:
-                raw_workspace = json.loads(row["payload"])
-            except (TypeError, json.JSONDecodeError):
-                continue
-            raw_investigations = investigations_by_workspace.get(
-                row["workspace_id"], {}
-            )
-            workspace, investigations, changed = migrate_v5_payloads(
-                raw_workspace,
-                raw_investigations,
-            )
-            if not changed:
-                continue
-            archive = json.dumps(
-                {
-                    "workspace": raw_workspace,
-                    "investigations": list(raw_investigations.values()),
-                },
-                separators=(",", ":"),
-            )
-            migrations.append(
-                (
-                    row["workspace_id"],
-                    row["revision"],
-                    archive,
-                    workspace,
-                    investigations,
-                )
-            )
-
-        if not migrations:
-            return
-        now = datetime.now(UTC).isoformat()
-        self._begin_write()
-        try:
-            for (
-                workspace_id,
-                revision,
-                archive,
-                workspace,
-                investigations,
-            ) in migrations:
-                self._connection.execute(
-                    "insert or ignore into focused_workspace_archives("
-                    "workspace_id,schema_version,revision,payload,archived_at"
-                    ") values(?,?,?,?,?)",
-                    (
-                        workspace_id,
-                        LEGACY_SCHEMA_VERSION,
-                        revision,
-                        archive,
-                        now,
-                    ),
-                )
-                self._connection.execute(
-                    "update focused_workspaces set payload=? "
-                    "where workspace_id=? and revision=?",
-                    (
-                        json.dumps(workspace, separators=(",", ":")),
-                        workspace_id,
-                        revision,
-                    ),
-                )
-                for investigation_id, payload in investigations.items():
-                    self._connection.execute(
-                        "update focused_investigations set payload=? "
-                        "where investigation_id=? and workspace_id=?",
-                        (
-                            json.dumps(payload, separators=(",", ":")),
-                            investigation_id,
-                            workspace_id,
-                        ),
-                    )
-            self._commit()
-        except Exception:
-            self._rollback()
-            raise
-
     def load(self) -> tuple[list[WorkspaceState], list[SessionState]]:
         with self._lock:
-            self._migrate_legacy_snapshots()
             workspace_rows = self._connection.execute(
                 "select workspace_id, revision, payload "
                 "from focused_workspaces order by rowid"
@@ -374,9 +239,11 @@ class FocusedPersistence:
                         f"workspace references foreign Investigations: {wrong_owner}"
                     )
                 else:
-                    lineage_error = self._lineage_error(workspace, investigations)
-                    if lineage_error:
-                        invalid_workspaces[workspace.id] = lineage_error
+                    study = investigations[workspace.root_investigation_id]
+                    if study.workspace_id != workspace.id:
+                        invalid_workspaces[workspace.id] = (
+                            "workspace study belongs to another workspace"
+                        )
 
             for workspace_id, reason in invalid_workspaces.items():
                 workspace = workspaces.pop(workspace_id)

@@ -1,7 +1,7 @@
 from typing import Any
 
 from agora.config.settings import OpenRouterSettings
-from agora.focused.models import ClusterNamings, QuerySuggestions, ThreadVerdictOutput
+from agora.focused.models import ChatReply, ClusterNamings, QuerySuggestions
 from agora.llm.providers.openrouter import _request
 
 
@@ -17,7 +17,7 @@ def _object_schemas(value: Any):
 
 
 def test_openrouter_uses_strict_json_schema_for_structured_outputs() -> None:
-    for schema_type in (QuerySuggestions, ThreadVerdictOutput, ClusterNamings):
+    for schema_type in (QuerySuggestions, ChatReply, ClusterNamings):
         request = _request(
             model="openai/gpt-5.6-luna",
             messages=[{"role": "user", "content": "Draft structured output"}],

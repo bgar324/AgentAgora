@@ -1,14 +1,10 @@
-"""Focused-panel orchestration for the four-facet iterative study protocol.
-
-Sessions remain backend-authoritative. Kat's evidence, moderator, reflection,
-and resolution concepts are adapted behind Benjamin's existing panel workflow
-rather than exposing a separate product.
-"""
+"""Baseline study orchestration for retrieval, Perspectives, and draft review."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -20,51 +16,31 @@ import numpy as np
 from agora.focused import agents
 from agora.focused.clustering import density_partition
 from agora.focused.demo_data import (
-    DEMO_CLUSTERS,
-    DEMO_FACETS,
     DEMO_PAPERS,
-    DEMO_QUERY_SUGGESTIONS,
-    DEMO_RESEARCH_QUESTIONS,
-    DEMO_SHARED_GROUND,
 )
 from agora.focused.models import (
     FACETS,
     PERSONA_COLORS,
-    AgentState,
     ClusterCard,
     ClusteringDiagnostics,
-    DeliberationCompletion,
-    DeliberationRating,
-    DeliberationRound,
-    DeliberationState,
-    DeliberationThread,
     ExpPaper,
     Facet,
-    FacetDistance,
     FacetEvidence,
-    HypothesisConfirmationMode,
-    HypothesisDev,
-    HypothesisPart,
-    HypothesisVersion,
-    InvestigationSummary,
-    ModeratorCheck,
     NotepadDoc,
+    NotepadPart,
+    PaperView,
     Perspective,
+    PerspectiveView,
     QuestionReach,
-    QuestionStatus,
-    RecommendedQuestion,
     RetrievalTier,
-    RoundMetrics,
-    RoundResolution,
     SessionState,
-    SharedGroundAssent,
-    ThreadVerdict,
-    Turn,
-    TurnKind,
+    SessionView,
+    SuggestedQueryView,
     WorkspaceState,
+    WorkspaceSummary,
     WorkspaceView,
-    utcnow,
 )
+from agora.focused.notepad import MAX_PERSPECTIVES, reconcile_roster
 
 if TYPE_CHECKING:
     from agora.focused.persistence import WorkspacePersistence
@@ -82,12 +58,7 @@ CLUSTER_REPRESENTATIVE_PAPERS = 5
 
 MIN_CLUSTERING_CORPUS = 90
 MIN_THREE_CLUSTER_PAPERS = 15
-DEMO_RETRIEVAL_DELAY_SECONDS = 1.05
 MAX_SEARCH_PROGRESS_EVENTS = 192
-MIN_DELIBERATION_EXCHANGES = 2
-MAX_DELIBERATION_EXCHANGES = 3
-MAX_SUGGESTED_THREADS_PER_ROUND = 2
-MAX_DELIBERATION_THREADS = 10
 SearchProgressKind = Literal[
     "query_started",
     "query_completed",
@@ -95,46 +66,7 @@ SearchProgressKind = Literal[
     "retrieval_completed",
     "clustering_started",
     "clustering_completed",
-    "round_stage",
-    "round_turn",
-    "round_check",
 ]
-
-
-def _question_thread_title(question: str) -> str:
-    """Derive a concise Thread title from an open research question.
-
-    Template questions name their substantive issue after a colon
-    ("What evidence would settle … : <issue>?"); title from that issue.
-    """
-    text = question.strip().rstrip("?？")
-    _, _, tail = text.rpartition(": ")
-    words = (tail or text).split()
-    title = " ".join(words[:8])
-    if not title:
-        return "Open question"
-    return (title[:1].upper() + title[1:])[:200]
-
-
-def _resolution_context(resolution: RoundResolution) -> str:
-    """Render one resolution as prose for chat context and demo replies."""
-    lines = [resolution.summary]
-    if resolution.consensus_points:
-        lines.append(
-            "Shared ground: "
-            + "; ".join(point.text for point in resolution.consensus_points)
-        )
-    if resolution.disagreement_points:
-        lines.append(
-            "Disagreement: "
-            + "; ".join(point.text for point in resolution.disagreement_points)
-        )
-    if resolution.unsettled_points:
-        lines.append(
-            "Still open: "
-            + "; ".join(point.text for point in resolution.unsettled_points)
-        )
-    return "\n".join(lines)
 
 
 @dataclass(frozen=True)
@@ -184,75 +116,10 @@ def _serialized_session_mutation(method):
     return wrapped
 
 
-def _serialized_parent_mutation(method):
-    @wraps(method)
-    async def wrapped(
-        self: FocusedPanelService,
-        workspace_id: str,
-        parent_investigation_id: str,
-        *args,
-        **kwargs,
-    ):
-        parent = self._require(parent_investigation_id)
-        if parent.state.workspace_id != workspace_id:
-            raise SessionError(
-                f"investigation '{parent_investigation_id}' is not in this workspace",
-                status=404,
-            )
-        async with self._workspace_lock(workspace_id):
-            parent = self._require(parent_investigation_id)
-            async with parent.lock:
-                snapshot = self._snapshot_workspace(workspace_id)
-                try:
-                    return await method(
-                        self,
-                        workspace_id,
-                        parent_investigation_id,
-                        *args,
-                        **kwargs,
-                    )
-                except WorkspaceConflict:
-                    raise
-                except BaseException:
-                    self._restore_workspace(snapshot)
-                    raise
-
-    return wrapped
-
-
 class _Session:
     def __init__(self, state: SessionState) -> None:
-        for deliberation in state.deliberations:
-            FocusedPanelService._materialize_completion_history(deliberation)
         self.state = state
-        self._turn_seq = max(
-            (
-                turn.id
-                for deliberation in state.deliberations
-                for turn in [
-                    *deliberation.chat,
-                    *(
-                        turn
-                        for round_state in deliberation.rounds
-                        for turn in round_state.turns
-                    ),
-                    *(
-                        turn
-                        for completion in deliberation.completion_history
-                        for turn in [
-                            *completion.chat,
-                            *(
-                                turn
-                                for round_state in completion.rounds
-                                for turn in round_state.turns
-                            ),
-                        ]
-                    ),
-                ]
-            ),
-            default=0,
-        )
-        self._persp_seq = max(
+        current_sequence = max(
             (
                 int(perspective.id.split("-", 2)[1])
                 for perspective in state.perspectives
@@ -261,53 +128,20 @@ class _Session:
             ),
             default=0,
         )
-        self._agent_seq = max((agent.iid for agent in state.agents), default=0)
-        self._delib_seq = max(
-            (
-                int(deliberation.id.removeprefix("delib-"))
-                for deliberation in state.deliberations
-                if deliberation.id.removeprefix("delib-").isdigit()
-            ),
-            default=0,
-        )
+        self._persp_seq = max(state.perspective_sequence, current_sequence)
+        self.state.perspective_sequence = self._persp_seq
         self.lock = asyncio.Lock()
 
-    def snapshot(self) -> tuple[SessionState, int, int, int, int]:
-        return (
-            self.state.model_copy(deep=True),
-            self._turn_seq,
-            self._persp_seq,
-            self._agent_seq,
-            self._delib_seq,
-        )
+    def snapshot(self) -> tuple[SessionState, int]:
+        return self.state.model_copy(deep=True), self._persp_seq
 
-    def restore(
-        self,
-        snapshot: tuple[SessionState, int, int, int, int],
-    ) -> None:
-        (
-            self.state,
-            self._turn_seq,
-            self._persp_seq,
-            self._agent_seq,
-            self._delib_seq,
-        ) = snapshot
-
-    def next_turn_id(self) -> int:
-        self._turn_seq += 1
-        return self._turn_seq
+    def restore(self, snapshot: tuple[SessionState, int]) -> None:
+        self.state, self._persp_seq = snapshot
 
     def next_perspective_id(self) -> str:
         self._persp_seq += 1
+        self.state.perspective_sequence = self._persp_seq
         return f"persp-{self._persp_seq}"
-
-    def next_agent_iid(self) -> int:
-        self._agent_seq += 1
-        return self._agent_seq
-
-    def next_deliberation_id(self) -> str:
-        self._delib_seq += 1
-        return f"delib-{self._delib_seq}"
 
 
 class FocusedPanelService:
@@ -435,15 +269,12 @@ class FocusedPanelService:
             raise SessionError(f"workspace '{workspace_id}' not found", status=404)
         return workspace
 
-    def _workspace_for(self, state: SessionState) -> WorkspaceState:
-        return self._require_workspace(state.workspace_id)
-
     def _snapshot_workspace(
         self,
         workspace_id: str,
     ) -> tuple[
         WorkspaceState,
-        dict[str, tuple[SessionState, int, int, int, int]],
+        dict[str, tuple[SessionState, int]],
     ]:
         workspace = self._require_workspace(workspace_id)
         return (
@@ -458,7 +289,7 @@ class FocusedPanelService:
         self,
         snapshot: tuple[
             WorkspaceState,
-            dict[str, tuple[SessionState, int, int, int, int]],
+            dict[str, tuple[SessionState, int]],
         ],
     ) -> None:
         workspace, sessions = snapshot
@@ -571,208 +402,71 @@ class FocusedPanelService:
         self._persist_workspace(state.workspace_id)
         return self._require(state.id).state
 
-    def _save_view(self, workspace_id: str) -> WorkspaceView:
-        self._persist_workspace(workspace_id)
-        return self.workspace_view(workspace_id)
-
     @staticmethod
-    def _investigation_summary(state: SessionState) -> InvestigationSummary:
-        completed_rounds = sum(
-            round_state.completed
-            for deliberation in state.deliberations
-            for round_state in deliberation.rounds
-        ) + sum(
-            round_state.completed
-            for deliberation in state.deliberations
-            for completion in deliberation.completion_history
-            for round_state in completion.rounds
-        )
-        open_questions = sum(
-            question.status == "open"
-            for deliberation in state.deliberations
-            for question in deliberation.recommended_questions
-        ) + sum(
-            question.status == "open"
-            for deliberation in state.deliberations
-            for completion in deliberation.completion_history
-            for question in completion.recommended_questions
-        )
-        return InvestigationSummary(
+    def _session_view(state: SessionState) -> SessionView:
+        notepad = state.notepad.model_copy(deep=True) if state.notepad else None
+        if notepad is not None:
+            boundaries = {
+                version.id: version.visible_turn_start for version in notepad.versions
+            }
+            counts: dict[str, int] = {}
+            visible_turns = []
+            for turn in notepad.turns:
+                index = counts.get(turn.version_id, 0)
+                counts[turn.version_id] = index + 1
+                if index < boundaries.get(turn.version_id, 0):
+                    continue
+                turn.citations = []
+                visible_turns.append(turn)
+            notepad.turns = visible_turns
+            for version in notepad.versions:
+                version.visible_turn_start = 0
+            if notepad.final_snapshot is not None:
+                for version in notepad.final_snapshot.versions:
+                    version.visible_turn_start = 0
+        return SessionView(
             id=state.id,
-            parent_investigation_id=state.parent_investigation_id,
-            origin_question_id=state.origin_question_id,
-            origin_question=state.origin_question,
+            workspace_id=state.workspace_id,
             created_at=state.created_at,
+            problem=state.problem,
+            position=state.position.model_copy(deep=True),
+            suggested_queries=[
+                SuggestedQueryView.model_validate(query.model_dump())
+                for query in state.suggested_queries
+            ],
+            searched_queries=list(state.searched_queries),
+            papers=[
+                PaperView.model_validate(paper.model_dump()) for paper in state.papers
+            ],
+            perspectives=[
+                PerspectiveView.model_validate(perspective.model_dump())
+                for perspective in state.perspectives
+            ],
+            notepad=notepad,
             searched=state.searched,
-            paper_count=len(state.papers),
-            perspective_count=len(state.perspectives),
-            completed_rounds=completed_rounds,
-            open_question_count=open_questions,
-            applied_hypothesis_version_id=state.applied_hypothesis_version_id,
         )
 
     def workspace_view(self, workspace_id: str) -> WorkspaceView:
         workspace = self._require_workspace(workspace_id)
-        investigations = [
-            self._investigation_summary(self._require(investigation_id).state)
-            for investigation_id in workspace.investigation_ids
-        ]
         active = self._require(workspace.active_investigation_id).state
         return WorkspaceView(
-            workspace=workspace,
-            investigations=investigations,
-            active=active,
-        )
-
-    def activate_investigation(
-        self,
-        workspace_id: str,
-        investigation_id: str,
-    ) -> WorkspaceView:
-        workspace = self._require_workspace(workspace_id)
-        self._ensure_workspace_idle(workspace)
-        if investigation_id not in workspace.investigation_ids:
-            raise SessionError(
-                f"investigation '{investigation_id}' is not in this workspace",
-                status=404,
-            )
-        workspace.active_investigation_id = investigation_id
-        return self._save_view(workspace_id)
-
-    @staticmethod
-    def _recommended_question(
-        state: SessionState,
-        question_id: str,
-    ) -> tuple[DeliberationState, RecommendedQuestion]:
-        for deliberation in state.deliberations:
-            for question in deliberation.recommended_questions:
-                if question.id == question_id:
-                    return deliberation, question
-            for completion in deliberation.completion_history:
-                for question in completion.recommended_questions:
-                    if question.id == question_id:
-                        return deliberation, question
-        raise SessionError(f"open question '{question_id}' not found", status=404)
-
-    @staticmethod
-    def _hypothesis_version(
-        workspace: WorkspaceState,
-        version_id: str,
-    ) -> HypothesisVersion:
-        version = next(
-            (item for item in workspace.hypothesis_versions if item.id == version_id),
-            None,
-        )
-        if version is None:
-            raise SessionError(
-                f"hypothesis version '{version_id}' not found",
-                status=404,
-            )
-        return version
-
-    def _record_hypothesis(
-        self,
-        state: SessionState,
-        deliberation: DeliberationState | None,
-        hypothesis: HypothesisDev,
-        *,
-        source_kind: Literal["applied", "edit", "merge"] = "applied",
-        parent_ids: list[str] | None = None,
-        step_sources: dict[HypothesisPart, str] | None = None,
-        source_round: int | None = None,
-    ) -> HypothesisVersion:
-        workspace = self._workspace_for(state)
-        current_version = (
-            self._hypothesis_version(
-                workspace,
-                state.applied_hypothesis_version_id,
-            )
-            if parent_ids is None and state.applied_hypothesis_version_id
-            else None
-        )
-        parents = (
-            list(parent_ids)
-            if parent_ids is not None
-            else ([current_version.id] if current_version is not None else [])
-        )
-        version_id = f"H{len(workspace.hypothesis_versions) + 1}"
-        if step_sources is None:
-            source_id = version_id
-            if (
-                current_version is not None
-                and current_version.steps.hypothesis == hypothesis.hypothesis
-            ):
-                source_id = current_version.step_sources.get(
-                    "hypothesis",
-                    current_version.id,
-                )
-            step_sources = {"hypothesis": source_id}
-        version = HypothesisVersion(
-            id=version_id,
-            workspace_id=workspace.id,
-            investigation_id=state.id,
-            parent_ids=list(dict.fromkeys(parents)),
-            steps=hypothesis.model_copy(deep=True),
-            step_sources=step_sources,
-            source_kind=source_kind,
-            source_deliberation_id=deliberation.id if deliberation else None,
-            source_round=(
-                source_round
-                if source_round is not None
-                else (
-                    deliberation.rounds[-1].n
-                    if deliberation is not None and deliberation.rounds
-                    else None
-                )
+            workspace=WorkspaceSummary(
+                id=workspace.id,
+                created_at=workspace.created_at,
+                revision=workspace.revision,
+                problem=workspace.problem,
             ),
+            active=self._session_view(active),
         )
-        workspace.hypothesis_versions.append(version)
-        state.applied_hypothesis = hypothesis.model_copy(deep=True)
-        state.applied_hypothesis_version_id = version.id
-        if deliberation is not None:
-            deliberation.hypothesis = hypothesis.model_copy(deep=True)
-            deliberation.applied_hypothesis = hypothesis.model_copy(deep=True)
-            deliberation.hypothesis_confirmed = True
-            deliberation.working_hypothesis_source_kind = None
-            deliberation.working_hypothesis_source_round = None
-        if workspace.promoted_hypothesis_version_id is None:
-            workspace.promoted_hypothesis_version_id = version.id
-        return version
-
-    def _address_contributing_questions(
-        self,
-        workspace: WorkspaceState,
-        version: HypothesisVersion,
-    ) -> None:
-        versions = {item.id: item for item in workspace.hypothesis_versions}
-        pending = [version.id]
-        visited: set[str] = set()
-        while pending:
-            version_id = pending.pop()
-            if version_id in visited:
-                continue
-            visited.add(version_id)
-            contribution = versions[version_id]
-            investigation = self._require(contribution.investigation_id).state
-            if (
-                investigation.parent_investigation_id
-                and investigation.origin_question_id
-            ):
-                parent = self._require(investigation.parent_investigation_id).state
-                _, question = self._recommended_question(
-                    parent,
-                    investigation.origin_question_id,
-                )
-                question.status = "addressed"
-            pending.extend(contribution.parent_ids)
 
     def _demo(self, session: _Session) -> bool:
-        return session.state.demo or self._provider is None
+        return session.state.demo
 
     def _provider_for(self, session: _Session) -> FocusedProvider | None:
         return None if session.state.demo else self._provider
 
     def get(self, session_id: str) -> SessionState:
+        """Return private server state for trusted in-process integrations."""
         return self._require(session_id).state
 
     # -- stage ① perspective construction ----------------------------------
@@ -781,33 +475,24 @@ class FocusedPanelService:
         self,
         *,
         problem: str,
-        research_questions: list[str],
         position: dict[str, str] | None = None,
-        arm: str = "guided",
         demo: bool,
     ) -> WorkspaceView:
         clean_problem = problem.strip()
         if len(clean_problem) < 3:
             raise SessionError("Problem must be at least three characters.")
-        clean_questions = [q.strip() for q in research_questions if q.strip()]
-        if demo and not clean_questions:
-            # The demo fixture owns its research questions; seeding them
-            # here keeps the frontend free of a hand-duplicated copy and
-            # keeps suggestion/question pairing intact.
-            clean_questions = list(DEMO_RESEARCH_QUESTIONS)
         workspace_id = uuid.uuid4().hex
         investigation_id = uuid.uuid4().hex
         state = SessionState(
             id=investigation_id,
             workspace_id=workspace_id,
             problem=clean_problem,
-            research_questions=clean_questions,
             position=NotepadDoc(**(position or {})),
-            arm="baseline" if arm == "baseline" else "guided",
-            demo=demo or self._provider is None,
+            demo=demo,
         )
         workspace = WorkspaceState(
             id=workspace_id,
+            schema_version=7,
             problem=clean_problem,
             root_investigation_id=investigation_id,
             active_investigation_id=investigation_id,
@@ -831,412 +516,6 @@ class FocusedPanelService:
             self._durable_snapshots.pop(workspace.id, None)
             raise
         return self.workspace_view(workspace.id)
-
-    @_serialized_parent_mutation
-    async def create_child_investigation(
-        self,
-        workspace_id: str,
-        parent_investigation_id: str,
-        question_id: str,
-    ) -> WorkspaceView:
-        workspace = self._require_workspace(workspace_id)
-        if parent_investigation_id not in workspace.investigation_ids:
-            raise SessionError(
-                f"investigation '{parent_investigation_id}' is not in this workspace",
-                status=404,
-            )
-        parent = self._require(parent_investigation_id)
-        _, question = self._recommended_question(parent.state, question_id)
-        if question.status != "open":
-            raise SessionError(
-                "Only an open question can start a child Investigation.",
-                status=409,
-            )
-
-        child_id = uuid.uuid4().hex
-        child_state = SessionState(
-            id=child_id,
-            workspace_id=workspace.id,
-            problem=workspace.problem,
-            research_questions=[question.question],
-            parent_investigation_id=parent.state.id,
-            origin_question_id=question.id,
-            origin_question=question.question,
-            demo=parent.state.demo,
-            applied_hypothesis=(
-                parent.state.applied_hypothesis.model_copy(deep=True)
-                if parent.state.applied_hypothesis is not None
-                else None
-            ),
-            applied_hypothesis_version_id=parent.state.applied_hypothesis_version_id,
-        )
-        self._sessions[child_id] = _Session(child_state)
-        workspace.investigation_ids.append(child_id)
-        workspace.active_investigation_id = child_id
-        question.status = "investigating"
-        question.child_investigation_id = child_id
-        return self._save_view(workspace.id)
-
-    @_serialized_parent_mutation
-    async def integrate_child_investigation(
-        self,
-        workspace_id: str,
-        parent_investigation_id: str,
-        child_investigation_id: str,
-        invited_perspective_ids: list[str] | None = None,
-    ) -> WorkspaceView:
-        workspace = self._require_workspace(workspace_id)
-        parent = self._require(parent_investigation_id)
-        child = self._require(child_investigation_id)
-        child_state = child.state
-        if child_state.parent_investigation_id != parent.state.id:
-            raise SessionError(
-                "The research branch does not belong to this Investigation.",
-                status=409,
-            )
-        if child_state.integrated_into_parent_at is not None:
-            raise SessionError(
-                "This research branch was already continued.",
-                status=409,
-            )
-        if not child_state.perspectives:
-            raise SessionError("Add at least one Perspective before continuing.")
-        if not parent.state.deliberations:
-            raise SessionError("The parent Investigation has no deliberation.")
-        deliberation = parent.state.deliberations[0]
-        if (
-            deliberation.completed_at is None
-            or deliberation.final_hypothesis_version_id is None
-        ):
-            raise SessionError(
-                "Return to the parent panel and end its current deliberation "
-                "before adding this research branch."
-            )
-        agent_by_iid = {agent.iid: agent for agent in parent.state.agents}
-        invited = (
-            list(invited_perspective_ids)
-            if invited_perspective_ids is not None
-            else [
-                agent_by_iid[iid].perspective_id
-                for iid in deliberation.agent_iids
-                if iid in agent_by_iid
-            ]
-        )
-        if child_state.origin_question_id is None:
-            raise SessionError("The research branch has no source question.")
-        _, source_question = self._recommended_question(
-            parent.state,
-            child_state.origin_question_id,
-        )
-        if source_question.child_investigation_id != child_state.id:
-            raise SessionError(
-                "The source question points to another Investigation.",
-                status=409,
-            )
-
-        paper_ids = {paper.id for paper in parent.state.papers}
-        paper_by_content = {
-            (paper.title.casefold(), paper.abstract or ""): paper.id
-            for paper in parent.state.papers
-        }
-        paper_map: dict[str, str] = {}
-        for paper in child_state.papers:
-            fingerprint = (paper.title.casefold(), paper.abstract or "")
-            existing_id = paper_by_content.get(fingerprint)
-            if existing_id is not None:
-                paper_map[paper.id] = existing_id
-                continue
-            imported_id = paper.id
-            if imported_id in paper_ids:
-                imported_id = f"{child_state.id[:8]}-{paper.id}"
-            paper_ids.add(imported_id)
-            paper_by_content[fingerprint] = imported_id
-            paper_map[paper.id] = imported_id
-            parent.state.papers.append(
-                paper.model_copy(deep=True, update={"id": imported_id})
-            )
-
-        cluster_ids = {cluster.id for cluster in parent.state.clusters}
-        cluster_map: dict[str, str] = {}
-        for cluster in child_state.clusters:
-            imported_id = f"{child_state.id[:8]}-{cluster.id}"
-            suffix = 2
-            while imported_id in cluster_ids:
-                imported_id = f"{child_state.id[:8]}-{cluster.id}-{suffix}"
-                suffix += 1
-            cluster_ids.add(imported_id)
-            cluster_map[cluster.id] = imported_id
-            parent.state.clusters.append(
-                cluster.model_copy(
-                    deep=True,
-                    update={
-                        "id": imported_id,
-                        "paper_ids": [
-                            paper_map.get(paper_id, paper_id)
-                            for paper_id in cluster.paper_ids
-                        ],
-                        "representative_paper_ids": [
-                            paper_map.get(paper_id, paper_id)
-                            for paper_id in cluster.representative_paper_ids
-                        ],
-                        "facets": [
-                            evidence.model_copy(
-                                deep=True,
-                                update={
-                                    "paper_id": paper_map.get(
-                                        evidence.paper_id,
-                                        evidence.paper_id,
-                                    )
-                                },
-                            )
-                            for evidence in cluster.facets
-                        ],
-                    },
-                )
-            )
-
-        imported_perspective_ids: list[str] = []
-        parent_origins = {
-            perspective.origin
-            for perspective in parent.state.perspectives
-            if not perspective.evolved
-        }
-        for perspective in child_state.perspectives:
-            if perspective.origin.startswith("paper:"):
-                source_paper_id = perspective.origin.removeprefix("paper:")
-                imported_origin = (
-                    f"paper:{paper_map.get(source_paper_id, source_paper_id)}"
-                )
-            else:
-                imported_origin = cluster_map.get(
-                    perspective.origin,
-                    f"{child_state.id[:8]}-{perspective.origin}",
-                )
-            if imported_origin in parent_origins and not perspective.evolved:
-                continue
-            imported = perspective.model_copy(
-                deep=True,
-                update={
-                    "id": parent.next_perspective_id(),
-                    "color": PERSONA_COLORS[
-                        len(parent.state.perspectives) % len(PERSONA_COLORS)
-                    ],
-                    "origin": imported_origin,
-                    "source_question_id": child_state.origin_question_id,
-                    "panel_cycle": 0,
-                    "sources": [
-                        paper_map.get(paper_id, paper_id)
-                        for paper_id in perspective.sources
-                    ],
-                    "facets": {
-                        facet: evidence.model_copy(
-                            deep=True,
-                            update={
-                                "paper_id": paper_map.get(
-                                    evidence.paper_id,
-                                    evidence.paper_id,
-                                )
-                            },
-                        )
-                        for facet, evidence in perspective.facets.items()
-                    },
-                },
-            )
-            parent.state.perspectives.append(imported)
-            imported_perspective_ids.append(imported.id)
-            if not imported.evolved:
-                parent_origins.add(imported.origin)
-
-        if not imported_perspective_ids:
-            raise SessionError(
-                "This research branch has no new Perspectives to add.",
-                status=409,
-            )
-
-        source_question.status = "addressed"
-        self._restart_deliberation(
-            parent,
-            [*imported_perspective_ids, *invited],
-        )
-        for perspective in parent.state.perspectives:
-            if perspective.id in imported_perspective_ids:
-                perspective.panel_cycle = len(deliberation.completion_history)
-
-        parent.state.searched_queries = list(
-            dict.fromkeys(
-                [*parent.state.searched_queries, *child_state.searched_queries]
-            )
-        )
-        child_state.integrated_into_parent_at = utcnow()
-        workspace.active_investigation_id = parent.state.id
-        return self._save_view(workspace.id)
-
-    def set_question_status(
-        self,
-        workspace_id: str,
-        investigation_id: str,
-        question_id: str,
-        status: QuestionStatus,
-    ) -> WorkspaceView:
-        workspace = self._require_workspace(workspace_id)
-        self._ensure_workspace_idle(workspace)
-        if investigation_id not in workspace.investigation_ids:
-            raise SessionError(
-                f"investigation '{investigation_id}' is not in this workspace",
-                status=404,
-            )
-        _, question = self._recommended_question(
-            self._require(investigation_id).state,
-            question_id,
-        )
-        if status == question.status:
-            return self.workspace_view(workspace.id)
-        allowed: dict[QuestionStatus, set[QuestionStatus]] = {
-            "open": {"archived"},
-            "investigating": {"addressed", "archived"},
-            "addressed": {"investigating", "archived"},
-            "archived": (
-                {"open"}
-                if question.child_investigation_id is None
-                else {"investigating", "addressed"}
-            ),
-        }
-        if status not in allowed[question.status]:
-            raise SessionError(
-                f"Question cannot move from {question.status} to {status}.",
-                status=409,
-            )
-        question.status = status
-        return self._save_view(workspace.id)
-
-    def promote_hypothesis(
-        self,
-        workspace_id: str,
-        version_id: str,
-    ) -> WorkspaceView:
-        workspace = self._require_workspace(workspace_id)
-        self._ensure_workspace_idle(workspace)
-        version = self._hypothesis_version(workspace, version_id)
-        if version.archived:
-            raise SessionError("An archived hypothesis cannot be promoted.", status=409)
-        investigation = self._require(version.investigation_id).state
-        if investigation.applied_hypothesis_version_id != version.id:
-            raise SessionError(
-                "Only an Investigation's current checkpoint can be promoted.",
-                status=409,
-            )
-        if workspace.promoted_hypothesis_version_id == version.id:
-            return self.workspace_view(workspace.id)
-        workspace.promoted_hypothesis_version_id = version.id
-        workspace.active_investigation_id = version.investigation_id
-        self._address_contributing_questions(workspace, version)
-        return self._save_view(workspace.id)
-
-    def merge_hypotheses(
-        self,
-        workspace_id: str,
-        *,
-        target_investigation_id: str,
-        source_version_id: str,
-        hypothesis: HypothesisDev,
-    ) -> WorkspaceView:
-        workspace = self._require_workspace(workspace_id)
-        self._ensure_workspace_idle(workspace)
-        if target_investigation_id not in workspace.investigation_ids:
-            raise SessionError(
-                f"investigation '{target_investigation_id}' is not in this workspace",
-                status=404,
-            )
-        target_state = self._require(target_investigation_id).state
-        deliberation = (
-            target_state.deliberations[-1] if target_state.deliberations else None
-        )
-        if (
-            deliberation is not None
-            and deliberation.hypothesis is not None
-            and not deliberation.hypothesis_confirmed
-        ):
-            raise SessionError(
-                "Apply or edit the pending hypothesis before merging into this "
-                "Investigation.",
-                status=409,
-            )
-        if target_state.applied_hypothesis_version_id is None:
-            raise SessionError(
-                "The target Investigation has no applied hypothesis to merge into.",
-                status=409,
-            )
-        target_version = self._hypothesis_version(
-            workspace,
-            target_state.applied_hypothesis_version_id,
-        )
-        source_version = self._hypothesis_version(workspace, source_version_id)
-        if source_version.archived:
-            raise SessionError("An archived hypothesis cannot be merged.", status=409)
-        if source_version.id == target_version.id:
-            raise SessionError("Choose a different hypothesis branch to merge.")
-        merged = HypothesisDev(hypothesis=hypothesis.hypothesis.strip())
-        if merged == target_version.steps:
-            return self.workspace_view(workspace.id)
-        source_id = (
-            source_version.step_sources.get("hypothesis", source_version.id)
-            if merged == source_version.steps
-            else f"H{len(workspace.hypothesis_versions) + 1}"
-        )
-        promoted_target = workspace.promoted_hypothesis_version_id == target_version.id
-        version = self._record_hypothesis(
-            target_state,
-            deliberation,
-            merged,
-            source_kind="merge",
-            parent_ids=[target_version.id, source_version.id],
-            step_sources={"hypothesis": source_id},
-        )
-        if promoted_target:
-            workspace.promoted_hypothesis_version_id = version.id
-            self._address_contributing_questions(workspace, version)
-        workspace.active_investigation_id = target_state.id
-        return self._save_view(workspace.id)
-
-    def archive_hypothesis(
-        self,
-        workspace_id: str,
-        version_id: str,
-    ) -> WorkspaceView:
-        workspace = self._require_workspace(workspace_id)
-        self._ensure_workspace_idle(workspace)
-        version = self._hypothesis_version(workspace, version_id)
-        if version.archived:
-            return self.workspace_view(workspace.id)
-        if workspace.promoted_hypothesis_version_id == version.id:
-            raise SessionError(
-                "Promote another hypothesis before archiving this one.",
-                status=409,
-            )
-        if any(
-            self._require(investigation_id).state.applied_hypothesis_version_id
-            == version.id
-            for investigation_id in workspace.investigation_ids
-        ):
-            raise SessionError(
-                "An Investigation's current checkpoint cannot be archived.",
-                status=409,
-            )
-        version.archived = True
-        return self._save_view(workspace.id)
-
-    def restore_hypothesis(
-        self,
-        workspace_id: str,
-        version_id: str,
-    ) -> WorkspaceView:
-        workspace = self._require_workspace(workspace_id)
-        self._ensure_workspace_idle(workspace)
-        version = self._hypothesis_version(workspace, version_id)
-        if not version.archived:
-            return self.workspace_view(workspace.id)
-        version.archived = False
-        return self._save_view(workspace.id)
 
     def delete_workspace(self, workspace_id: str) -> None:
         workspace = self._require_workspace(workspace_id)
@@ -1264,54 +543,13 @@ class FocusedPanelService:
             and not state.papers
             and not state.clusters
             and not state.perspectives
-            and not state.deliberations
+            and state.notepad is None
         )
-
-    def update_brief(
-        self,
-        session_id: str,
-        *,
-        problem: str,
-        research_questions: list[str],
-    ) -> SessionState:
-        session = self._require(session_id)
-        state = session.state
-        workspace = self._workspace_for(state)
-        self._ensure_workspace_idle(workspace)
-        if state.searched and not self._retryable_empty_search(state):
-            raise SessionError(
-                "Start a new investigation to change the brief after retrieving papers.",
-                status=409,
-            )
-        clean_problem = problem.strip()
-        if len(clean_problem) < 3:
-            raise SessionError("Problem must be at least three characters.")
-        if (
-            state.id != workspace.root_investigation_id
-            and clean_problem != workspace.problem
-        ):
-            raise SessionError(
-                "The research problem is shared by the workspace. "
-                "Edit the child Investigation's research question instead.",
-                status=409,
-            )
-        if state.id == workspace.root_investigation_id:
-            workspace.problem = clean_problem
-        state.problem = workspace.problem
-        state.research_questions = [
-            question.strip() for question in research_questions if question.strip()
-        ]
-        state.searched = False
-        state.suggested_queries = []
-        state.searched_queries = []
-        state.question_reach = []
-        return self._save_state(state)
 
     def _ensure_searchable(self, state: SessionState) -> None:
         if state.searched and not self._retryable_empty_search(state):
             raise SessionError(
-                "This Investigation already has literature. Start a child "
-                "Investigation to search new papers without replacing it."
+                "This study already has literature. Start over to replace it."
             )
 
     @_serialized_session_mutation
@@ -1320,118 +558,56 @@ class FocusedPanelService:
         state = session.state
         self._ensure_searchable(state)
         reaches: list[QuestionReach] = []
-        if self._demo(session):
-            position_written = any(
-                value.strip() for value in state.position.model_dump().values()
+        if not state.research_questions:
+            # Users provide the four-part position, not retrieval questions.
+            state.research_questions = await agents.derive_research_questions(
+                state.problem,
+                position=state.position,
+                provider=self._provider_for(session),
             )
-            if position_written:
-                generated = await agents.suggest_queries(
-                    state.problem,
-                    [],
-                    position=state.position,
-                    provider=None,
-                    count=MAX_SUGGESTED_QUERIES,
-                )
-                if len(generated) == MAX_SUGGESTED_QUERIES:
-                    # Keep the established Demo corpus lanes near the front
-                    # while every query still comes from current user input.
-                    generated = [generated[index] for index in (1, 0, 3, 2, 4)]
-            else:
-                # API-created Demo workspaces can predate the four-part input.
-                # Keep their established corpus-matched reach plan.
-                generated = [
-                    suggestion.model_copy(deep=True)
-                    for suggestion in DEMO_QUERY_SUGGESTIONS
-                ]
-
-            paired_fixture = (
-                not position_written
-                and state.research_questions == DEMO_RESEARCH_QUESTIONS
+        problem_suggestions = [
+            suggestion.model_copy(
+                update={"kind": "problem", "question_index": None, "round": 1}
             )
-            suggestions = (
-                generated
-                if paired_fixture
-                else [
-                    suggestion.model_copy(
-                        deep=True,
-                        update={
-                            "kind": "problem",
-                            "question_index": None,
-                            "round": 1,
-                        },
-                    )
-                    for suggestion in generated
-                ]
+            for suggestion in await agents.suggest_queries(
+                state.problem,
+                state.research_questions,
+                position=state.position,
+                provider=self._provider_for(session),
+                count=3 if state.research_questions else MAX_SUGGESTED_QUERIES,
             )
-
-            demo_terms: dict[int, list[str]] = {}
-            for suggestion in suggestions:
-                if (
-                    suggestion.kind == "question"
-                    and suggestion.question_index is not None
-                ):
-                    demo_terms.setdefault(suggestion.question_index, []).append(
-                        suggestion.query
-                    )
-            reaches = [
+        ]
+        question_suggestions = []
+        for question_index, question in enumerate(state.research_questions):
+            plan = await agents.plan_question_search(
+                state.problem,
+                question,
+                provider=self._provider_for(session),
+            )
+            reaches.append(
                 QuestionReach(
                     question=question,
-                    candidates=[question, *demo_terms.get(index, [])],
+                    form=plan.form,
+                    candidates=plan.candidates,
                 )
-                for index, question in enumerate(state.research_questions)
-            ]
-        else:
-            if not state.research_questions:
-                # Users never type research questions (Kat's protocol); derive
-                # them so answer-tier retrieval and coverage ranking still run.
-                state.research_questions = await agents.derive_research_questions(
-                    state.problem,
-                    position=state.position,
-                    provider=self._provider_for(session),
-                )
-            problem_suggestions = [
-                suggestion.model_copy(
-                    update={"kind": "problem", "question_index": None, "round": 1}
-                )
-                for suggestion in await agents.suggest_queries(
-                    state.problem,
-                    state.research_questions,
-                    position=state.position,
-                    provider=self._provider_for(session),
-                    count=3 if state.research_questions else MAX_SUGGESTED_QUERIES,
-                )
-            ]
-            question_suggestions = []
-            for question_index, question in enumerate(state.research_questions):
-                plan = await agents.plan_question_search(
-                    state.problem,
-                    question,
-                    provider=self._provider_for(session),
-                )
-                reaches.append(
-                    QuestionReach(
-                        question=question,
-                        form=plan.form,
-                        candidates=plan.candidates,
-                    )
-                )
-                question_suggestions.append(
-                    [
-                        query.model_copy(
-                            update={
-                                "kind": "question",
-                                "question_index": question_index,
-                                "round": 1,
-                            }
-                        )
-                        for query in plan.queries
-                    ]
-                )
-            suggestions = [queries[0] for queries in question_suggestions if queries]
-            suggestions.extend(problem_suggestions)
-            suggestions.extend(
-                query for queries in question_suggestions for query in queries[1:]
             )
+            question_suggestions.append(
+                [
+                    query.model_copy(
+                        update={
+                            "kind": "question",
+                            "question_index": question_index,
+                            "round": 1,
+                        }
+                    )
+                    for query in plan.queries
+                ]
+            )
+        suggestions = [queries[0] for queries in question_suggestions if queries]
+        suggestions.extend(problem_suggestions)
+        suggestions.extend(
+            query for queries in question_suggestions for query in queries[1:]
+        )
         deduped = []
         seen = set()
         for suggestion in suggestions:
@@ -1609,7 +785,6 @@ class FocusedPanelService:
                     f"Searching papers for {query}.",
                     query=query,
                 )
-                await asyncio.sleep(DEMO_RETRIEVAL_DELAY_SECONDS)
                 retrieved = len(self._demo_retrieve([query]))
                 self._publish_search_progress(
                     session.state.id,
@@ -1720,6 +895,65 @@ class FocusedPanelService:
         return [group for group in groups if group]
 
     @staticmethod
+    def _attach_unassigned_papers(
+        groups: list[list[ExpPaper]],
+        unassigned: list[ExpPaper],
+    ) -> list[list[ExpPaper]]:
+        """Attach density-noise papers to the nearest group deterministically."""
+        if not groups or not unassigned:
+            return groups
+        centroids: list[np.ndarray | None] = []
+        terms: list[set[str]] = []
+        for group in groups:
+            vectors = [
+                np.asarray(paper.specter_v2, dtype=np.float32)
+                for paper in group
+                if paper.specter_v2
+            ]
+            centroids.append(
+                np.mean(vectors, axis=0) if len(vectors) == len(group) else None
+            )
+            terms.append(
+                set(
+                    agents._content_words(
+                        " ".join(
+                            f"{paper.title} {paper.abstract or ''}" for paper in group
+                        )
+                    )
+                )
+            )
+        for paper in unassigned:
+            paper_terms = set(
+                agents._content_words(f"{paper.title} {paper.abstract or ''}")
+            )
+            vector = (
+                np.asarray(paper.specter_v2, dtype=np.float32)
+                if paper.specter_v2
+                else None
+            )
+            scores: list[tuple[float, int, int, int]] = []
+            for index, centroid in enumerate(centroids):
+                if (
+                    vector is not None
+                    and centroid is not None
+                    and vector.shape == centroid.shape
+                ):
+                    denominator = float(
+                        np.linalg.norm(vector) * np.linalg.norm(centroid)
+                    )
+                    cosine = (
+                        float(np.dot(vector, centroid) / denominator)
+                        if denominator
+                        else -1.0
+                    )
+                else:
+                    cosine = -1.0
+                scores.append((cosine, len(paper_terms & terms[index]), -index, index))
+            destination = max(scores)[3]
+            groups[destination].append(paper)
+        return groups
+
+    @staticmethod
     def _centroid_order(papers: list[ExpPaper]) -> list[ExpPaper]:
         """Typical-first: papers nearest the cluster's embedding centroid
         first (the mentor's 'centroid papers'). Papers without embeddings
@@ -1782,24 +1016,6 @@ class FocusedPanelService:
                 for tier in ("answer", "problem", "candidate")
                 if any(paper.retrieval_tier == tier for paper in papers)
             },
-        )
-
-    def _demo_cluster(
-        self, papers: list[ExpPaper]
-    ) -> tuple[list[list[ExpPaper]], list[int]]:
-        groups: list[list[ExpPaper]] = [[] for _ in DEMO_CLUSTERS]
-        for paper in papers:
-            text = f"{paper.title} {paper.abstract or ''}".lower()
-            best, best_score = 0, 0
-            for i, seed in enumerate(DEMO_CLUSTERS):
-                score = sum(1 for term in seed["terms"] if term in text)
-                if score > best_score:
-                    best, best_score = i, score
-            groups[best].append(paper)
-        populated = [(index, group) for index, group in enumerate(groups) if group]
-        return (
-            [group for _, group in populated],
-            [index for index, _ in populated],
         )
 
     @staticmethod
@@ -2000,11 +1216,7 @@ class FocusedPanelService:
             item.get("kind") == "query_failed" and item.get("reason") == "rate_limited"
             for item in self._search_progress.get(session_id, [])
         )
-        if (
-            len(papers) < MIN_CLUSTERING_CORPUS
-            and not self._demo(session)
-            and not rate_limited
-        ):
+        if len(papers) < MIN_CLUSTERING_CORPUS and not rate_limited:
             prior_queries = list(dict.fromkeys([*queries, *automatic_queries]))
             corpus_expansion = await agents.expand_corpus_search(
                 state.problem,
@@ -2078,8 +1290,6 @@ class FocusedPanelService:
             retained=len(papers),
             query_count=len(finished_searches),
         )
-        if self._demo(session):
-            await asyncio.sleep(DEMO_RETRIEVAL_DELAY_SECONDS)
 
         requested_clusters = self._target_cluster_count(len(papers))
         self._publish_search_progress(
@@ -2092,58 +1302,42 @@ class FocusedPanelService:
             papers=len(papers),
             requested_clusters=requested_clusters,
         )
-        if self._demo(session):
-            await asyncio.sleep(DEMO_RETRIEVAL_DELAY_SECONDS)
 
         partition_representatives: list[list[ExpPaper]] | None = None
         unassigned_papers: list[ExpPaper] = []
-        demo_group_indices: list[int] | None = None
-        if self._demo(session):
-            groups, demo_group_indices = (
-                self._demo_cluster(papers) if papers else ([], [])
-            )
-            if len(groups) < requested_clusters:
+        required_clusters = min(
+            requested_clusters,
+            3 if len(papers) >= MIN_THREE_CLUSTER_PAPERS else 2,
+        )
+        partition = density_partition(
+            papers,
+            requested_clusters=requested_clusters,
+        )
+        if partition is not None and len(partition.groups) >= required_clusters:
+            groups = partition.groups
+            partition_representatives = partition.representatives
+            unassigned_papers = partition.unassigned
+            method = "specter_hdbscan_dpp"
+        elif requested_clusters == 1:
+            groups = [papers]
+            method = "single_group"
+        else:
+            groups = self._embedding_clusters(papers, k=requested_clusters)
+            method = "specter_kmeans"
+            if len(groups) < required_clusters:
+                groups = (
+                    self._kmeans_clusters(papers, k=requested_clusters)
+                    if len(papers) >= 4
+                    else []
+                )
+                method = "tfidf_kmeans"
+            if len(groups) < required_clusters:
                 groups = self._balanced_fallback_clusters(
                     papers,
                     requested_clusters,
                 )
-                demo_group_indices = None
                 method = "balanced_fallback"
-            else:
-                method = "demo_seeds"
-        else:
-            required_clusters = min(
-                requested_clusters,
-                3 if len(papers) >= MIN_THREE_CLUSTER_PAPERS else 2,
-            )
-            partition = density_partition(
-                papers,
-                requested_clusters=requested_clusters,
-            )
-            if partition is not None and len(partition.groups) >= required_clusters:
-                groups = partition.groups
-                partition_representatives = partition.representatives
-                unassigned_papers = partition.unassigned
-                method = "specter_hdbscan_dpp"
-            elif requested_clusters == 1:
-                groups = [papers]
-                method = "single_group"
-            else:
-                groups = self._embedding_clusters(papers, k=requested_clusters)
-                method = "specter_kmeans"
-                if len(groups) < required_clusters:
-                    groups = (
-                        self._kmeans_clusters(papers, k=requested_clusters)
-                        if len(papers) >= 4
-                        else []
-                    )
-                    method = "tfidf_kmeans"
-                if len(groups) < required_clusters:
-                    groups = self._balanced_fallback_clusters(
-                        papers,
-                        requested_clusters,
-                    )
-                    method = "balanced_fallback"
+        groups = self._attach_unassigned_papers(groups, unassigned_papers)
 
         state.clustering = self._clustering_diagnostics(
             method,
@@ -2153,30 +1347,18 @@ class FocusedPanelService:
         )
 
         state.papers = papers
-        state.unassigned_paper_ids = [paper.id for paper in unassigned_papers]
+        state.unassigned_paper_ids = []
         state.searched = True
         state.searched_queries = list(dict.fromkeys([*queries, *automatic_queries]))
 
         clusters: list[ClusterCard] = []
         ordered_groups = [self._centroid_order(group) for group in groups]
-        namings = (
-            []
-            if self._demo(session)
-            else await agents.name_clusters(
-                ordered_groups,
-                provider=self._provider_for(session),
-            )
+        namings = await agents.name_clusters(
+            ordered_groups,
+            provider=self._provider_for(session),
         )
         for idx, group in enumerate(ordered_groups):
-            demo_index = (
-                demo_group_indices[idx] if demo_group_indices is not None else idx
-            )
             naming = namings[idx] if idx < len(namings) else None
-            demo_facets = (
-                [DEMO_FACETS.get(paper.id, []) for paper in group]
-                if self._demo(session)
-                else None
-            )
             representatives = (
                 partition_representatives[idx]
                 if partition_representatives is not None
@@ -2186,7 +1368,6 @@ class FocusedPanelService:
             facets = await agents.extract_cluster_facets(
                 representatives,
                 provider=self._provider_for(session),
-                demo_facets=demo_facets,
             )
             # Provenance is enforced against the abstracts the model read.
             by_id = {paper.id: paper for paper in representatives}
@@ -2210,12 +1391,8 @@ class FocusedPanelService:
             clusters.append(
                 ClusterCard(
                     id=f"cluster-{idx + 1}",
-                    name=naming.name
-                    if naming
-                    else (DEMO_CLUSTERS[demo_index % len(DEMO_CLUSTERS)]["name"]),
-                    blurb=naming.blurb
-                    if naming
-                    else (DEMO_CLUSTERS[demo_index % len(DEMO_CLUSTERS)]["blurb"]),
+                    name=naming.name if naming else f"Literature group {idx + 1}",
+                    blurb=naming.blurb if naming else "",
                     facets=grounded,
                     paper_ids=[p.id for p in group],
                     representative_paper_ids=[p.id for p in representatives],
@@ -2258,342 +1435,95 @@ class FocusedPanelService:
                 return paper
         raise SessionError(f"paper '{paper_id}' not in this session", status=404)
 
-    def _new_panel_agent(
-        self,
-        session: _Session,
-        perspective: Perspective,
-    ) -> AgentState:
-        agent = AgentState(
-            iid=session.next_agent_iid(),
-            perspective_id=perspective.id,
-            label=perspective.name,
-            facets={
-                facet: evidence.model_copy(deep=True)
-                for facet, evidence in perspective.facets.items()
-            },
-        )
-        session.state.agents.append(agent)
-        return agent
-
-    @staticmethod
-    def _recorded_question_ids(deliberation: DeliberationState) -> set[str]:
-        return {
-            question_id
-            for completion in deliberation.completion_history
-            for question_id in completion.question_ids
-        }
-
-    @staticmethod
-    def _materialize_completion_history(
-        deliberation: DeliberationState,
-    ) -> tuple[int, int]:
-        has_legacy_cumulative_history = any(
-            completion.round_count > 0 and not completion.rounds
-            for completion in deliberation.completion_history
-        )
-        if not has_legacy_cumulative_history:
-            return 0, 0
-        rounds = list(deliberation.rounds)
-        chat = list(deliberation.chat)
-        previous_round_count = 0
-        previous_chat_count = 0
-        by_question_id = {
-            question.id: question for question in deliberation.recommended_questions
-        }
-        for completion in deliberation.completion_history:
-            cumulative_round_count = completion.round_count
-            if not completion.rounds:
-                completion.rounds = [
-                    item.model_copy(deep=True)
-                    for item in rounds[previous_round_count:cumulative_round_count]
-                ]
-                completion.round_count = len(completion.rounds)
-            if not completion.question_ids:
-                completion.question_ids = [
-                    question.id
-                    for question in deliberation.recommended_questions
-                    if question.source_round is not None
-                    and previous_round_count
-                    < question.source_round
-                    <= cumulative_round_count
-                ]
-            if not completion.recommended_questions:
-                completion.recommended_questions = [
-                    by_question_id[question_id].model_copy(deep=True)
-                    for question_id in completion.question_ids
-                    if question_id in by_question_id
-                ]
-            if completion.chat_count and not completion.chat:
-                completion.chat = [
-                    item.model_copy(deep=True)
-                    for item in chat[
-                        previous_chat_count : previous_chat_count
-                        + completion.chat_count
-                    ]
-                ]
-            previous_round_count = cumulative_round_count
-            previous_chat_count += completion.chat_count
-        archived_question_ids = {
-            question_id
-            for completion in deliberation.completion_history
-            for question_id in completion.question_ids
-        }
-        deliberation.rounds = rounds[previous_round_count:]
-        deliberation.recommended_questions = [
-            question
-            for question in deliberation.recommended_questions
-            if question.id not in archived_question_ids
-        ]
-        deliberation.chat = chat[previous_chat_count:]
-        return 0, 0
-
-    def _archive_current_deliberation(
-        self,
-        deliberation: DeliberationState,
-        applied_hypothesis_version_id: str | None,
-    ) -> None:
-        previous_round_count, previous_chat_count = (
-            self._materialize_completion_history(deliberation)
-        )
-        recorded_questions = self._recorded_question_ids(deliberation)
-        current_rounds = deliberation.rounds[previous_round_count:]
-        current_chat = deliberation.chat[previous_chat_count:]
-        current_questions = [
-            question
-            for question in deliberation.recommended_questions
-            if question.id not in recorded_questions
-        ]
-        has_activity = (
-            bool(current_rounds)
-            or bool(current_chat)
-            or bool(current_questions)
-            or deliberation.hypothesis is not None
-            or deliberation.completed_at is not None
-        )
-        if not has_activity:
-            return
-        reason: Literal["completed", "restarted"] = (
-            "completed" if deliberation.completed_at is not None else "restarted"
-        )
-        deliberation.completion_history.append(
-            DeliberationCompletion(
-                archived_at=utcnow(),
-                reason=reason,
-                completed_at=deliberation.completed_at,
-                final_hypothesis_version_id=deliberation.final_hypothesis_version_id,
-                round_count=len(current_rounds),
-                chat_count=len(current_chat),
-                agent_iids=list(deliberation.agent_iids),
-                question_ids=[question.id for question in current_questions],
-                lead_perspective_id=deliberation.lead_perspective_id,
-                baseline_hypothesis=(
-                    deliberation.baseline_hypothesis.model_copy(deep=True)
-                    if deliberation.baseline_hypothesis is not None
-                    else None
-                ),
-                threads=[
-                    thread.model_copy(deep=True) for thread in deliberation.threads
-                ],
-                selected_question_ids=list(deliberation.selected_question_ids),
-                document=(
-                    deliberation.document.model_copy(deep=True)
-                    if deliberation.document is not None
-                    else None
-                ),
-                rating=(
-                    deliberation.rating.model_copy(deep=True)
-                    if deliberation.rating is not None
-                    else None
-                ),
-                rounds=[item.model_copy(deep=True) for item in current_rounds],
-                recommended_questions=[
-                    item.model_copy(deep=True) for item in current_questions
-                ],
-                chat=[item.model_copy(deep=True) for item in current_chat],
-                revised_perspective=(
-                    deliberation.revised_perspective.model_copy(deep=True)
-                    if deliberation.revised_perspective is not None
-                    else None
-                ),
-                hypothesis=(
-                    deliberation.hypothesis.model_copy(deep=True)
-                    if deliberation.hypothesis is not None
-                    else None
-                ),
-                applied_hypothesis_version_id=applied_hypothesis_version_id,
-                applied_hypothesis=(
-                    deliberation.applied_hypothesis.model_copy(deep=True)
-                    if deliberation.applied_hypothesis is not None
-                    else None
-                ),
-                hypothesis_confirmed=deliberation.hypothesis_confirmed,
-                no_agreement=deliberation.no_agreement,
-            )
-        )
-
-    def _restart_deliberation(
-        self,
-        session: _Session,
-        perspective_ids: list[str],
-    ) -> DeliberationState:
-        state = session.state
-        if not state.deliberations:
-            raise SessionError("This Investigation has no deliberation.")
-        roster = list(dict.fromkeys(perspective_ids))
-        if len(roster) < 2:
-            raise SessionError("A panel needs at least two Perspectives.")
-        perspectives = {
-            perspective.id: perspective for perspective in state.perspectives
-        }
-        unknown = [
-            perspective_id
-            for perspective_id in roster
-            if perspective_id not in perspectives
-        ]
-        if unknown:
-            raise SessionError(f"unknown Perspectives: {unknown}", status=404)
-        deliberation = state.deliberations[0]
-        self._archive_current_deliberation(
-            deliberation,
-            state.applied_hypothesis_version_id,
-        )
-        deliberation.rounds = []
-        deliberation.recommended_questions = []
-        deliberation.chat = []
-        deliberation.lead_perspective_id = None
-        deliberation.baseline_hypothesis = None
-        deliberation.selected_question_ids = []
-        deliberation.document = None
-        deliberation.threads = []
-        deliberation.agent_iids = [
-            self._new_panel_agent(session, perspectives[perspective_id]).iid
-            for perspective_id in roster
-        ]
-        deliberation.revised_perspective = None
-        deliberation.hypothesis = None
-        deliberation.applied_hypothesis = None
-        deliberation.hypothesis_confirmed = False
-        deliberation.working_hypothesis_source_kind = None
-        deliberation.working_hypothesis_source_round = None
-        deliberation.no_agreement = False
-        deliberation.questions_generated = False
-        deliberation.completed_at = None
-        deliberation.final_hypothesis_version_id = None
-        deliberation.rating = None
-        return deliberation
-
-    def _ensure_perspective_agent(
-        self,
-        session: _Session,
-        perspective: Perspective,
-    ) -> AgentState:
-        state = session.state
-        existing = next(
-            (
-                agent
-                for agent in reversed(state.agents)
-                if agent.perspective_id == perspective.id
-            ),
-            None,
-        )
-        if existing is None:
-            existing = self._new_panel_agent(session, perspective)
-        agent_by_iid = {agent.iid: agent for agent in state.agents}
-        for deliberation in state.deliberations:
-            has_perspective = any(
-                iid in agent_by_iid
-                and agent_by_iid[iid].perspective_id == perspective.id
-                for iid in deliberation.agent_iids
-            )
-            if deliberation.completed_at is None and not has_perspective:
-                deliberation.agent_iids.append(existing.iid)
-        return existing
-
     @_serialized_session_mutation
     async def generate_perspective(
         self,
         session_id: str,
         *,
-        cluster_id: str | None = None,
-        paper_id: str | None = None,
-        facets: list[FacetEvidence] | None = None,
+        paper_id: str,
         name: str | None = None,
         description: str | None = None,
-        invited_perspective_ids: list[str] | None = None,
     ) -> SessionState:
         session = self._require(session_id)
         state = session.state
-        if state.integrated_into_parent_at is not None:
+        if state.notepad is not None and state.notepad.final_snapshot is not None:
+            raise SessionError("This study is finished and read-only.", status=409)
+        if len(state.perspectives) >= MAX_PERSPECTIVES:
+            raise SessionError("A study supports at most six Perspectives.", status=409)
+        paper = next((item for item in state.papers if item.id == paper_id), None)
+        if paper is None:
+            raise SessionError(f"paper '{paper_id}' not found", status=404)
+        perspective_name = (name or paper.title).strip()
+        if not perspective_name:
+            raise SessionError("A Perspective Job requires text.", status=422)
+        if len(perspective_name) > 200:
             raise SessionError(
-                "This research branch was already continued.",
-                status=409,
+                "A Perspective Job must be at most 200 characters.",
+                status=422,
             )
-        if (cluster_id is None) == (paper_id is None):
-            raise SessionError(
-                "Choose exactly one source paper or literature cluster.",
-                status=400,
-            )
-        origin = f"paper:{paper_id}" if paper_id is not None else cluster_id
-        duplicate_message = (
-            "This paper already has a Perspective."
-            if paper_id is not None
-            else "This cluster already has a perspective in the matrix."
-        )
+        origin = f"paper:{paper.id}"
 
         def source_in_matrix() -> bool:
             return any(
-                perspective.origin == origin and not perspective.evolved
-                for perspective in state.perspectives
+                perspective.origin == origin for perspective in state.perspectives
             )
 
+        if source_in_matrix():
+            raise SessionError("This paper already has a Perspective.", status=409)
 
-        if paper_id is not None:
-            if facets is not None:
-                raise SessionError(
-                    "Paper-based Perspectives derive their facets from the paper.",
-                    status=400,
+        cluster = next(
+            (item for item in state.clusters if paper.id in item.paper_ids),
+            None,
+        )
+        if cluster is None and state.clusters:
+            paper_terms = set(
+                agents._content_words(f"{paper.title} {paper.abstract or ''}")
+            )
+
+            def overlap(candidate: ClusterCard) -> int:
+                candidate_papers = [
+                    item for item in state.papers if item.id in candidate.paper_ids
+                ]
+                cluster_terms = set(
+                    agents._content_words(
+                        " ".join(
+                            f"{item.title} {item.abstract or ''}"
+                            for item in candidate_papers
+                        )
+                    )
                 )
-            paper = next((item for item in state.papers if item.id == paper_id), None)
-            if paper is None:
-                raise SessionError(f"paper '{paper_id}' not found", status=404)
-            if source_in_matrix():
-                raise SessionError(duplicate_message, status=409)
-            origin = f"paper:{paper.id}"
-            source_papers = {paper.id: paper}
-            default_name = paper.title
-            demo_evidence = DEMO_FACETS.get(paper.id) if self._demo(session) else None
-            final = await agents.extract_cluster_facets(
-                [paper],
-                provider=self._provider_for(session),
-                demo_facets=[demo_evidence] if demo_evidence else None,
-            )
-        else:
-            assert cluster_id is not None
-            cluster = next(
-                (item for item in state.clusters if item.id == cluster_id),
-                None,
-            )
-            if cluster is None:
-                raise SessionError(f"cluster '{cluster_id}' not found", status=404)
-            if source_in_matrix():
-                raise SessionError(duplicate_message, status=409)
-            origin = cluster.id
-            source_papers = {
-                paper.id: paper
-                for paper in state.papers
-                if paper.id in cluster.paper_ids
-            }
-            default_name = cluster.name
-            final = facets if facets is not None else cluster.facets
+                return len(paper_terms & cluster_terms)
 
+            cluster = max(state.clusters, key=overlap)
+            cluster.paper_ids.append(paper.id)
+            state.unassigned_paper_ids = [
+                identifier
+                for identifier in state.unassigned_paper_ids
+                if identifier != paper.id
+            ]
+        if cluster is None:
+            raise SessionError(
+                "This paper has no literature cluster.",
+                status=409,
+            )
+
+        source_papers = {
+            item.id: item for item in state.papers if item.id in cluster.paper_ids
+        }
         by_facet: dict[Facet, FacetEvidence] = {}
-        for evidence in final:
+        for evidence in cluster.facets:
             if evidence.facet in by_facet:
                 continue
             validated = self._validate_facet_source(evidence, source_papers)
-            if not validated.text.strip():
-                continue
-            by_facet[evidence.facet] = validated
+            if validated.text.strip():
+                by_facet[evidence.facet] = validated
+        fallback = {
+            evidence.facet: evidence
+            for evidence in agents.fallback_cluster_facets(list(source_papers.values()))
+        }
+        for facet in FACETS:
+            if facet not in by_facet and facet in fallback:
+                by_facet[facet] = fallback[facet]
         missing = [facet for facet in FACETS if facet not in by_facet]
         if missing:
             raise SessionError(
@@ -2601,60 +1531,32 @@ class FocusedPanelService:
                 f"Significance; missing {missing}."
             )
 
-        color = PERSONA_COLORS[len(state.perspectives) % len(PERSONA_COLORS)]
         perspective = Perspective(
             id=session.next_perspective_id(),
-            name=name or default_name,
-            color=color,
+            name=perspective_name,
+            color=PERSONA_COLORS[len(state.perspectives) % len(PERSONA_COLORS)],
             facets=by_facet,
-            sources=sorted(
-                {
-                    evidence.paper_id
-                    for evidence in by_facet.values()
-                    if evidence.paper_id
-                }
-            ),
+            sources=sorted(source_papers),
+            anchor_paper_id=paper.id,
+            related_paper_count=max(len(cluster.paper_ids) - 1, 0),
+            cluster_id=cluster.id,
             origin=origin,
-            panel_cycle=0,
         )
         perspective.framing = await agents.derive_framing(
-            perspective, provider=self._provider_for(session)
+            perspective,
+            provider=self._provider_for(session),
         )
-        # The researcher's own wording wins when they edited the description
-        # before building; the derived framing is only the prefill.
-        edited = " ".join((description or "").split())
-        perspective.summary = edited or perspective.framing.framing
+        orientation = (description or "").strip()
+        perspective.summary = orientation or perspective.framing.framing
 
-        # Authoritative re-check with NO await between check and append:
-        # two racing requests can both pass the pre-check above, but only
-        # one survives this synchronous window.
+        if len(state.perspectives) >= MAX_PERSPECTIVES:
+            raise SessionError("A study supports at most six Perspectives.", status=409)
         if source_in_matrix():
-            raise SessionError(duplicate_message, status=409)
+            raise SessionError("This paper already has a Perspective.", status=409)
         state.perspectives.append(perspective)
-        if state.notepad is not None:
-            # "A dashed box at the bottom leads to building a new one, which
-            # joins the chat on return." A Perspective built after the
-            # discussion opened is otherwise silently excluded from it.
+        if state.notepad is not None and state.notepad.final_snapshot is None:
             state.notepad.in_chat.append(perspective.id)
-        if state.deliberations:
-            current = state.deliberations[0]
-            agent_by_iid = {agent.iid: agent for agent in state.agents}
-            invited = (
-                list(invited_perspective_ids)
-                if invited_perspective_ids is not None
-                else [
-                    agent_by_iid[iid].perspective_id
-                    for iid in current.agent_iids
-                    if iid in agent_by_iid
-                ]
-            )
-            self._restart_deliberation(
-                session,
-                [perspective.id, *invited],
-            )
-            perspective.panel_cycle = len(current.completion_history)
-        else:
-            self._ensure_perspective_agent(session, perspective)
+            reconcile_roster(state)
         return self._save_state(state)
 
     @_serialized_session_mutation
@@ -2663,277 +1565,23 @@ class FocusedPanelService:
     ) -> SessionState:
         session = self._require(session_id)
         state = session.state
-        if state.integrated_into_parent_at is not None:
-            raise SessionError(
-                "This research branch was already continued.",
-                status=409,
-            )
-        orphaned = {a.iid for a in state.agents if a.perspective_id == perspective_id}
-        archived_iids = {
-            iid
-            for deliberation in state.deliberations
-            for completion in deliberation.completion_history
-            for iid in [
-                *completion.agent_iids,
-                *(
-                    participant_iid
-                    for round_state in completion.rounds
-                    for participant_iid in round_state.participant_iids
-                ),
-            ]
-        }
-        if orphaned & archived_iids or any(
-            deliberation.rounds
-            and any(iid in deliberation.agent_iids for iid in orphaned)
-            for deliberation in state.deliberations
-        ):
-            raise SessionError(
-                "A perspective cannot be removed after its panel starts."
-            )
-        state.perspectives = [p for p in state.perspectives if p.id != perspective_id]
-        # Cascade before round 1: agents built on the deleted perspective go
-        # too, and every not-yet-started panel loses their wiring.
-        state.agents = [a for a in state.agents if a.perspective_id != perspective_id]
+        if not any(item.id == perspective_id for item in state.perspectives):
+            raise SessionError("Unknown Perspective.", status=404)
+        if state.notepad is not None and state.notepad.final_snapshot is not None:
+            raise SessionError("This study is finished and read-only.", status=409)
+        state.perspectives = [
+            perspective
+            for perspective in state.perspectives
+            if perspective.id != perspective_id
+        ]
         if state.notepad is not None:
             state.notepad.in_chat = [
                 item for item in state.notepad.in_chat if item != perspective_id
             ]
-        for d in state.deliberations:
-            if orphaned:
-                d.agent_iids = [i for i in d.agent_iids if i not in orphaned]
+            reconcile_roster(state)
         return self._save_state(state)
 
-    # -- stage ② deliberation ----------------------------------------------
-
-    def _perspective(self, state: SessionState, perspective_id: str) -> Perspective:
-        perspective = next(
-            (item for item in state.perspectives if item.id == perspective_id),
-            None,
-        )
-        if perspective is None:
-            raise SessionError(
-                f"perspective '{perspective_id}' not found",
-                status=404,
-            )
-        return perspective
-
-    def _agent_profile(self, state: SessionState, agent: AgentState) -> Perspective:
-        base = self._perspective(state, agent.perspective_id)
-        sources = sorted(
-            {
-                *base.sources,
-                *(
-                    evidence.paper_id
-                    for evidence in agent.facets.values()
-                    if evidence.paper_id
-                ),
-            }
-        )
-        return base.model_copy(
-            deep=True,
-            update={
-                "facets": {
-                    facet: evidence.model_copy(deep=True)
-                    for facet, evidence in agent.facets.items()
-                },
-                "sources": sources,
-                "evolved": agent.facet_version > 1,
-            },
-        )
-
-    @_serialized_session_mutation
-    async def develop_agent_hypothesis(self, session_id: str, iid: int) -> SessionState:
-        session = self._require(session_id)
-        state = session.state
-        if any(
-            deliberation.completed_at is not None
-            for deliberation in state.deliberations
-        ):
-            raise SessionError("This deliberation has ended.")
-        agent = next((item for item in state.agents if item.iid == iid), None)
-        if agent is None:
-            raise SessionError(f"agent {iid} not found", status=404)
-        agent.hypothesis = await agents.develop_hypothesis(
-            self._agent_profile(state, agent),
-            provider=self._provider_for(session),
-        )
-        return self._save_state(state)
-
-    def _deliberation(
-        self, state: SessionState, deliberation_id: str
-    ) -> DeliberationState:
-        deliberation = next(
-            (item for item in state.deliberations if item.id == deliberation_id),
-            None,
-        )
-        if deliberation is None:
-            raise SessionError(
-                f"deliberation '{deliberation_id}' not found",
-                status=404,
-            )
-        return deliberation
-
-    @staticmethod
-    def _same_hypothesis(
-        proposed: HypothesisDev,
-        current: HypothesisDev,
-    ) -> bool:
-        def normalized(value: str) -> str:
-            text = value.strip()
-            return "" if text == "Not established yet." else text
-
-        return normalized(proposed.hypothesis) == normalized(current.hypothesis)
-
-    @staticmethod
-    def _require_open_deliberation(deliberation: DeliberationState) -> None:
-        if deliberation.completed_at is not None:
-            raise SessionError("This deliberation has ended.")
-
-    @_serialized_session_mutation
-    async def create_deliberation(self, session_id: str) -> SessionState:
-        session = self._require(session_id)
-        state = session.state
-        if state.deliberations:
-            return state
-        for perspective in state.perspectives:
-            self._ensure_perspective_agent(session, perspective)
-        inherited = (
-            state.applied_hypothesis.model_copy(deep=True)
-            if state.applied_hypothesis is not None
-            else None
-        )
-        state.deliberations.append(
-            DeliberationState(
-                id=session.next_deliberation_id(),
-                agent_iids=[agent.iid for agent in state.agents],
-                hypothesis=inherited,
-                applied_hypothesis=(
-                    inherited.model_copy(deep=True) if inherited is not None else None
-                ),
-                hypothesis_confirmed=inherited is not None,
-            )
-        )
-        return self._save_state(state)
-
-    @_serialized_session_mutation
-    async def initialize_deliberation(
-        self,
-        session_id: str,
-        deliberation_id: str,
-        lead_perspective_id: str,
-    ) -> SessionState:
-        session = self._require(session_id)
-        state = session.state
-        deliberation = self._deliberation(state, deliberation_id)
-        self._require_open_deliberation(deliberation)
-        if deliberation.rounds:
-            legacy_rounds = (
-                deliberation.lead_perspective_id is None
-                and deliberation.baseline_hypothesis is None
-            )
-            if not legacy_rounds:
-                if deliberation.lead_perspective_id != lead_perspective_id:
-                    raise SessionError("The lead cannot change after round 1.")
-            else:
-                agent_by_iid = {agent.iid: agent for agent in state.agents}
-                roster = [
-                    agent_by_iid[iid].perspective_id
-                    for iid in deliberation.agent_iids
-                    if iid in agent_by_iid
-                ]
-                deliberation = self._restart_deliberation(session, roster)
-        lead = next(
-            (
-                agent
-                for agent in state.agents
-                if agent.iid in deliberation.agent_iids
-                and agent.perspective_id == lead_perspective_id
-            ),
-            None,
-        )
-        if lead is None:
-            raise SessionError("Choose a Perspective wired into this panel.")
-        if (
-            deliberation.lead_perspective_id == lead_perspective_id
-            and deliberation.baseline_hypothesis is not None
-            and deliberation.threads
-        ):
-            return state
-        existing_baseline = (
-            deliberation.baseline_hypothesis
-            if deliberation.lead_perspective_id == lead_perspective_id
-            else None
-        )
-        baseline = (
-            existing_baseline.model_copy(deep=True)
-            if existing_baseline is not None
-            else await agents.develop_hypothesis(
-                self._agent_profile(state, lead),
-                provider=self._provider_for(session),
-            )
-        )
-        panel_profiles = [
-            self._agent_profile(state, agent)
-            for agent in state.agents
-            if agent.iid in deliberation.agent_iids
-        ]
-        thread_drafts = await agents.suggest_deliberation_threads(
-            panel_profiles,
-            baseline,
-            provider=self._provider_for(session),
-            demo=self._demo(session),
-        )
-        threads = [
-            DeliberationThread(
-                id=f"{deliberation.id}-thread-{index}",
-                title=thread.title,
-                question=thread.question,
-                context=thread.context,
-                facets=thread.facets,
-                related=[link.model_copy(deep=True) for link in thread.related],
-                perspective_names=thread.perspective_names,
-                hypothesis_fragments=self._canonical_hypothesis_fragments(
-                    baseline,
-                    thread.hypothesis_fragments,
-                ),
-            )
-            for index, thread in enumerate(thread_drafts, start=1)
-        ]
-        lead.hypothesis = baseline.model_copy(deep=True)
-        deliberation.lead_perspective_id = lead_perspective_id
-        deliberation.threads = threads
-        if existing_baseline is None:
-            deliberation.baseline_hypothesis = baseline.model_copy(deep=True)
-            deliberation.hypothesis = baseline.model_copy(deep=True)
-            deliberation.applied_hypothesis = baseline.model_copy(deep=True)
-            deliberation.hypothesis_confirmed = True
-            deliberation.working_hypothesis_source_kind = None
-            deliberation.working_hypothesis_source_round = None
-        return self._save_state(state)
-
-    @staticmethod
-    def _deliberation_lead(
-        state: SessionState,
-        deliberation: DeliberationState,
-    ) -> AgentState | None:
-        return next(
-            (
-                agent
-                for agent in state.agents
-                if agent.iid in deliberation.agent_iids
-                and agent.perspective_id == deliberation.lead_perspective_id
-            ),
-            None,
-        )
-
-    def _agent_view(
-        self, state: SessionState, iid: int
-    ) -> tuple[AgentState, Perspective]:
-        agent = next((item for item in state.agents if item.iid == iid), None)
-        if agent is None:
-            raise SessionError(f"agent {iid} not on the canvas", status=404)
-        return agent, self._agent_profile(state, agent)
-
+    # -- baseline discussion -------------------------------------------------
     @staticmethod
     def _canonical_citations(
         state: SessionState,
@@ -2953,1336 +1601,33 @@ class FocusedPanelService:
         return out
 
     @staticmethod
-    def _canonical_hypothesis_fragments(
-        hypothesis: HypothesisDev | None,
-        fragments: list[str],
-    ) -> list[str]:
-        if hypothesis is None:
-            return []
-        text = hypothesis.hypothesis
-        canonical = list(
-            dict.fromkeys(
-                fragment.strip()
-                for fragment in fragments
-                if fragment.strip() and fragment.strip() in text
-            )
-        )
-        return canonical or [text]
-
-    @staticmethod
-    def _facet_snapshot(
-        state: SessionState,
-        agent_iids: list[int],
-    ) -> dict[int, dict[Facet, str]]:
-        selected = {
-            agent.iid: agent for agent in state.agents if agent.iid in agent_iids
-        }
-        return {
-            iid: {
-                facet: selected[iid].facets[facet].text
-                for facet in FACETS
-                if facet in selected[iid].facets
-            }
-            for iid in agent_iids
-            if iid in selected
-        }
-
-    async def _embed_metric_texts(
-        self,
-        session: _Session,
-        texts: list[str],
-    ) -> tuple[np.ndarray | None, str]:
-        """Embed facet text semantically or mark the study metric unavailable."""
-        embed_batch = self._embedder
-        model = self._embedding_model
-        if embed_batch is None:
-            provider = self._provider
-            embed_batch = getattr(provider, "embed_batch", None)
-            model = getattr(provider, "embedding_model", model)
-        if not callable(embed_batch):
-            return None, "unavailable:no-semantic-embedder"
-        try:
-            matrix = np.asarray(
-                await embed_batch(texts),
-                dtype=np.float32,
-            )
-        except Exception:  # noqa: BLE001 — deliberation survives metric failure
-            return None, "unavailable:embedding-failed"
-        if matrix.ndim != 2 or matrix.shape[0] != len(texts):
-            return None, "unavailable:invalid-embedding-batch"
-        return matrix, f"semantic:{model}"
-
-    async def _round_metrics(
-        self,
-        session: _Session,
-        before: dict[int, dict[Facet, str]],
-        after: dict[int, dict[Facet, str]],
-    ) -> RoundMetrics:
-        records: list[tuple[str, Facet, int, str]] = []
-        for phase, snapshot in (("before", before), ("after", after)):
-            for facet in FACETS:
-                for iid, values in snapshot.items():
-                    text = values.get(facet, "").strip()
-                    if text:
-                        records.append((phase, facet, iid, text))
-        if not records:
-            return RoundMetrics(method="none")
-
-        matrix, method = await self._embed_metric_texts(
-            session,
-            [record[3] for record in records],
-        )
-        if matrix is None:
-            return RoundMetrics(method=method)
-        lookup = {
-            (phase, facet, iid): index
-            for index, (phase, facet, iid, _) in enumerate(records)
-        }
-
-        from sklearn.metrics.pairwise import cosine_distances
-
-        def distances_for(
-            phase: str,
-            snapshot: dict[int, dict[Facet, str]],
-        ) -> list[FacetDistance]:
-            results: list[FacetDistance] = []
-            for facet in FACETS:
-                indices = [
-                    lookup[(phase, facet, iid)]
-                    for iid in snapshot
-                    if (phase, facet, iid) in lookup
-                ]
-                if len(indices) < 2:
-                    results.append(
-                        FacetDistance(
-                            facet=facet,
-                            distance=0.0,
-                            participant_count=len(indices),
-                        )
-                    )
-                    continue
-                pairwise = cosine_distances(matrix[indices])
-                upper = pairwise[np.triu_indices(len(indices), k=1)]
-                distance = float(np.clip(upper.mean(), 0.0, 2.0))
-                results.append(
-                    FacetDistance(
-                        facet=facet,
-                        distance=distance,
-                        participant_count=len(indices),
-                    )
-                )
-            return results
-
-        before_distances = distances_for("before", before)
-        after_distances = distances_for("after", after)
-
-        def overall(values: list[FacetDistance]) -> float | None:
-            valid = [value.distance for value in values if value.participant_count >= 2]
-            return float(np.mean(valid)) if valid else None
-
-        overall_before = overall(before_distances)
-        overall_after = overall(after_distances)
-        if overall_before is None or overall_after is None:
-            delta = None
-            direction = "insufficient"
-        else:
-            delta = float(np.clip(overall_after - overall_before, -2.0, 2.0))
-            if delta < -0.001:
-                direction = "convergent"
-            elif delta > 0.001:
-                direction = "divergent"
-            else:
-                direction = "stable"
-        return RoundMetrics(
-            method=method,
-            before=before_distances,
-            after=after_distances,
-            overall_before=overall_before,
-            overall_after=overall_after,
-            delta=delta,
-            direction=direction,
-        )
-
-    @_serialized_session_mutation
-    async def run_round(
-        self,
-        session_id: str,
-        deliberation_id: str,
-        *,
-        lead_iid: int,
-        thread_id: str,
-        progress_generation: int | None = None,
-    ) -> SessionState:
-        """Run one directed discussion within a panel-identified Thread."""
-        session = self._require(session_id)
-        state = session.state
-        if progress_generation is None:
-            self.start_search_progress(state.id)
-        elif self._search_progress_generation.get(state.id) != progress_generation:
-            raise SessionError("Thread progress generation is stale.", status=409)
-        self._search_progress_active_generation[state.id] = (
-            self._search_progress_generation[state.id]
-        )
-        deliberation = self._deliberation(state, deliberation_id)
-        self._require_open_deliberation(deliberation)
-        if len(deliberation.agent_iids) < 2:
-            raise SessionError("Wire in at least two agents first.")
-        if lead_iid not in deliberation.agent_iids:
-            raise SessionError("The lead must be wired into this deliberation.")
-        if (
-            deliberation.lead_perspective_id is None
-            or deliberation.baseline_hypothesis is None
+    def _participant_text(state: SessionState, text: str) -> str:
+        cleaned = text
+        for paper_id in sorted(
+            (paper.id for paper in state.papers),
+            key=len,
+            reverse=True,
         ):
-            raise SessionError("Choose a lead and generate its baseline first.")
-        configured_lead = self._deliberation_lead(state, deliberation)
-        if configured_lead is None or configured_lead.iid != lead_iid:
-            raise SessionError("Use the configured lead for every Thread.")
-        thread = next(
-            (
-                candidate
-                for candidate in deliberation.threads
-                if candidate.id == thread_id
-            ),
-            None,
-        )
-        if thread is None:
-            raise SessionError("Choose a Thread identified by this panel.")
-        selected = list(thread.facets)
-        if (
-            deliberation.hypothesis is not None
-            and not deliberation.hypothesis_confirmed
-        ):
-            raise SessionError(
-                "Apply or edit the pending shared-ground update before "
-                "starting another Thread."
+            escaped = re.escape(paper_id)
+            cleaned = re.sub(
+                rf"\[\s*{escaped}\s*\]",
+                "",
+                cleaned,
+                flags=re.IGNORECASE,
             )
-        if (
-            deliberation.rounds
-            and deliberation.rounds[-1].completed
-            and deliberation.rounds[-1].resolution_decision is None
-        ):
-            raise SessionError(
-                "Review the completed Thread's resolution before "
-                "starting another Thread."
+            cleaned = re.sub(
+                rf"(?<!\w){escaped}(?!\w)",
+                "",
+                cleaned,
+                flags=re.IGNORECASE,
             )
+        cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
+        cleaned = " ".join(cleaned.split())
+        if not cleaned:
+            raise SessionError("Agent feedback contained no participant-visible text.")
+        return cleaned
 
-        if deliberation.rounds and not deliberation.rounds[-1].completed:
-            deliberation.rounds.pop()
-
-        participant_iids = list(deliberation.agent_iids)
-        round_state = DeliberationRound(
-            n=len(deliberation.rounds) + 1,
-            lead_iid=lead_iid,
-            participant_iids=participant_iids,
-            facets=selected,
-            thread_id=thread.id,
-        )
-        round_state.hypothesis_before = (
-            deliberation.applied_hypothesis.model_copy(deep=True)
-            if deliberation.applied_hypothesis is not None
-            else None
-        )
-        deliberation.rounds.append(round_state)
-        before = self._facet_snapshot(state, participant_iids)
-
-        lead_agent, lead_profile = self._agent_view(state, lead_iid)
-        other_profiles = [
-            self._agent_view(state, iid)[1]
-            for iid in participant_iids
-            if iid != lead_iid
-        ]
-
-        def report(
-            step: int,
-            stage: str,
-            message: str,
-            *,
-            kind: SearchProgressKind = "round_stage",
-            turn: Turn | None = None,
-            check: ModeratorCheck | None = None,
-        ) -> None:
-            self._publish_search_progress(
-                state.id,
-                kind,
-                message,
-                stage=stage,
-                step=step,
-                total_steps=7,
-                agent_label=turn.agent_label if turn is not None else None,
-                text=turn.text if turn is not None else None,
-                exchange_n=(
-                    turn.exchange_n
-                    if turn is not None
-                    else check.exchange_n
-                    if check is not None
-                    else None
-                ),
-                max_exchanges=MAX_DELIBERATION_EXCHANGES,
-                proposed_shared_ground=(
-                    check.proposed_shared_ground if check is not None else None
-                ),
-                unanimous=check.unanimous if check is not None else None,
-            )
-
-        report(1, "lead", "Lead is drafting the opening statement.")
-        report(2, "panel", "Panel Perspectives are exchanging responses.")
-
-        async def speak(turn: Turn) -> None:
-            round_state.turns.append(turn)
-            report(
-                2,
-                "exchange",
-                f"{turn.agent_label or 'Panel'} responded.",
-                kind="round_turn",
-                turn=turn,
-            )
-
-        primary_facet = selected[0] if selected else None
-        final_verdict: ThreadVerdict | None = None
-        for exchange_n in range(1, MAX_DELIBERATION_EXCHANGES + 1):
-            prior_turns = [
-                f"[T{turn.id}] {turn.agent_label or 'Panel'} "
-                f"({turn.relation or turn.kind.value}): {turn.text}"
-                for turn in round_state.turns
-            ]
-            previous_check = (
-                round_state.moderator_checks[-1]
-                if round_state.moderator_checks
-                else None
-            )
-            reply_target_id = next(
-                (
-                    turn.id
-                    for assent in (previous_check.assents if previous_check else [])
-                    if assent.decision != "accept"
-                    for turn in reversed(round_state.turns)
-                    if turn.exchange_n == exchange_n - 1
-                    and turn.agent_iid == assent.agent_iid
-                    and turn.relation in {"challenge", "reply"}
-                ),
-                None,
-            )
-            if reply_target_id is None and previous_check is not None:
-                reply_target_id = next(
-                    (
-                        turn.id
-                        for turn in reversed(round_state.turns)
-                        if turn.exchange_n == exchange_n - 1
-                        and turn.agent_iid != lead_iid
-                    ),
-                    None,
-                )
-            moderator_feedback = (
-                (
-                    f"Proposed shared ground: "
-                    f"{previous_check.proposed_shared_ground}\n"
-                    + "\n".join(
-                        f"- {assent.agent_label}: {assent.decision} — {assent.reason}"
-                        for assent in previous_check.assents
-                    )
-                )
-                if previous_check is not None
-                else (
-                    f"Thread: {thread.title}\n"
-                    f"Question: {thread.question}\n"
-                    f"Context: {thread.context}"
-                )
-            )
-            statement = await agents.open_statement(
-                lead_profile,
-                thread,
-                provider=self._provider_for(session),
-                round_turns=prior_turns,
-                moderator_feedback=moderator_feedback,
-                current_hypothesis=round_state.hypothesis_before,
-            )
-            lead_turn = Turn(
-                id=session.next_turn_id(),
-                agent_iid=lead_iid,
-                agent_label=lead_agent.label,
-                role="lead",
-                kind=TurnKind.reply if exchange_n > 1 else TurnKind.open,
-                facet=primary_facet,
-                text=statement.text,
-                reply_to_turn_id=reply_target_id,
-                relation=statement.relation,
-                assumption=statement.assumption,
-                hypothesis_fragments=self._canonical_hypothesis_fragments(
-                    round_state.hypothesis_before,
-                    statement.hypothesis_fragments,
-                ),
-                citations=self._canonical_citations(
-                    state,
-                    statement.citations,
-                    set(lead_profile.sources),
-                ),
-                exchange_n=exchange_n,
-            )
-            await speak(lead_turn)
-
-            answers: list[Turn] = []
-            answer_tasks = []
-            try:
-                async with asyncio.TaskGroup() as task_group:
-                    for iid in participant_iids:
-                        if iid == lead_iid:
-                            continue
-                        agent, profile = self._agent_view(state, iid)
-                        answer_tasks.append(
-                            (
-                                iid,
-                                agent,
-                                profile,
-                                task_group.create_task(
-                                    agents.answer_statement(
-                                        profile,
-                                        thread,
-                                        lead_agent.label,
-                                        statement.text,
-                                        provider=self._provider_for(session),
-                                        round_turns=prior_turns,
-                                        moderator_feedback=moderator_feedback,
-                                        current_hypothesis=round_state.hypothesis_before,
-                                    )
-                                ),
-                            )
-                        )
-            except* Exception as errors:  # noqa: BLE001
-                raise errors.exceptions[0]
-            for iid, agent, profile, task in answer_tasks:
-                response = task.result()
-                turn = Turn(
-                    id=session.next_turn_id(),
-                    agent_iid=iid,
-                    agent_label=agent.label,
-                    role="other",
-                    kind=(
-                        TurnKind.challenge
-                        if response.relation == "challenge"
-                        else TurnKind.reply
-                        if response.relation == "reply"
-                        else TurnKind.answer
-                    ),
-                    facet=primary_facet,
-                    text=response.text,
-                    reply_to_turn_id=lead_turn.id,
-                    relation=response.relation,
-                    assumption=response.assumption,
-                    hypothesis_fragments=self._canonical_hypothesis_fragments(
-                        round_state.hypothesis_before,
-                        response.hypothesis_fragments,
-                    ),
-                    citations=self._canonical_citations(
-                        state,
-                        response.citations,
-                        set(profile.sources),
-                    ),
-                    exchange_n=exchange_n,
-                )
-                answers.append(turn)
-                await speak(turn)
-
-            if exchange_n == 1 and not any(
-                turn.citations for turn in [lead_turn, *answers]
-            ):
-                support_result = await agents.retrieve_support(
-                    lead_turn.text,
-                    lead_profile,
-                    provider=self._provider_for(session),
-                    s2=None if self._demo(session) else self._s2,
-                    corpus=state.papers,
-                )
-                if support_result is not None:
-                    support, support_paper = support_result
-                    if not any(paper.id == support_paper.id for paper in state.papers):
-                        state.papers.append(support_paper)
-                    await speak(
-                        Turn(
-                            id=session.next_turn_id(),
-                            agent_iid=lead_iid,
-                            agent_label=lead_agent.label,
-                            role="lead",
-                            kind=TurnKind.support,
-                            facet=primary_facet,
-                            text=support.text,
-                            relation="support",
-                            hypothesis_fragments=self._canonical_hypothesis_fragments(
-                                round_state.hypothesis_before,
-                                [],
-                            ),
-                            citations=self._canonical_citations(
-                                state,
-                                support.citations,
-                                {paper.id for paper in state.papers},
-                            ),
-                            exchange_n=exchange_n,
-                        )
-                    )
-
-            thread_turns = list(round_state.turns)
-            labeled_turns = [
-                f"[T{turn.id}] {turn.agent_label or 'Panel'} "
-                f"({turn.relation or turn.kind.value}): {turn.text}"
-                for turn in thread_turns
-            ]
-            verdict = await agents.judge_thread(
-                lead_profile,
-                other_profiles,
-                thread,
-                labeled_turns,
-                provider=self._provider_for(session),
-                shared_ground=(
-                    "; ".join(DEMO_SHARED_GROUND[facet] for facet in selected)
-                    if selected
-                    and state.clustering is not None
-                    and state.clustering.method == "demo_seeds"
-                    else None
-                ),
-            )
-            positions: dict[str, str] = {}
-            evidence: dict[str, list[str]] = {}
-            for turn in thread_turns:
-                if turn.kind != TurnKind.support:
-                    positions[turn.agent_label] = turn.text
-                if turn.citations:
-                    evidence[turn.agent_label] = list(
-                        dict.fromkeys(
-                            [
-                                *evidence.get(turn.agent_label, []),
-                                *turn.citations,
-                            ]
-                        )
-                    )
-            known = set(positions)
-            verdict = verdict.model_copy(
-                update={
-                    "supporting": [
-                        name for name in verdict.supporting if name in known
-                    ],
-                    "contested_by": [
-                        name for name in verdict.contested_by if name in known
-                    ],
-                    "positions": positions,
-                    "evidence": evidence,
-                }
-            )
-
-            assent_tasks = []
-            try:
-                async with asyncio.TaskGroup() as task_group:
-                    for iid in participant_iids:
-                        agent, profile = self._agent_view(state, iid)
-                        assent_tasks.append(
-                            (
-                                agent,
-                                task_group.create_task(
-                                    agents.assent_to_shared_ground(
-                                        profile,
-                                        thread,
-                                        verdict.proposed_shared_ground,
-                                        labeled_turns,
-                                        provider=self._provider_for(session),
-                                        demo=self._demo(session),
-                                        exchange_n=exchange_n,
-                                        challenge_turn_id=lead_turn.id,
-                                    )
-                                ),
-                            )
-                        )
-            except* Exception as errors:  # noqa: BLE001
-                raise errors.exceptions[0]
-            assents = []
-            valid_turn_ids = {turn.id for turn in thread_turns}
-            for agent, task in assent_tasks:
-                draft = task.result()
-                challenge_turn_id = (
-                    draft.challenge_turn_id
-                    if draft.challenge_turn_id in valid_turn_ids
-                    else None
-                )
-                assents.append(
-                    SharedGroundAssent(
-                        agent_iid=agent.iid,
-                        agent_label=agent.label,
-                        decision=draft.decision,
-                        reason=draft.reason,
-                        challenge_turn_id=challenge_turn_id,
-                        challenge=draft.challenge.strip(),
-                    )
-                )
-            unanimous = (
-                bool(verdict.proposed_shared_ground.strip())
-                and len(assents) == len(participant_iids)
-                and all(assent.decision == "accept" for assent in assents)
-            )
-            check = ModeratorCheck(
-                exchange_n=exchange_n,
-                proposed_shared_ground=verdict.proposed_shared_ground,
-                verdict=verdict.model_copy(deep=True),
-                assents=assents,
-                unanimous=unanimous,
-            )
-            round_state.moderator_checks.append(check)
-            report(
-                3,
-                "judging",
-                (
-                    f"All Perspectives accepted shared ground in exchange {exchange_n}."
-                    if unanimous
-                    else f"Exchange {exchange_n} did not reach unanimous agreement."
-                ),
-                kind="round_check",
-                check=check,
-            )
-            if unanimous and exchange_n >= MIN_DELIBERATION_EXCHANGES:
-                final_verdict = verdict.model_copy(
-                    update={
-                        "consensus": verdict.proposed_shared_ground,
-                        "supporting": list(positions),
-                    }
-                )
-                round_state.stop_reason = "unanimous"
-                break
-            final_verdict = verdict
-
-        if final_verdict is None:
-            raise RuntimeError("deliberation exchange loop produced no verdict")
-        if round_state.stop_reason is None:
-            round_state.stop_reason = "exchange_limit"
-            if final_verdict.status == "consensus":
-                final_verdict = final_verdict.model_copy(
-                    update={
-                        "status": "unsettled",
-                        "summary": (
-                            "The moderator proposed shared ground, but not every "
-                            "Perspective accepted it."
-                        ),
-                        "consensus": "",
-                        "unsettled": (
-                            "The panel did not unanimously accept the proposed "
-                            "shared ground."
-                        ),
-                        "supporting": [],
-                    }
-                )
-        round_state.verdict = final_verdict
-        report(3, "judging", "Moderator finalized the agreement check.")
-
-        report(4, "summary", "Moderator is synthesizing the Thread.")
-        resolution = await agents.summarize_thread(
-            thread,
-            final_verdict,
-            [
-                f"{turn.agent_label or 'Panel'}: {turn.text}"
-                for turn in round_state.turns
-            ],
-            provider=self._provider_for(session),
-        )
-        known_papers = {paper.id for paper in state.papers}
-        known_names = {
-            self._agent_view(state, iid)[0].label for iid in participant_iids
-        }
-        for points in (
-            resolution.consensus_points,
-            resolution.disagreement_points,
-            resolution.unsettled_points,
-        ):
-            for point in points:
-                point.citations = [
-                    citation for citation in point.citations if citation in known_papers
-                ]
-                point.perspective_names = [
-                    name for name in point.perspective_names if name in known_names
-                ]
-        round_state.resolution = resolution
-
-        report(5, "lead_revision", "Updating the affected Perspectives.")
-        consensus_resolution = RoundResolution(
-            summary=resolution.summary,
-            consensus_points=[
-                point.model_copy(deep=True) for point in resolution.consensus_points
-            ],
-        )
-        reflection_tasks = []
-        ordered_iids = [
-            lead_iid,
-            *(iid for iid in participant_iids if iid != lead_iid),
-        ]
-        try:
-            async with asyncio.TaskGroup() as task_group:
-                for iid in ordered_iids:
-                    agent, profile = self._agent_view(state, iid)
-                    reflection_tasks.append(
-                        (
-                            agent,
-                            task_group.create_task(
-                                agents.reflect_on_round(
-                                    iid,
-                                    profile,
-                                    selected,
-                                    consensus_resolution,
-                                    provider=self._provider_for(session),
-                                    demo=self._demo(session),
-                                )
-                            ),
-                        )
-                    )
-        except* Exception as errors:  # noqa: BLE001
-            raise errors.exceptions[0]
-        for agent, task in reflection_tasks:
-            reflection, updated = task.result()
-            agent.facets = updated
-            if reflection.decision == "revised":
-                agent.facet_version += 1
-            round_state.reflections.append(reflection)
-
-        after = self._facet_snapshot(state, participant_iids)
-        _, revised = self._agent_view(state, lead_iid)
-        revised = revised.model_copy(
-            deep=True,
-            update={
-                "id": f"{revised.id}-thread-{round_state.n}",
-                "name": f"{revised.name} · Thread {round_state.n}",
-                "evolved": True,
-                "origin": deliberation.id,
-            },
-        )
-        revised.summary = resolution.summary
-
-        report(6, "hypothesis", "Generating the hypothesis proposal.")
-        hypothesis_task = None
-        try:
-            async with asyncio.TaskGroup() as task_group:
-                metrics_task = task_group.create_task(
-                    self._round_metrics(session, before, after)
-                )
-                framing_task = task_group.create_task(
-                    agents.derive_framing(
-                        revised,
-                        provider=self._provider_for(session),
-                    )
-                )
-                questions_task = task_group.create_task(
-                    agents.recommend_questions(
-                        resolution,
-                        revised,
-                        provider=self._provider_for(session),
-                    )
-                )
-                if resolution.consensus_points:
-                    hypothesis_task = task_group.create_task(
-                        agents.develop_hypothesis_from_consensus(
-                            consensus_resolution,
-                            current=deliberation.applied_hypothesis,
-                            provider=self._provider_for(session),
-                        )
-                    )
-        except* Exception as errors:  # noqa: BLE001
-            raise errors.exceptions[0]
-
-        round_state.metrics = metrics_task.result()
-        revised.framing = framing_task.result()
-        deliberation.revised_perspective = revised
-
-        if hypothesis_task is not None:
-            deliberation.no_agreement = False
-            proposed_hypothesis = hypothesis_task.result()
-            if not proposed_hypothesis.hypothesis.strip():
-                if deliberation.applied_hypothesis is not None:
-                    proposed_hypothesis = deliberation.applied_hypothesis.model_copy(
-                        deep=True
-                    )
-                else:
-                    proposed_hypothesis = HypothesisDev(
-                        hypothesis="Not established yet."
-                    )
-            round_state.hypothesis_proposal = proposed_hypothesis.model_copy(deep=True)
-            if deliberation.applied_hypothesis is not None and self._same_hypothesis(
-                proposed_hypothesis,
-                deliberation.applied_hypothesis,
-            ):
-                deliberation.hypothesis = deliberation.applied_hypothesis.model_copy(
-                    deep=True
-                )
-                deliberation.hypothesis_confirmed = True
-            else:
-                deliberation.hypothesis = proposed_hypothesis
-                deliberation.hypothesis_confirmed = False
-        else:
-            deliberation.no_agreement = True
-
-        questions = questions_task.result()
-        prior_questions = [
-            *(
-                question
-                for completion in deliberation.completion_history
-                for question in completion.recommended_questions
-            ),
-            *deliberation.recommended_questions,
-        ]
-        unresolved = {
-            " ".join(item.question.casefold().split())
-            for item in prior_questions
-            if item.status in {"open", "investigating"}
-        }
-        new_questions: list[RecommendedQuestion] = []
-        cycle_suffix = (
-            f"-c{len(deliberation.completion_history) + 1}"
-            if deliberation.completion_history
-            else ""
-        )
-        for index, question in enumerate(questions, start=1):
-            identity = " ".join(question.question.casefold().split())
-            if identity in unresolved:
-                continue
-            unresolved.add(identity)
-            new_questions.append(
-                question.model_copy(
-                    update={
-                        "id": (
-                            f"{deliberation.id}{cycle_suffix}-r{round_state.n}-q{index}"
-                        ),
-                        "source_round": round_state.n,
-                        "status": "open",
-                        "child_investigation_id": None,
-                        "selected_for_followup": False,
-                    }
-                )
-            )
-        deliberation.recommended_questions.extend(new_questions)
-        # Kat's F→J→D loop: a Resolution's open questions re-enter the
-        # deliberation as suggested Threads the researcher may start next.
-        existing_thread_questions = {
-            " ".join(thread.question.casefold().split())
-            for thread in deliberation.threads
-        }
-        panel_names = [
-            self._agent_view(state, iid)[0].label for iid in participant_iids
-        ]
-        for question in new_questions[:MAX_SUGGESTED_THREADS_PER_ROUND]:
-            identity = " ".join(question.question.casefold().split())
-            if identity in existing_thread_questions:
-                continue
-            if len(deliberation.threads) >= MAX_DELIBERATION_THREADS:
-                break
-            existing_thread_questions.add(identity)
-            deliberation.threads.append(
-                DeliberationThread(
-                    id=f"{deliberation.id}-thread-{len(deliberation.threads) + 1}",
-                    title=_question_thread_title(question.question),
-                    question=question.question,
-                    context=question.rationale[:2000],
-                    facets=list(dict.fromkeys(question.facets))[:4],
-                    related=[],
-                    perspective_names=panel_names,
-                    hypothesis_fragments=[],
-                    source_round=round_state.n,
-                )
-            )
-        deliberation.questions_generated = True
-        round_state.completed = True
-        report(7, "saving", "Saving the completed Thread.")
-
-        return self._save_state(state)
-
-    @_serialized_session_mutation
-    async def decide_thread_resolution(
-        self,
-        session_id: str,
-        deliberation_id: str,
-        round_n: int,
-        *,
-        decision: Literal["accept", "edit", "keep_open"],
-        summary: str | None = None,
-        note: str = "",
-    ) -> SessionState:
-        """Researcher review of a completed Thread's Resolution.
-
-        Accept closes the Thread as synthesized, edit closes it with the
-        researcher's own synthesis, and keep-open leaves the Thread available
-        for another discussion.
-        """
-        session = self._require(session_id)
-        state = session.state
-        deliberation = self._deliberation(state, deliberation_id)
-        self._require_open_deliberation(deliberation)
-        round_state = next(
-            (item for item in deliberation.rounds if item.n == round_n),
-            None,
-        )
-        if round_state is None or not round_state.completed:
-            raise SessionError("Review a completed Thread.", status=404)
-        if round_state.resolution is None:
-            raise SessionError("This Thread has no resolution to review.")
-        if round_state.resolution_decision in {"accepted", "edited"}:
-            raise SessionError("This Thread's resolution is already closed.")
-        if decision == "edit":
-            edited = (summary or "").strip()
-            if not edited:
-                raise SessionError("An edited resolution needs its summary.")
-            round_state.resolution.summary = edited[:2000]
-            round_state.resolution_decision = "edited"
-        elif decision == "accept":
-            round_state.resolution_decision = "accepted"
-        else:
-            round_state.resolution_decision = "kept_open"
-        round_state.resolution_note = note.strip()[:2000]
-        return self._save_state(state)
-
-    @_serialized_session_mutation
-    async def complete_deliberation(
-        self,
-        session_id: str,
-        deliberation_id: str,
-        selected_question_ids: list[str] | None = None,
-    ) -> SessionState:
-        session = self._require(session_id)
-        state = session.state
-        deliberation = self._deliberation(state, deliberation_id)
-        if deliberation.completed_at is not None:
-            return state
-        if not deliberation.rounds or not deliberation.rounds[-1].completed:
-            raise SessionError(
-                "Complete a focused round before ending the deliberation."
-            )
-        if deliberation.rounds[-1].resolution_decision is None:
-            raise SessionError(
-                "Review the completed Thread's resolution before "
-                "ending the deliberation."
-            )
-        selected = (
-            deliberation.selected_question_ids
-            if selected_question_ids is None
-            else selected_question_ids
-        )
-        selection = list(dict.fromkeys(selected))
-        known_questions = {
-            question.id: question
-            for question in deliberation.recommended_questions
-            if question.status == "open"
-        }
-        unknown_questions = [
-            question_id
-            for question_id in selection
-            if question_id not in known_questions
-        ]
-        if unknown_questions:
-            raise SessionError(
-                f"unknown open questions: {unknown_questions}",
-                status=404,
-            )
-        deliberation.selected_question_ids = selection
-        for question in deliberation.recommended_questions:
-            question.selected_for_followup = question.id in selection
-        if (
-            not deliberation.hypothesis_confirmed
-            or deliberation.applied_hypothesis is None
-        ):
-            raise SessionError(
-                "Apply the pending hypothesis update before ending the deliberation."
-            )
-        if (
-            state.applied_hypothesis_version_id is None
-            or state.applied_hypothesis != deliberation.applied_hypothesis
-        ):
-            raise SessionError(
-                "Save the current hypothesis before ending the deliberation."
-            )
-        open_questions = [
-            question.question
-            for question in deliberation.recommended_questions
-            if question.status == "open"
-        ]
-        unsettled_threads = [
-            thread.question
-            for thread in deliberation.threads
-            if not any(
-                round_state.thread_id == thread.id
-                and round_state.resolution_decision in {"accepted", "edited"}
-                for round_state in deliberation.rounds
-            )
-        ]
-        deliberation.document = await agents.synthesize_document(
-            state.problem,
-            deliberation.threads,
-            deliberation.rounds,
-            list(dict.fromkeys([*open_questions, *unsettled_threads])),
-            provider=self._provider_for(session),
-        )
-        deliberation.completed_at = utcnow()
-        deliberation.final_hypothesis_version_id = state.applied_hypothesis_version_id
-        return self._save_state(state)
-
-    @_serialized_session_mutation
-    async def rate_deliberation(
-        self,
-        session_id: str,
-        deliberation_id: str,
-        rating: DeliberationRating,
-    ) -> SessionState:
-        session = self._require(session_id)
-        deliberation = self._deliberation(session.state, deliberation_id)
-        if deliberation.completed_at is None:
-            raise SessionError("End the deliberation before scoring it.")
-        deliberation.rating = DeliberationRating(
-            divergent=rating.divergent,
-            convergent=rating.convergent,
-            note=rating.note.strip(),
-        )
-        return self._save_state(session.state)
-
-    @_serialized_session_mutation
-    async def confirm_deliberation_hypothesis(
-        self,
-        session_id: str,
-        deliberation_id: str,
-        hypothesis: HypothesisDev,
-        mode: HypothesisConfirmationMode = "apply_pending",
-    ) -> SessionState:
-        session = self._require(session_id)
-        deliberation = self._deliberation(session.state, deliberation_id)
-        self._require_open_deliberation(deliberation)
-        if not deliberation.rounds or not deliberation.rounds[-1].completed:
-            raise SessionError("Complete a focused round first.")
-        latest_round = deliberation.rounds[-1]
-        if mode == "reject_pending":
-            if deliberation.hypothesis_confirmed:
-                raise SessionError(
-                    "There is no pending hypothesis update to reject.",
-                    status=409,
-                )
-            if deliberation.applied_hypothesis is None:
-                raise SessionError("There is no previous hypothesis to keep.")
-            deliberation.hypothesis = deliberation.applied_hypothesis.model_copy(
-                deep=True
-            )
-            deliberation.hypothesis_confirmed = True
-            lead_agent = self._deliberation_lead(session.state, deliberation)
-            if lead_agent is not None:
-                lead_agent.hypothesis = deliberation.applied_hypothesis.model_copy(
-                    deep=True
-                )
-            latest_round.hypothesis_decision = "rejected"
-            return self._save_state(session.state)
-        if deliberation.hypothesis is None:
-            raise SessionError(
-                "This round did not establish enough common ground for a hypothesis."
-            )
-        text = hypothesis.hypothesis.strip()
-        if not text:
-            raise SessionError("Complete the hypothesis.")
-        applied = HypothesisDev(hypothesis=text)
-        if mode == "apply_pending":
-            if deliberation.hypothesis_confirmed:
-                if applied == deliberation.applied_hypothesis:
-                    return session.state
-                raise SessionError(
-                    "There is no pending hypothesis update to apply.",
-                    status=409,
-                )
-            source_kind: Literal["applied", "edit"] = "applied"
-            latest_round.hypothesis_decision = (
-                "accepted"
-                if latest_round.hypothesis_proposal is not None
-                and self._same_hypothesis(
-                    latest_round.hypothesis_proposal,
-                    applied,
-                )
-                else "edited"
-            )
-        else:
-            if (
-                not deliberation.hypothesis_confirmed
-                or deliberation.applied_hypothesis is None
-            ):
-                raise SessionError(
-                    "Apply or discard the pending update before editing the "
-                    "working hypothesis.",
-                    status=409,
-                )
-            if applied == deliberation.applied_hypothesis:
-                return session.state
-            source_kind = "edit"
-
-        previous = deliberation.applied_hypothesis
-        deliberation.hypothesis = applied.model_copy(deep=True)
-        deliberation.applied_hypothesis = applied.model_copy(deep=True)
-        deliberation.hypothesis_confirmed = True
-        lead_agent = self._deliberation_lead(session.state, deliberation)
-        if lead_agent is not None:
-            lead_agent.hypothesis = applied.model_copy(deep=True)
-        if previous != applied:
-            deliberation.working_hypothesis_source_kind = source_kind
-            deliberation.working_hypothesis_source_round = deliberation.rounds[-1].n
-        return self._save_state(session.state)
-
-    @_serialized_session_mutation
-    async def save_deliberation_hypothesis(
-        self,
-        session_id: str,
-        deliberation_id: str,
-    ) -> SessionState:
-        session = self._require(session_id)
-        deliberation = self._deliberation(session.state, deliberation_id)
-        self._require_open_deliberation(deliberation)
-        working = deliberation.applied_hypothesis
-        if not deliberation.hypothesis_confirmed or working is None:
-            raise SessionError("Apply the working hypothesis before saving it.")
-        workspace = self._workspace_for(session.state)
-        current_version_id = session.state.applied_hypothesis_version_id
-        latest_archive = (
-            deliberation.completion_history[-1]
-            if deliberation.completion_history
-            else None
-        )
-        fresh_cycle = (
-            latest_archive is not None
-            and current_version_id == latest_archive.applied_hypothesis_version_id
-        )
-        if (
-            not fresh_cycle
-            and current_version_id is not None
-            and session.state.applied_hypothesis == working
-        ):
-            return session.state
-
-        advances_promoted_branch = (
-            not fresh_cycle
-            and current_version_id is not None
-            and workspace.promoted_hypothesis_version_id == current_version_id
-            and self._hypothesis_version(
-                workspace,
-                current_version_id,
-            ).investigation_id
-            == session.state.id
-        )
-        version = self._record_hypothesis(
-            session.state,
-            deliberation,
-            working,
-            source_kind=deliberation.working_hypothesis_source_kind or "applied",
-            parent_ids=[] if fresh_cycle else None,
-            source_round=deliberation.working_hypothesis_source_round,
-        )
-        if advances_promoted_branch:
-            workspace.promoted_hypothesis_version_id = version.id
-        return self._save_state(session.state)
-
-    # ------------------------------------------------------------------
-    # Thread-centered dialogue (canonical deliberation engine)
-    # ------------------------------------------------------------------
-
-    def _dialogue_engine(self, session: _Session):
-        from agora.focused import dialogue as dialogue_module
-
-        if self._demo(session):
-            return dialogue_module.DemoDialogueEngine()
-        from agora.config.settings import load_settings
-
-        models = load_settings().models
-        return dialogue_module.LiveDialogueEngine(
-            panel=models.panel,
-            deliberation=models.deliberation,
-        )
-
-    def _dialogue_reporter(self, session_id: str):
-        service = self
-
-        class _Reporter:
-            def stage(self, stage: str, message: str) -> None:
-                service._publish_search_progress(
-                    session_id, "round_stage", message, stage=stage
-                )
-
-            def turn(self, author: str, text: str) -> None:
-                service._publish_search_progress(
-                    session_id, "round_turn", text, author=author
-                )
-
-        return _Reporter()
-
-    def _begin_dialogue_progress(
-        self, session_id: str, progress_generation: int | None
-    ) -> None:
-        if progress_generation is None:
-            self.start_search_progress(session_id)
-        elif self._search_progress_generation.get(session_id) != (progress_generation):
-            raise SessionError("Dialogue progress generation is stale.", status=409)
-        self._search_progress_active_generation[session_id] = (
-            self._search_progress_generation[session_id]
-        )
-
-    @_serialized_session_mutation
-    async def start_dialogue(
-        self,
-        session_id: str,
-        *,
-        progress_generation: int | None = None,
-    ) -> SessionState:
-        """Run the opening phase: proposals, peer review, refinement."""
-        from agora.focused import dialogue as dialogue_module
-
-        session = self._require(session_id)
-        state = session.state
-        self._begin_dialogue_progress(session_id, progress_generation)
-        if state.dialogue is not None and state.dialogue.stage != "opening":
-            raise SessionError("The deliberation has already started.")
-        try:
-            await dialogue_module.start_dialogue(
-                state,
-                engine=self._dialogue_engine(session),
-                reporter=self._dialogue_reporter(session_id),
-            )
-        except dialogue_module.DialogueError as error:
-            raise SessionError(str(error)) from error
-        return self._save_state(state)
-
-    @_serialized_session_mutation
-    async def select_dialogue_directions(
-        self,
-        session_id: str,
-        *,
-        proposal_ids: list[str],
-        progress_generation: int | None = None,
-    ) -> SessionState:
-        """Create the Working Document from the selected refinements."""
-        from agora.focused import dialogue as dialogue_module
-
-        session = self._require(session_id)
-        state = session.state
-        self._begin_dialogue_progress(session_id, progress_generation)
-        try:
-            await dialogue_module.select_directions(
-                state,
-                engine=self._dialogue_engine(session),
-                reporter=self._dialogue_reporter(session_id),
-                proposal_ids=proposal_ids,
-            )
-        except dialogue_module.DialogueError as error:
-            raise SessionError(str(error)) from error
-        return self._save_state(state)
-
-    @_serialized_session_mutation
-    async def open_dialogue_thread(
-        self,
-        session_id: str,
-        *,
-        thread_id: str,
-        progress_generation: int | None = None,
-    ) -> SessionState:
-        """Open a suggested Thread and run its discussion cascade."""
-        from agora.focused import dialogue as dialogue_module
-
-        session = self._require(session_id)
-        state = session.state
-        self._begin_dialogue_progress(session_id, progress_generation)
-        try:
-            await dialogue_module.open_dialogue_thread(
-                state,
-                engine=self._dialogue_engine(session),
-                reporter=self._dialogue_reporter(session_id),
-                thread_id=thread_id,
-            )
-        except dialogue_module.DialogueError as error:
-            raise SessionError(str(error)) from error
-        return self._save_state(state)
-
-    @_serialized_session_mutation
-    async def message_dialogue_thread(
-        self,
-        session_id: str,
-        *,
-        thread_id: str,
-        message: str,
-        reply_to: str | None = None,
-        progress_generation: int | None = None,
-    ) -> SessionState:
-        """Record a researcher challenge and run the reply cascade."""
-        from agora.focused import dialogue as dialogue_module
-
-        session = self._require(session_id)
-        state = session.state
-        self._begin_dialogue_progress(session_id, progress_generation)
-        try:
-            await dialogue_module.message_thread(
-                state,
-                engine=self._dialogue_engine(session),
-                reporter=self._dialogue_reporter(session_id),
-                thread_id=thread_id,
-                message=message,
-                reply_to=reply_to,
-            )
-        except dialogue_module.DialogueError as error:
-            raise SessionError(str(error)) from error
-        return self._save_state(state)
-
-    @_serialized_session_mutation
-    async def decide_dialogue_thread(
-        self,
-        session_id: str,
-        *,
-        resolution_id: str,
-        action: str,
-        consensus: str | None = None,
-        disagreement: str | None = None,
-        open_question: str | None = None,
-        progress_generation: int | None = None,
-    ) -> SessionState:
-        """Apply the researcher's decision on a pending Resolution."""
-        from agora.focused import dialogue as dialogue_module
-
-        session = self._require(session_id)
-        state = session.state
-        self._begin_dialogue_progress(session_id, progress_generation)
-        try:
-            await dialogue_module.decide_dialogue_thread(
-                state,
-                engine=self._dialogue_engine(session),
-                reporter=self._dialogue_reporter(session_id),
-                resolution_id=resolution_id,
-                action=action,
-                consensus=consensus,
-                disagreement=disagreement,
-                open_question=open_question,
-            )
-        except (dialogue_module.DialogueError, ValueError) as error:
-            raise SessionError(str(error)) from error
-        return self._save_state(state)
-
-    @_serialized_session_mutation
-    async def continue_dialogue_from_resolution(
-        self,
-        session_id: str,
-        *,
-        resolution_id: str,
-    ) -> SessionState:
-        """Continue a finished dialogue from an accepted open question."""
-
-        from agora.focused import dialogue as dialogue_module
-
-        session = self._require(session_id)
-        try:
-            dialogue_module.continue_from_open_question(
-                session.state,
-                resolution_id=resolution_id,
-            )
-        except dialogue_module.DialogueError as error:
-            raise SessionError(str(error)) from error
-        return self._save_state(session.state)
-
-    def dialogue_report(self, session_id: str) -> str:
-        """Synthesize the final Document from resolved Threads."""
-        from agora.focused import dialogue as dialogue_module
-
-        session = self._require(session_id)
-        try:
-            return dialogue_module.synthesize_report(session.state)
-        except dialogue_module.DialogueError as error:
-            raise SessionError(str(error)) from error
-
-    # ------------------------------------------------------------------
-    # Group-chat stage over the four-part notepad
-    # ------------------------------------------------------------------
+    # -- four-part draft review ---------------------------------------------
 
     def _notepad_call(self, session_id: str, run):
         from agora.focused import notepad as notepad_module
@@ -4291,12 +1636,12 @@ class FocusedPanelService:
         try:
             run(notepad_module, session.state)
         except notepad_module.NotepadError as error:
-            raise SessionError(str(error)) from error
+            raise SessionError(str(error), status=error.status) from error
         return self._save_state(session.state)
 
     @_serialized_session_mutation
     async def start_notepad(self, session_id: str) -> SessionState:
-        """Open the group chat, seeding v1 from the input screen."""
+        """Open the discussion and seed v1 from the input screen."""
         return self._notepad_call(
             session_id, lambda mod, state: mod.start_notepad(state)
         )
@@ -4307,7 +1652,7 @@ class FocusedPanelService:
         session_id: str,
         *,
         version_id: str,
-        part: str,
+        part: NotepadPart,
         text: str,
     ) -> SessionState:
         """Researcher edit. Never reviewed."""
@@ -4349,252 +1694,219 @@ class FocusedPanelService:
         )
 
     @_serialized_session_mutation
-    async def set_notepad_participant(
-        self, session_id: str, *, perspective_id: str, participating: bool
-    ) -> SessionState:
-        return self._notepad_call(
-            session_id,
-            lambda mod, state: mod.set_in_chat(
-                state,
-                perspective_id=perspective_id,
-                participating=participating,
-            ),
-        )
-
-    @_serialized_session_mutation
     async def clear_notepad_chat(self, session_id: str) -> SessionState:
         return self._notepad_call(session_id, lambda mod, state: mod.clear_chat(state))
 
     @_serialized_session_mutation
-    async def discuss_notepad(self, session_id: str, *, turns: int) -> SessionState:
-        """Bounded round of agent turns; the arm decides grounding."""
-        return self._notepad_call(
-            session_id,
-            lambda mod, state: mod.discuss(
-                state, turns=turns, guided=state.arm == "guided"
-            ),
-        )
-
-    @_serialized_session_mutation
-    async def ask_notepad(self, session_id: str, *, message: str) -> SessionState:
+    async def discuss_notepad(
+        self,
+        session_id: str,
+        *,
+        version_id: str,
+        turns: int,
+    ) -> SessionState:
         from agora.focused import notepad as notepad_module
 
         session = self._require(session_id)
         state = session.state
         try:
-            speaker = notepad_module.next_speaker(state)
+            remaining = notepad_module.remaining_review_turns(
+                state,
+                version_id=version_id,
+            )
         except notepad_module.NotepadError as error:
-            raise SessionError(str(error)) from error
-        notepad = state.notepad
-        if notepad is None:
-            raise SessionError("The group chat has not started yet.")
-        history = [
-            f"{turn.author_label}: {turn.text}"
-            for turn in notepad.turns[-8:]
-        ]
-        answer = await agents.reply_to_user(
-            speaker,
-            message,
-            history,
-            provider=self._provider_for(session),
-        )
-        citations = (
-            self._canonical_citations(
-                state,
-                answer.citations,
-                set(speaker.sources),
+            raise SessionError(str(error), status=error.status) from error
+        if remaining == 0:
+            raise SessionError("This draft review is complete.")
+        if turns > remaining:
+            raise SessionError(
+                f"Only {remaining} review turn{'s' if remaining != 1 else ''} "
+                f"{'remain' if remaining != 1 else 'remains'}. "
+                "Choose that many or fewer."
             )
-            if state.arm == "guided"
-            else []
-        )
-        return self._notepad_call(
-            session_id,
-            lambda mod, current: mod.ask(
-                current,
-                message=message,
-                reply=answer.text,
-                citations=citations,
-            ),
-        )
-
-    @_serialized_session_mutation
-    async def summarize_notepad(self, session_id: str, *, part: str) -> SessionState:
-        """Guided arm proposes; baseline copies straight in."""
-        return self._notepad_call(
-            session_id,
-            lambda mod, state: mod.summarize(
-                state, part=part, guided=state.arm == "guided"
-            ),
-        )
-
-    @_serialized_session_mutation
-    async def decide_notepad_proposal(
-        self,
-        session_id: str,
-        *,
-        proposal_id: str,
-        action: str,
-        text: str | None = None,
-        reason: str = "",
-    ) -> SessionState:
-        """approve / edit / reject, with the reason recorded on reject."""
-        return self._notepad_call(
-            session_id,
-            lambda mod, state: mod.decide_proposal(
-                state,
-                proposal_id=proposal_id,
-                action=action,
-                text=text,
-                reason=reason,
-            ),
-        )
-
-    @_serialized_session_mutation
-    async def chat(
-        self,
-        session_id: str,
-        deliberation_id: str,
-        *,
-        message: str,
-        target_iid: int | None = None,
-        proactivity: str = "med",
-    ) -> SessionState:
-        session = self._require(session_id)
-        state = session.state
-        deliberation = self._deliberation(state, deliberation_id)
-        self._require_open_deliberation(deliberation)
-        speakers = [
-            iid
-            for iid in deliberation.agent_iids
-            if target_iid is None or iid == target_iid
-        ]
-        if not speakers:
-            raise SessionError("No agents wired into this deliberation.")
-        limit = {"low": 1, "med": 2}.get(proactivity, len(speakers))
-        speakers = speakers[:limit]
-        latest_round = next(
-            (
-                round_state
-                for round_state in reversed(deliberation.rounds)
-                if round_state.completed
-            ),
-            None,
-        )
-        active_facets = latest_round.facets if latest_round else list(FACETS)
-        round_context = ""
-        if latest_round is not None:
-            latest_exchange_n = max(
-                (turn.exchange_n or 1 for turn in latest_round.turns),
-                default=1,
-            )
-            latest_exchange = [
-                turn
-                for turn in latest_round.turns
-                if (turn.exchange_n or 1) == latest_exchange_n
-            ]
-            final_check = (
-                latest_round.moderator_checks[-1]
-                if latest_round.moderator_checks
-                else None
-            )
-            round_context = (
-                "\n".join(
-                    f"{turn.agent_label or 'Panel'}: {turn.text}"
-                    for turn in latest_exchange
+        for _ in range(turns):
+            try:
+                plan = notepad_module.plan_review_turn(
+                    state,
+                    version_id=version_id,
+                    turns=turns,
                 )
-                + "\n\nFinal moderator check:\n"
-                + (
-                    (
-                        f"{'Unanimous' if final_check.unanimous else 'Not unanimous'}. "
-                        f"Proposed shared ground: "
-                        f"{final_check.proposed_shared_ground or 'none'}.\n"
-                        + "\n".join(
-                            f"- {assent.agent_label}: {assent.decision} — "
-                            f"{assent.reason}"
-                            for assent in final_check.assents
-                        )
-                    )
-                    if final_check is not None
-                    else "No moderator check recorded."
+            except notepad_module.NotepadError as error:
+                raise SessionError(str(error), status=error.status) from error
+            if plan.phase == "feedback":
+                statement = await agents.review_draft_element(
+                    plan.speaker,
+                    plan.part,
+                    plan.subject_text,
+                    provider=self._provider_for(session),
                 )
-                + "\n\nModerator resolution:\n"
-                + (
-                    _resolution_context(latest_round.resolution)
-                    if latest_round.resolution is not None
-                    else "No resolution recorded."
+            else:
+                statement = await agents.compare_draft_feedback(
+                    plan.speaker,
+                    plan.part,
+                    plan.subject_text,
+                    list(plan.feedback),
+                    provider=self._provider_for(session),
                 )
-            )
-
-        deliberation.chat.append(
-            Turn(
-                id=session.next_turn_id(),
-                role="user",
-                kind=TurnKind.user,
-                text=message.strip(),
-            )
-        )
-
-        history = [
-            f"{turn.agent_label or turn.role}: {turn.text}"
-            for turn in deliberation.chat
-        ]
-        reply_tasks = []
-        try:
-            async with asyncio.TaskGroup() as task_group:
-                for iid in speakers:
-                    agent, perspective = self._agent_view(state, iid)
-                    reply_tasks.append(
-                        (
-                            agent,
-                            perspective,
-                            task_group.create_task(
-                                agents.reply_to_user(
-                                    perspective,
-                                    message,
-                                    history,
-                                    active_facets=active_facets,
-                                    round_context=round_context,
-                                    working_hypothesis=deliberation.applied_hypothesis,
-                                    provider=self._provider_for(session),
-                                )
-                            ),
-                        )
-                    )
-        except* Exception as errors:  # noqa: BLE001
-            raise errors.exceptions[0]
-        for agent, perspective, task in reply_tasks:
-            reply = task.result()
-            deliberation.chat.append(
-                Turn(
-                    id=session.next_turn_id(),
-                    agent_iid=agent.iid,
-                    agent_label=agent.label,
-                    role="other",
-                    kind=TurnKind.answer,
-                    text=reply.text,
-                    citations=self._canonical_citations(
+            statement = statement.model_copy(
+                update={
+                    "text": self._participant_text(state, statement.text),
+                    "citations": self._canonical_citations(
                         state,
-                        reply.citations,
-                        set(perspective.sources),
+                        statement.citations,
+                        set(plan.speaker.sources),
                     ),
-                )
+                }
             )
-
+            notepad_module.record_review_turn(
+                state,
+                plan=plan,
+                statement=statement,
+            )
+            version = next(
+                item for item in state.notepad.versions if item.id == version_id
+            )
+            if version.agenda.phase == "complete":
+                break
         return self._save_state(state)
 
-    # -- export ---------------------------------------------------------------
+    @_serialized_session_mutation
+    async def ask_notepad(
+        self,
+        session_id: str,
+        *,
+        version_id: str,
+        message: str,
+    ) -> SessionState:
+        from agora.focused import notepad as notepad_module
 
-    def export_workspace(self, workspace_id: str) -> dict[str, Any]:
-        workspace = self._require_workspace(workspace_id)
-        self._ensure_workspace_idle(workspace)
-        view = self.workspace_view(workspace_id)
-        return {
-            "schema": "agora-hypothesis-workspace",
-            "schema_version": 6,
-            "exported_at": utcnow().isoformat(),
-            "workspace": view.workspace.model_dump(mode="json"),
-            "investigations": [
-                self._require(investigation_id).state.model_dump(mode="json")
-                for investigation_id in view.workspace.investigation_ids
-            ],
-        }
+        session = self._require(session_id)
+        state = session.state
+        clean_message = " ".join(message.split())
+        if not clean_message:
+            raise SessionError("A message requires text.", status=422)
+        try:
+            speakers = notepad_module.next_direct_speakers(state)
+        except notepad_module.NotepadError as error:
+            raise SessionError(str(error), status=error.status) from error
+        notepad = state.notepad
+        if notepad is None:
+            raise SessionError("The discussion has not started yet.")
+        version = next(
+            (item for item in notepad.versions if item.id == version_id),
+            None,
+        )
+        if version is None:
+            raise SessionError("Unknown Document version.")
+        version_turns = [
+            turn for turn in notepad.turns if turn.version_id == version_id
+        ]
+        history = [
+            f"{turn.author_label}: {turn.text}"
+            for turn in version_turns[version.visible_turn_start :]
+        ][-8:]
+        replies = await asyncio.gather(
+            *[
+                agents.reply_to_user(
+                    speaker,
+                    clean_message,
+                    history,
+                    provider=self._provider_for(session),
+                )
+                for speaker in speakers
+            ]
+        )
+        grounded = [
+            (
+                speaker,
+                reply.model_copy(
+                    update={
+                        "text": self._participant_text(state, reply.text),
+                        "citations": self._canonical_citations(
+                            state,
+                            reply.citations,
+                            set(speaker.sources),
+                        ),
+                    }
+                ),
+            )
+            for speaker, reply in zip(speakers, replies, strict=True)
+        ]
+        notepad_module.record_direct_exchange(
+            state,
+            version_id=version_id,
+            message=clean_message,
+            replies=grounded,
+        )
+        return self._save_state(state)
+
+    @_serialized_session_mutation
+    async def summarize_notepad(
+        self,
+        session_id: str,
+        *,
+        version_id: str,
+    ) -> SessionState:
+        from agora.focused import notepad as notepad_module
+
+        session = self._require(session_id)
+        state = session.state
+        notepad = state.notepad
+        if notepad is None:
+            raise SessionError("The discussion has not started yet.")
+        if notepad.final_snapshot is not None:
+            raise SessionError("This study is finished and read-only.", status=409)
+        version = next(
+            (item for item in notepad.versions if item.id == version_id),
+            None,
+        )
+        if version is None:
+            raise SessionError("Unknown Document version.")
+        version_turns = [
+            turn for turn in notepad.turns if turn.version_id == version_id
+        ]
+        visible = version_turns[version.visible_turn_start :]
+        if len([turn for turn in visible if turn.role == "perspective"]) < 2:
+            raise SessionError("Not much to summarize yet.")
+        statement = await agents.summarize_notepad_turns(
+            visible,
+            provider=self._provider_for(session),
+        )
+        statement = statement.model_copy(
+            update={
+                "text": self._participant_text(state, statement.text),
+                "citations": self._canonical_citations(
+                    state,
+                    statement.citations,
+                    {paper.id for paper in state.papers},
+                ),
+            }
+        )
+        notepad_module.record_summary(
+            state,
+            version_id=version_id,
+            statement=statement,
+        )
+        return self._save_state(state)
+
+    @_serialized_session_mutation
+    async def restart_notepad_review(
+        self,
+        session_id: str,
+        *,
+        version_id: str,
+    ) -> SessionState:
+        return self._notepad_call(
+            session_id,
+            lambda mod, state: mod.restart_review(state, version_id=version_id),
+        )
+
+    @_serialized_session_mutation
+    async def finish_notepad_study(self, session_id: str) -> SessionState:
+        state = self._require(session_id).state
+        if state.notepad is not None and state.notepad.final_snapshot is not None:
+            return state
+        return self._notepad_call(
+            session_id,
+            lambda mod, current: mod.finish_study(current),
+        )

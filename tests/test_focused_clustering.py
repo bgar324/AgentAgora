@@ -71,6 +71,7 @@ def test_density_partition_requires_complete_embeddings() -> None:
 
     assert density_partition(corpus, requested_clusters=2) is None
 
+
 def test_density_partition_runs_lightweight_hdbscan_end_to_end() -> None:
     rng = np.random.default_rng(42)
     corpus: list[ExpPaper] = []
@@ -94,6 +95,7 @@ def test_density_partition_runs_lightweight_hdbscan_end_to_end() -> None:
     assert len(result.groups) == 3
     assert all(len(selected) == 5 for selected in result.representatives)
 
+
 def test_fifty_eight_paper_fallback_produces_three_groups() -> None:
     corpus = papers(58)
     requested = FocusedPanelService._target_cluster_count(len(corpus))
@@ -103,6 +105,7 @@ def test_fifty_eight_paper_fallback_produces_three_groups() -> None:
     assert requested == 3
     assert len(groups) == 3
     assert sum(len(group) for group in groups) == 58
+
 
 def test_balanced_last_resort_guarantees_three_groups() -> None:
     corpus = papers(15)

@@ -1,17 +1,11 @@
-"""LLM and deterministic agents for abstract-grounded facet deliberation.
-
-The study protocol has four stable facets: scope, explanation, approach, and
-significance. Each round activates exactly one facet. The moderator records
-consensus, genuine disagreement, and unresolved questions without forcing
-opposition.
-"""
+"""LLM and deterministic helpers for baseline retrieval and draft review."""
 
 from __future__ import annotations
 
 import logging
 import re
 from collections import Counter
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 from pydantic import BaseModel
 
@@ -22,43 +16,23 @@ from agora.focused.models import (
     ChatReply,
     ClusterNaming,
     ClusterNamings,
-    DeliberationDocument,
-    DeliberationPoint,
-    DeliberationRound,
-    DeliberationThread,
-    DeliberationThreadDraft,
-    DeliberationThreads,
     DerivedQuestions,
-    DocumentDraft,
-    DocumentSection,
     ExpPaper,
     Facet,
     FacetEvidence,
     FacetExtraction,
-    FacetRevision,
     FramingPosition,
-    HypothesisDev,
-    HypothesisSteps,
     NotepadDoc,
-    ParticipantReflection,
+    NotepadPart,
+    NotepadTurn,
     Perspective,
     QuerySuggestions,
     QuestionAssessment,
     QuestionEvidence,
     QuestionExpansion,
     QuestionPlan,
-    QuestionRecommendations,
-    RecommendedQuestion,
-    ReflectionDraft,
-    RoundResolution,
-    SharedGroundAssentDraft,
     Statement,
     SuggestedQuery,
-    SupportPassage,
-    SupportSearch,
-    ThreadPerspectiveLink,
-    ThreadVerdict,
-    ThreadVerdictOutput,
     VocabularyPair,
 )
 from agora.focused.routing import FocusedTask
@@ -144,9 +118,7 @@ def compact_search_query(query: str, *, max_terms: int = 6) -> str:
         compacted = text
     else:
         terms = list(
-            dict.fromkeys(
-                word for word in content if word not in SEARCH_QUERY_FILLER
-            )
+            dict.fromkeys(word for word in content if word not in SEARCH_QUERY_FILLER)
         )
         if len(terms) < 2:
             terms = list(dict.fromkeys(content))
@@ -906,31 +878,11 @@ def fallback_cluster_facets(papers: list[ExpPaper]) -> list[FacetEvidence]:
     return out
 
 
-def _tally_facets(demo_facets: list[list[FacetEvidence]]) -> list[FacetEvidence]:
-    """Select the most recurrent grounded facet value in a demo cluster."""
-    out: list[FacetEvidence] = []
-    for facet in FACETS:
-        tally: Counter[str] = Counter()
-        by_text: dict[str, FacetEvidence] = {}
-        for facets in demo_facets:
-            for evidence in facets:
-                if evidence.facet == facet:
-                    tally[evidence.text] += 1
-                    by_text.setdefault(evidence.text, evidence)
-        if tally:
-            text = tally.most_common(1)[0][0]
-            out.append(by_text[text].model_copy(deep=True))
-    return out
-
-
 async def extract_cluster_facets(
     papers: list[ExpPaper],
     *,
     provider: FocusedProvider | None = None,
-    demo_facets: list[list[FacetEvidence]] | None = None,
 ) -> list[FacetEvidence]:
-    if demo_facets is not None:
-        return _tally_facets(demo_facets)
 
     corpus = "\n\n".join(
         f"### {paper.id}: {paper.title}\n"
@@ -1067,1091 +1019,27 @@ async def derive_framing(
     return _fallback_framing(perspective)
 
 
-# ---------------------------------------------------------------------------
-async def suggest_deliberation_threads(
-    perspectives: list[Perspective],
-    hypothesis: HypothesisDev,
-    *,
-    provider: FocusedProvider | None = None,
-    demo: bool = False,
-) -> list[DeliberationThreadDraft]:
-    names = [perspective.name for perspective in perspectives]
-    parsed = await _structured(
-        provider,
-        "Propose two to five focused scientific Threads for the next discussion. "
-        "Each Thread must address one distinct scientific issue, disagreement, or "
-        "open question: a difference in explanation, a measurement problem, a "
-        "boundary condition, a disputed assumption, or an evidence gap. Give each "
-        "Thread a concise title, a neutral question, and context stating what it "
-        "would clarify. Facets only describe where Perspectives differ: report "
-        "them per Perspective under `related` as traceability, never as the topic "
-        "itself. Reference exact excerpts from the current hypothesis when "
-        "relevant.",
-        "## CURRENT HYPOTHESIS\n"
-        + hypothesis.hypothesis
-        + "\n\n## PERSPECTIVES\n"
-        + "\n\n".join(
-            f"### {perspective.name}\n{_facets_block(perspective)}"
-            for perspective in perspectives
-        ),
-        DeliberationThreads,
-        task=FocusedTask.suggest_deliberation_threads,
-        temperature=0.1,
-    )
-    if parsed and parsed.threads:
-        known_names = set(names)
-        out: list[DeliberationThreadDraft] = []
-        for thread in parsed.threads[:5]:
-            if not thread.title.strip() or not thread.question.strip():
-                continue
-            related = [
-                link.model_copy(update={"facets": list(dict.fromkeys(link.facets))})
-                for link in thread.related
-                if link.perspective_name in known_names
-            ]
-            facets = list(
-                dict.fromkeys(
-                    [
-                        *thread.facets,
-                        *(facet for link in related for facet in link.facets),
-                    ]
-                )
-            )
-            linked_names = [link.perspective_name for link in related]
-            out.append(
-                thread.model_copy(
-                    update={
-                        "title": thread.title.strip(),
-                        "question": thread.question.strip(),
-                        "context": thread.context.strip(),
-                        "related": related,
-                        "facets": facets,
-                        "perspective_names": list(
-                            dict.fromkeys(
-                                [
-                                    *linked_names,
-                                    *(
-                                        name
-                                        for name in thread.perspective_names
-                                        if name in known_names
-                                    ),
-                                ]
-                            )
-                        ),
-                        "hypothesis_fragments": [
-                            fragment
-                            for fragment in thread.hypothesis_fragments
-                            if fragment and fragment in hypothesis.hypothesis
-                        ],
-                    }
-                )
-            )
-        if out:
-            return out
-
-    pairs = (
-        [
-            (
-                "Acute benefit versus ecological harm",
-                "When does faster broad coverage justify resistance selection and microbiome harm?",
-                "The Perspectives disagree about which patients benefit enough to justify downstream ecological costs.",
-                ["scope", "significance"],
-            ),
-            (
-                "Mechanism of downstream harm",
-                "How much of the downstream harm follows from resistance selection versus microbiome disruption?",
-                "The candidate depends on causal mechanisms that the Perspectives weight differently.",
-                ["explanation"],
-            ),
-            (
-                "Targeting without delayed cure",
-                "Can rapid diagnosis and de-escalation preserve acute cure while reducing broad exposure?",
-                "The Perspectives propose competing approaches for reducing exposure without compromising immediate treatment.",
-                ["approach", "significance"],
-            ),
-        ]
-        if demo
-        else [
-            (
-                "Boundary of the proposed solution",
-                "Which populations and conditions should bound this solution candidate?",
-                "The Perspectives describe different boundary conditions for the candidate.",
-                ["scope"],
-            ),
-            (
-                "Competing causal assumptions",
-                "Which explanation best justifies the proposed solution, and what finding could overturn it?",
-                "The Perspectives rely on different causal assumptions.",
-                ["explanation"],
-            ),
-            (
-                "Evidence needed to choose an approach",
-                "Which study design and outcome would distinguish the competing approaches?",
-                "The Perspectives disagree about the most informative intervention and outcome.",
-                ["approach", "significance"],
-            ),
-        ]
-    )
-    return [
-        DeliberationThreadDraft(
-            title=title,
-            question=question,
-            context=context,
-            related=[
-                ThreadPerspectiveLink(perspective_name=name, facets=facets)
-                for name in names
-            ],
-            facets=facets,
-            perspective_names=names,
-            hypothesis_fragments=[hypothesis.hypothesis],
-        )
-        for title, question, context, facets in pairs
-    ]
-
-
-# Thread-directed panel discussion. The Thread question defines the topic;
-# facets supply supporting context and traceability only.
-# ---------------------------------------------------------------------------
-
-
-def _thread_evidence(
-    perspective: Perspective,
-    thread: DeliberationThread,
-) -> FacetEvidence | None:
-    """Pick this Perspective's supporting evidence for a Thread.
-
-    Preference order: the Perspective's own related fragments, the Thread's
-    traceability facets, then scope. Selection never narrows the topic; the
-    Thread question does that.
-    """
-    linked = next(
-        (
-            link.facets
-            for link in thread.related
-            if link.perspective_name == perspective.name
-        ),
-        [],
-    )
-    seen: list[Facet] = []
-    for facet in [*linked, *thread.facets, "scope"]:
-        if facet in seen:
-            continue
-        seen.append(facet)
-        evidence = perspective.facets.get(facet)
-        if evidence and evidence.text.strip():
-            return evidence
-    return None
-
-
-async def open_statement(
-    perspective: Perspective,
-    thread: DeliberationThread,
-    *,
-    provider: FocusedProvider | None = None,
-    round_turns: list[str] | None = None,
-    moderator_feedback: str | None = None,
-    current_hypothesis: HypothesisDev | None = None,
-) -> Statement:
-    evidence = _thread_evidence(perspective, thread)
-    value = evidence.text if evidence else "not established"
-    continuing = bool(round_turns)
-    hypothesis_text = (
-        current_hypothesis.hypothesis if current_hypothesis is not None else ""
-    )
-    context = ""
-    if round_turns:
-        context += "\n\n## PRIOR EXCHANGES\n" + "\n".join(round_turns[-12:])
-    if moderator_feedback:
-        context += "\n\n## MODERATOR'S LAST CHECK\n" + moderator_feedback
-    parsed = await _structured(
-        provider,
-        (
-            "Respond as the lead to the named challenge from the prior exchange. "
-            "Explain which assumption produced your position and revise or defend it. "
-            if continuing
-            else "Answer the Thread's opening question with one evidence-grounded "
-            "position. State the assumption that connects the findings to the answer. "
-        )
-        + "The Thread question defines the topic; your facets are supporting "
-        "context, not the agenda. Reference exact excerpts from the current "
-        "hypothesis when relevant. Use one to three sentences, cite paper IDs, "
-        "and do not manufacture agreement.",
-        f"## THREAD\n{thread.model_dump_json()}\n\n"
-        f"## YOUR PERSPECTIVE\n{_facets_block(perspective)}\n\n"
-        f"## CURRENT HYPOTHESIS\n{hypothesis_text or 'Not established yet.'}{context}",
-        Statement,
-        task=FocusedTask.open_statement,
-    )
-    if parsed and parsed.text:
-        return parsed
-    citations = [evidence.paper_id] if evidence and evidence.paper_id else []
-    if continuing:
-        return Statement(
-            text=(
-                f"I hold my answer to “{thread.question}” because "
-                f"{_display(value)}. That is the assumption behind my earlier claim."
-            ),
-            assumption=value,
-            relation="reply",
-            hypothesis_fragments=[hypothesis_text] if hypothesis_text else [],
-            citations=_citations_for(perspective, citations),
-        )
-    return Statement(
-        text=(
-            f"On “{thread.question}”, this perspective's answer starts from "
-            f"{_display(value)}. That is the position the panel should test "
-            "against the other evidence."
-        ),
-        assumption=value,
-        relation="answer",
-        hypothesis_fragments=[hypothesis_text] if hypothesis_text else [],
-        citations=_citations_for(perspective, citations),
-    )
-
-
-async def answer_statement(
-    perspective: Perspective,
-    thread: DeliberationThread,
-    lead_label: str,
-    lead_text: str,
-    *,
-    provider: FocusedProvider | None = None,
-    round_turns: list[str] | None = None,
-    moderator_feedback: str | None = None,
-    current_hypothesis: HypothesisDev | None = None,
-) -> Statement:
-    evidence = _thread_evidence(perspective, thread)
-    value = evidence.text if evidence else "not established"
-    hypothesis_text = (
-        current_hypothesis.hypothesis if current_hypothesis is not None else ""
-    )
-    context = ""
-    if round_turns:
-        context += "\n\n## PRIOR EXCHANGES\n" + "\n".join(round_turns[-12:])
-    if moderator_feedback:
-        context += "\n\n## MODERATOR'S LAST CHECK\n" + moderator_feedback
-    parsed = await _structured(
-        provider,
-        "Respond directly to the lead's claim on the Thread question. Identify "
-        "the assumption behind it, then support, qualify, or challenge that "
-        "assumption using your own abstract-grounded evidence. Your facets are "
-        "supporting context, not the agenda. Reference exact excerpts from the "
-        "current hypothesis when relevant. Use one to three sentences and cite "
-        "paper IDs.",
-        f"## THREAD\n{thread.model_dump_json()}\n\n"
-        f"## YOUR PERSPECTIVE\n{_facets_block(perspective)}\n\n"
-        f"## CURRENT HYPOTHESIS\n{hypothesis_text or 'Not established yet.'}\n\n"
-        f"## LEAD\n{lead_label}: {lead_text}{context}",
-        Statement,
-        task=FocusedTask.answer_statement,
-    )
-    if parsed and parsed.text:
-        return parsed
-    citations = [evidence.paper_id] if evidence and evidence.paper_id else []
-    if not round_turns:
-        return Statement(
-            text=(
-                f"Did you reach that conclusion because you assume {lead_text.rstrip('.')}? "
-                f"I find it difficult to agree without accounting for {_display(value)}."
-            ),
-            assumption=value,
-            relation="challenge",
-            hypothesis_fragments=[hypothesis_text] if hypothesis_text else [],
-            citations=_citations_for(perspective, citations),
-        )
-    return Statement(
-        text=(
-            f"The explanation addresses part of the challenge. This perspective "
-            f"still qualifies it with {_display(value)}."
-        ),
-        assumption=value,
-        relation="reply",
-        hypothesis_fragments=[hypothesis_text] if hypothesis_text else [],
-        citations=_citations_for(perspective, citations),
-    )
-
-
-def _citations_for(perspective: Perspective, paper_ids: list[str | None]) -> list[str]:
-    out: list[str] = []
-    for paper_id in paper_ids:
-        if paper_id and paper_id not in out:
-            out.append(paper_id)
-    return out or list(perspective.sources[:1])
-
-
-async def retrieve_support(
-    statement_text: str,
-    perspective: Perspective,
-    *,
-    provider: FocusedProvider | None = None,
-    s2: Any | None = None,
-    corpus: list[ExpPaper] | None = None,
-) -> tuple[Statement, ExpPaper] | None:
-    """Retrieve one checkable abstract passage for an unsupported claim."""
-    parsed = await _structured(
-        provider,
-        "Write one precise literature-search query for the claim.",
-        f"## CLAIM\n{statement_text}",
-        SupportSearch,
-        task=FocusedTask.find_support_query,
-    )
-    query = parsed.query if parsed else " ".join(_content_words(statement_text)[:6])
-
-    paper: ExpPaper | None = None
-    passage = ""
-    if s2 is not None:
-        try:
-            results = await s2.search(query, limit=5)
-            if results:
-                result = results[0]
-                sentences = split_sentences(result.abstract)
-                paper = ExpPaper(
-                    id=result.id,
-                    title=result.title,
-                    abstract=result.abstract,
-                    abstract_sentences=sentences,
-                    year=result.year,
-                    venue=result.venue,
-                    authors=[author.name for author in result.authors[:4]],
-                    source_query=query,
-                    tldr=result.tldr,
-                    open_access_pdf_url=result.open_access_pdf_url,
-                    specter_v2=result.specter_v2,
-                )
-                passage = sentences[0] if sentences else result.title
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("focused-panel support retrieval failed: %s", exc)
-            return None
-
-    if paper is None and s2 is None and corpus:
-        query_words = set(_content_words(query))
-        ranked = [
-            (
-                len(
-                    query_words
-                    & set(_content_words(item.title + " " + (item.abstract or "")))
-                ),
-                item,
-            )
-            for item in corpus
-        ]
-        score, candidate = max(ranked, default=(0, None), key=lambda item: item[0])
-        if candidate is not None and score > 0:
-            paper = candidate
-            sentences = _abstract_sentences(paper)
-            passage = next(
-                (
-                    sentence
-                    for sentence in sentences
-                    if query_words & set(_content_words(sentence))
-                ),
-                sentences[0] if sentences else paper.title,
-            )
-
-    if paper is None:
-        return None
-
-    selected = passage
-    if provider is not None:
-        selection = await _structured(
-            provider,
-            "Select the verbatim abstract passage that best supports the claim "
-            "and state why it supports it.",
-            f"## CLAIM\n{statement_text}\n\n## ABSTRACT\n"
-            f"{paper.title}\n{paper.abstract or ''}",
-            SupportPassage,
-            task=FocusedTask.select_support_passage,
-        )
-        if selection and _evidence_is_verbatim(paper, selection.passage):
-            selected = selection.passage
-
-    return (
-        Statement(
-            text=f"Supporting literature — {paper.title}: “{selected.strip()}”",
-            citations=[paper.id],
-        ),
-        paper,
-    )
-
-
-def _norm(value: str) -> str:
-    return " ".join(_content_words(value)).strip().lower()
-
-
-async def judge_thread(
-    lead: Perspective,
-    others: list[Perspective],
-    thread: DeliberationThread,
-    turns: list[str],
-    *,
-    provider: FocusedProvider | None = None,
-    shared_ground: str | None = None,
-) -> ThreadVerdict:
-    facets = list(thread.facets)
-    if provider is not None and turns:
-        parsed = await _structured(
-            provider,
-            "Judge one scientific Thread as a whole. CONSENSUS means the panel "
-            "established a shared answer to the Thread question. DISAGREEMENT "
-            "requires genuinely incompatible claims or decisions; different "
-            "emphases are not enough. UNSETTLED means a comparison, boundary, or "
-            "causal question remains open without clear opposition. Propose the "
-            "narrowest concrete shared-ground statement every Perspective could "
-            "accept, or leave it empty. Do not issue separate facet verdicts.",
-            f"## THREAD\n{thread.model_dump_json()}\n\n"
-            f"## LEAD PERSPECTIVE\n{lead.name}\n{_facets_block(lead)}\n\n"
-            "## OTHER PERSPECTIVES\n"
-            + "\n\n".join(
-                f"### {perspective.name}\n{_facets_block(perspective)}"
-                for perspective in others
-            )
-            + "\n\n## LABELED DISCUSSION\n"
-            + "\n".join(turns),
-            ThreadVerdictOutput,
-            task=FocusedTask.judge_thread,
-            temperature=0.1,
-        )
-        if parsed:
-            verdict = parsed.verdict
-            return ThreadVerdict(
-                **verdict.model_dump(
-                    exclude={"consensus", "disagreement", "unsettled"}
-                ),
-                facets=facets,
-                consensus=verdict.consensus if verdict.status == "consensus" else "",
-                disagreement=(
-                    verdict.disagreement if verdict.status == "disagreement" else ""
-                ),
-                unsettled=verdict.unsettled if verdict.status == "unsettled" else "",
-            )
-
-    participants = [lead, *others]
-    if shared_ground:
-        return ThreadVerdict(
-            facets=facets,
-            status="consensus",
-            summary=f"The panel established shared ground for {thread.title}.",
-            proposed_shared_ground=shared_ground,
-            consensus=shared_ground,
-            supporting=[perspective.name for perspective in participants],
-        )
-
-    comparison_facets: list[Facet] = facets or FACETS
-    lead_values = tuple(_norm(_facet_text(lead, facet)) for facet in comparison_facets)
-    same = all(
-        tuple(_norm(_facet_text(perspective, facet)) for facet in comparison_facets)
-        == lead_values
-        for perspective in others
-    )
-    transcript = " ".join(turns).lower()
-    explicit_conflict = bool(
-        re.search(
-            r"\b(disagree|incompatible|contradicts?|cannot both|rather than)\b",
-            transcript,
-        )
-    )
-    lead_ground = "; ".join(_facet_text(lead, facet) for facet in comparison_facets)
-    if same:
-        return ThreadVerdict(
-            facets=facets,
-            status="consensus",
-            summary=f"The panel shares an answer to {thread.question}",
-            proposed_shared_ground=lead_ground,
-            consensus=lead_ground,
-            supporting=[perspective.name for perspective in participants],
-        )
-    if explicit_conflict:
-        return ThreadVerdict(
-            facets=facets,
-            status="disagreement",
-            summary=f"The panel states incompatible answers to {thread.question}",
-            disagreement=thread.question,
-            contested_by=[perspective.name for perspective in others],
-        )
-    return ThreadVerdict(
-        facets=facets,
-        status="unsettled",
-        summary=f"The Thread remains open: {thread.question}",
-        unsettled=thread.question,
-    )
-
-
-async def assent_to_shared_ground(
-    perspective: Perspective,
-    thread: DeliberationThread,
-    proposed_shared_ground: str,
-    turns: list[str],
-    *,
-    provider: FocusedProvider | None = None,
-    demo: bool = False,
-    exchange_n: int = 1,
-    challenge_turn_id: int | None = None,
-) -> SharedGroundAssentDraft:
-    if not proposed_shared_ground.strip():
-        return SharedGroundAssentDraft(
-            decision="reject",
-            reason="The moderator did not identify substantive shared ground.",
-        )
-    if demo and exchange_n == 1:
-        return SharedGroundAssentDraft(
-            decision="qualify",
-            reason="The lead must explain the assumption behind the proposed boundary.",
-            challenge_turn_id=challenge_turn_id,
-            challenge="Why does that assumption justify the proposed boundary?",
-        )
-    if demo:
-        return SharedGroundAssentDraft(
-            decision="accept",
-            reason="The response addressed the qualification with grounded evidence.",
-        )
-    parsed = await _structured(
-        provider,
-        "Assess one proposed shared-ground statement as this research Perspective. "
-        "ACCEPT only when the exact statement is supported without changes. QUALIFY "
-        "or REJECT when a narrower claim is needed, and identify one supplied turn "
-        "whose assumption should be challenged. Do not accept merely to end.",
-        f"## YOUR PERSPECTIVE\n{_facets_block(perspective)}\n\n"
-        f"## THREAD\n{thread.model_dump_json()}\n\n"
-        "## DISCUSSION\n"
-        + "\n".join(turns[-12:])
-        + f"\n\n## PROPOSED SHARED GROUND\n{proposed_shared_ground}",
-        SharedGroundAssentDraft,
-        task=FocusedTask.assent_shared_ground,
-        temperature=0.1,
-    )
-    return parsed or SharedGroundAssentDraft(
-        decision="reject",
-        reason="No explicit assent was returned.",
-    )
-
-
-def _point_from_verdict(
-    verdict: ThreadVerdict,
-    *,
-    kind: str,
-) -> DeliberationPoint:
-    if kind == "consensus":
-        text = verdict.consensus or verdict.summary
-        names = verdict.supporting
-    elif kind == "disagreement":
-        text = verdict.disagreement or verdict.summary
-        names = verdict.contested_by
-    else:
-        text = verdict.unsettled or verdict.summary
-        names = list(verdict.positions)
-    citations = list(
-        dict.fromkeys(
-            citation for evidence in verdict.evidence.values() for citation in evidence
-        )
-    )
-    return DeliberationPoint(
-        facets=list(verdict.facets),
-        text=text,
-        rationale=verdict.summary,
-        perspective_names=names,
-        citations=citations,
-    )
-
-
-def _normalize_thread_summary(
-    summary: str,
-    thread: DeliberationThread,
-    turns: list[str],
-    verdict: ThreadVerdict,
-) -> str:
-    sentences = split_sentences(summary)
-    process_markers = (
-        "compared",
-        "challenged",
-        "reinforced",
-        "discussion",
-        "dialogue",
-        "responded",
-    )
-    has_process = bool(sentences) and any(
-        marker in sentences[0].casefold() for marker in process_markers
-    )
-    if has_process and len(sentences) >= 2:
-        return " ".join(sentences[:3])
-    process = (
-        sentences[0]
-        if has_process
-        else (
-            f"The panel compared {len(turns)} contributions in the "
-            f"“{thread.title}” Thread before the moderator classified the result."
-        )
-    )
-    conclusions = (
-        split_sentences(verdict.summary)
-        if has_process
-        else sentences or [verdict.summary]
-    )
-    return " ".join([process, *conclusions[:2]])
-
-
-async def summarize_thread(
-    thread: DeliberationThread,
-    verdict: ThreadVerdict,
-    turns: list[str],
-    *,
-    provider: FocusedProvider | None = None,
-) -> RoundResolution:
-    evidence_ids = list(
-        dict.fromkeys(
-            citation
-            for citations in verdict.evidence.values()
-            for citation in citations
-        )
-    )
-    parsed = await _structured(
-        provider,
-        "Summarize one scientific Thread in 2-3 sentences. First explain how "
-        "the Perspectives challenged, replied to, or refined the relevant "
-        "assumptions and what findings moved the discussion; then state the "
-        "moderator's conclusion. The supplied Thread verdict is authoritative. "
-        "Do not reclassify it or invent conflict.",
-        f"## THREAD\n{thread.model_dump_json()}\n\n"
-        f"## AUTHORITATIVE VERDICT\n{verdict.model_dump_json()}\n\n"
-        "## CANONICAL EVIDENCE IDS\n"
-        + (", ".join(evidence_ids) if evidence_ids else "none")
-        + "\n\n## LABELED DIALOGUE\n"
-        + "\n".join(turns),
-        RoundResolution,
-        task=FocusedTask.summarize_thread,
-        temperature=0.1,
-    )
-    consensus = (
-        [_point_from_verdict(verdict, kind="consensus")]
-        if verdict.consensus.strip()
-        else []
-    )
-    disagreements = (
-        [_point_from_verdict(verdict, kind="disagreement")]
-        if verdict.disagreement.strip()
-        else []
-    )
-    unsettled = (
-        [_point_from_verdict(verdict, kind="unsettled")]
-        if verdict.unsettled.strip()
-        else []
-    )
-    if not disagreements and not unsettled:
-        unsettled.append(
-            DeliberationPoint(
-                facets=list(thread.facets),
-                text=thread.question,
-                rationale=(
-                    "The Thread reached agreement but did not test that agreement "
-                    "outside the represented findings."
-                ),
-                citations=evidence_ids,
-            )
-        )
-    summary = parsed.summary if parsed and parsed.summary else verdict.summary
-    return RoundResolution(
-        summary=_normalize_thread_summary(summary, thread, turns, verdict),
-        consensus_points=consensus,
-        disagreement_points=disagreements,
-        unsettled_points=unsettled,
-    )
-
-
-async def reflect_on_round(
-    agent_iid: int,
-    perspective: Perspective,
-    facets: list[Facet],
-    resolution: RoundResolution,
-    *,
-    provider: FocusedProvider | None = None,
-    demo: bool = False,
-) -> tuple[ParticipantReflection, dict[Facet, FacetEvidence]]:
-    parsed = await _structured(
-        provider,
-        "Reflect as one research perspective after deliberation. Revise any "
-        "facet of your Perspective for which the challenge-response exchange "
-        "supplied a defensible reason to change. The Thread facets are "
-        "traceability hints, not a restriction. Keep unsupported facets "
-        "unchanged.",
-        f"## YOUR CURRENT FACETS\n{_facets_block(perspective)}\n\n"
-        f"## THREAD FACETS (traceability)\n{', '.join(facets) or 'none'}\n\n"
-        f"## RESOLUTION\n{resolution.model_dump_json()}",
-        ReflectionDraft,
-        task=FocusedTask.reflect_on_round,
-        temperature=0.1,
-    )
-    current = {
-        facet: evidence.model_copy(deep=True)
-        for facet, evidence in perspective.facets.items()
-    }
-    if parsed is None and demo and resolution.consensus_points:
-        revisions: list[FacetRevision] = []
-        for point in resolution.consensus_points:
-            segments = [
-                segment.strip() for segment in point.text.split(";") if segment.strip()
-            ]
-            aligned = len(segments) == len(point.facets)
-            for index, facet in enumerate(point.facets):
-                text = segments[index] if aligned else point.text.strip()
-                if text and _norm(text) != _norm(_facet_text(perspective, facet)):
-                    revisions.append(FacetRevision(facet=facet, text=text))
-        parsed = ReflectionDraft(
-            decision="revised" if revisions else "unchanged",
-            reason=(
-                "The lead incorporated the panel's accepted qualification."
-                if revisions
-                else "The accepted shared ground restates this Perspective."
-            ),
-            revisions=revisions,
-        )
-    if parsed is None or parsed.decision == "unchanged":
-        reason = parsed.reason if parsed else "No supported revision emerged."
-        return (
-            ParticipantReflection(
-                agent_iid=agent_iid,
-                perspective_name=perspective.name,
-                decision="unchanged",
-                reason=reason,
-            ),
-            current,
-        )
-    revisions = [revision for revision in parsed.revisions if revision.text.strip()]
-    for revision in revisions:
-        current[revision.facet] = FacetEvidence(
-            facet=revision.facet,
-            text=revision.text.strip(),
-            edited=True,
-        )
-    decision = "revised" if revisions else "unchanged"
-    return (
-        ParticipantReflection(
-            agent_iid=agent_iid,
-            perspective_name=perspective.name,
-            decision=decision,
-            reason=parsed.reason,
-            revisions=revisions,
-        ),
-        current,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Hypothesis and recursive next-question generation
-# ---------------------------------------------------------------------------
-
-
-def _fallback_hypothesis(perspective: Perspective) -> HypothesisDev:
-    scope = _facet_text(perspective, "scope").strip().rstrip(".")
-    approach = _facet_text(perspective, "approach").strip().rstrip(".")
-    explanation = _display(_facet_text(perspective, "explanation"))
-    significance = _display(_facet_text(perspective, "significance"))
-    return HypothesisDev(
-        hypothesis=(
-            f"{scope}. {approach}. This should clarify whether "
-            f"{explanation}, because {significance}."
-        )
-    )
-
-
-async def develop_hypothesis(
-    perspective: Perspective,
-    *,
-    provider: FocusedProvider | None = None,
-) -> HypothesisDev:
-    parsed = await _structured(
-        provider,
-        "Propose one direct, testable solution candidate for the research problem "
-        "from the Perspective's four evidence-grounded facets. Return only the "
-        "hypothesis. Do not repeat the problem statement, literature summary, or "
-        "reasoning as separate fields.",
-        f"## PERSPECTIVE: {perspective.name}\n## FACETS\n{_facets_block(perspective)}",
-        HypothesisSteps,
-        task=FocusedTask.develop_hypothesis,
-    )
-    if parsed and parsed.steps:
-        return parsed.steps
-    return _fallback_hypothesis(perspective)
-
-
-_NOT_ESTABLISHED = "Not established yet."
-
-
-def _fallback_consensus_hypothesis(
-    resolution: RoundResolution,
-    current: HypothesisDev | None = None,
-) -> HypothesisDev:
-    segments = list(
-        dict.fromkeys(
-            segment.strip().rstrip(".")
-            for point in resolution.consensus_points
-            for segment in point.text.split(";")
-            if segment.strip()
-        )
-    )
-    if not segments:
-        return current or HypothesisDev(hypothesis=_NOT_ESTABLISHED)
-    base = current.hypothesis.strip() if current is not None else ""
-    if current is None or not base or base == _NOT_ESTABLISHED:
-        return HypothesisDev(
-            hypothesis=f"A viable solution should account for {'; '.join(segments)}."
-        )
-    novel = [
-        segment for segment in segments if segment.casefold() not in base.casefold()
-    ]
-    if not novel:
-        return current
-    return HypothesisDev(
-        hypothesis=(
-            f"{base.rstrip('.')}. It should also account for {'; '.join(novel)}."
-        )
-    )
-
-
-async def develop_hypothesis_from_consensus(
-    resolution: RoundResolution,
-    *,
-    current: HypothesisDev | None = None,
-    provider: FocusedProvider | None = None,
-) -> HypothesisDev:
-    """Revise one solution candidate from unanimously accepted shared ground."""
-    if not resolution.consensus_points:
-        raise ValueError("consensus points are required")
-    current_text = (
-        current.hypothesis
-        if current is not None
-        else "No working hypothesis has been established yet."
-    )
-    parsed = await _structured(
-        provider,
-        "Revise the current hypothesis using ONLY the supplied consensus points "
-        "and cited evidence. Return one direct, testable solution candidate. "
-        "Preserve the current hypothesis when the new shared ground does not "
-        "justify a change. Never use disagreement or unsettled points.",
-        f"## CURRENT HYPOTHESIS\n{current_text}\n\n"
-        "## NEW SUPPORTED SHARED GROUND\n"
-        + "\n".join(
-            f"- {', '.join(point.facets)}: {point.text}"
-            + (f" [evidence: {', '.join(point.citations)}]" if point.citations else "")
-            for point in resolution.consensus_points
-        ),
-        HypothesisSteps,
-        task=FocusedTask.develop_hypothesis_from_consensus,
-        temperature=0.1,
-    )
-    if parsed and parsed.steps:
-        return parsed.steps
-    return _fallback_consensus_hypothesis(resolution, current)
-
-
-async def recommend_questions(
-    resolution: RoundResolution,
-    perspective: Perspective,
-    *,
-    provider: FocusedProvider | None = None,
-) -> list[RecommendedQuestion]:
-    source_kind = "disagreement" if resolution.disagreement_points else "unsettled"
-    source_points = (
-        resolution.disagreement_points
-        if resolution.disagreement_points
-        else resolution.unsettled_points
-    )
-    if not source_points:
-        return []
-
-    parsed = await _structured(
-        provider,
-        "Recommend one to three answerable research questions for the next "
-        "investigation cycle. If genuine disagreement points exist, ground the "
-        "questions in those points. Otherwise use unsettled points. Every "
-        "question must include a rationale that explains exactly why it follows "
-        "from the named source point. Do not invent disagreement.",
-        f"## CURRENT PERSPECTIVE\n{_facets_block(perspective)}\n\n"
-        f"## ROUND RESOLUTION\n{resolution.model_dump_json()}",
-        QuestionRecommendations,
-        task=FocusedTask.recommend_questions,
-        temperature=0.2,
-    )
-    if parsed and parsed.questions:
-        allowed = {point.text for point in source_points}
-        out = []
-        for question in parsed.questions[:3]:
-            if not question.question.strip() or not question.rationale.strip():
-                continue
-            source_point = (
-                question.source_point
-                if question.source_point in allowed
-                else source_points[min(len(out), len(source_points) - 1)].text
-            )
-            out.append(
-                question.model_copy(
-                    update={
-                        "source_kind": source_kind,
-                        "source_point": source_point,
-                    }
-                )
-            )
-        if out:
-            return out
-
-    templates = {
-        "disagreement": (
-            "Which finding would decide between the incompatible positions "
-            "in this point: {point}?"
-        ),
-        "unsettled": (
-            "What evidence would settle the open issue in this point: {point}?"
-        ),
-    }
-    return [
-        RecommendedQuestion(
-            question=templates[source_kind].format(point=point.text.rstrip(" .?!")),
-            rationale=(
-                f"This follows from the Thread's {source_kind} point: "
-                f"{point.rationale or point.text}"
-            ),
-            source_kind=source_kind,
-            source_point=point.text,
-            facets=list(point.facets),
-        )
-        for point in source_points[:3]
-    ]
-
-
-# ---------------------------------------------------------------------------
-# Final Document: the researcher-approved outcome of deliberation
-# ---------------------------------------------------------------------------
-
-
-def _fallback_document(
-    problem: str,
-    threads: list[DeliberationThread],
-    rounds: list[DeliberationRound],
-    open_questions: list[str],
-) -> DeliberationDocument:
-    threads_by_id = {thread.id: thread for thread in threads}
-    sections: list[DocumentSection] = []
-    for round_state in rounds:
-        if not round_state.completed:
-            continue
-        if round_state.resolution_decision not in {"accepted", "edited"}:
-            continue
-        hypothesis = round_state.hypothesis_proposal or round_state.hypothesis_before
-        if hypothesis is None or not hypothesis.hypothesis.strip():
-            continue
-        thread = threads_by_id.get(round_state.thread_id or "")
-        if round_state.thread_id is not None:
-            # A re-discussed Thread supersedes its earlier section.
-            sections = [
-                section
-                for section in sections
-                if section.thread_id != round_state.thread_id
-            ]
-        sections.append(
-            DocumentSection(
-                thread_id=round_state.thread_id,
-                title=thread.title if thread else f"Thread {round_state.n}",
-                hypothesis=hypothesis.hypothesis,
-                explanation=(
-                    round_state.resolution.summary if round_state.resolution else ""
-                ),
-            )
-        )
-    return DeliberationDocument(
-        title=problem,
-        sections=sections,
-        open_questions=[question for question in open_questions if question.strip()],
-    )
-
-
-async def synthesize_document(
-    problem: str,
-    threads: list[DeliberationThread],
-    rounds: list[DeliberationRound],
-    open_questions: list[str],
-    *,
-    provider: FocusedProvider | None = None,
-) -> DeliberationDocument:
-    """Moderator synthesis of resolved Threads into the final Document."""
-    fallback = _fallback_document(problem, threads, rounds, open_questions)
-    if provider is None or not fallback.sections:
-        return fallback
-    resolved_by_title = {section.title: section for section in fallback.sections}
-    parsed = await _structured(
-        provider,
-        "Synthesize the researcher-approved outcome of this deliberation as a "
-        "final Document. Each resolved Thread becomes a substantive research "
-        "section titled by its topic: state the hypothesis it supports and "
-        "explain why it is warranted, incorporating the reasoning, "
-        "qualifications, and Perspective differences that survived deliberation "
-        "without reproducing the transcript. Keep unresolved scientific issues "
-        "as open questions. Do not invent Threads or hypotheses.",
-        "## INVESTIGATION PROBLEM\n"
-        + problem
-        + "\n\n## RESOLVED THREADS\n"
-        + "\n\n".join(
-            f"### {section.title}\nHypothesis: {section.hypothesis}\n"
-            f"Resolution: {section.explanation}"
-            for section in fallback.sections
-        )
-        + "\n\n## OPEN QUESTIONS\n"
-        + ("\n".join(f"- {question}" for question in open_questions) or "none"),
-        DocumentDraft,
-        task=FocusedTask.synthesize_document,
-        temperature=0.1,
-    )
-    if not parsed or not parsed.sections:
-        return fallback
-    sections: list[DocumentSection] = []
-    for draft in parsed.sections:
-        base = resolved_by_title.get(draft.thread_title.strip())
-        if base is None or not draft.hypothesis.strip():
-            continue
-        sections.append(
-            DocumentSection(
-                thread_id=base.thread_id,
-                title=base.title,
-                hypothesis=draft.hypothesis.strip()[:4000],
-                explanation=draft.explanation.strip()[:4000] or base.explanation,
-            )
-        )
-    if len(sections) != len(fallback.sections):
-        return fallback
-    open_qs = [
-        question.strip() for question in parsed.open_questions if question.strip()
-    ]
-    return DeliberationDocument(
-        title=problem,
-        sections=sections,
-        open_questions=open_qs or fallback.open_questions,
-    )
-
-
 async def reply_to_user(
     perspective: Perspective,
     question: str,
     history: list[str],
     *,
-    active_facets: list[Facet] | None = None,
-    round_context: str = "",
-    working_hypothesis: HypothesisDev | None = None,
     provider: FocusedProvider | None = None,
 ) -> Statement:
-    facets = active_facets or FACETS
-    hypothesis_context = (
-        working_hypothesis.model_dump_json(indent=2)
-        if working_hypothesis is not None
-        else "No working hypothesis is available."
-    )
+    """Answer one directed researcher exchange from one hidden profile."""
     parsed = await _structured(
         provider,
-        "Answer the researcher's question as one evidence-grounded perspective. "
-        "Use the supplied round record when present, stay within the active facet, "
-        "distinguish a qualification from disagreement, and cite paper IDs. Explain "
-        "the recorded discussion; do not claim that this answer changes panel state.",
-        f"## YOUR FACETS\n{_facets_block(perspective)}\n\n"
-        f"## ACTIVE FACETS\n{', '.join(facets)}\n\n"
-        f"## LATEST COMPLETED ROUND\n{round_context or 'No completed round yet.'}\n\n"
-        f"## WORKING HYPOTHESIS\n{hypothesis_context}\n\n"
-        "## RECENT FOLLOW-UP CONVERSATION\n"
+        "Answer the researcher's question as one evidence-grounded scientific "
+        "Perspective. Use the complete hidden profile and recent conversation. "
+        "Give a direct answer and name an important boundary or tradeoff. Put "
+        "supporting paper IDs only in citations; never mention IDs in the answer "
+        "text. Do not claim to change the researcher's draft.",
+        f"## JOB\n{perspective.name}\n\n"
+        f"## ORIENTATION\n{perspective.summary}\n\n"
+        f"## YOUR PROFILE\n{_facets_block(perspective)}\n\n"
+        f"## FRAMING AND POSITION\n"
+        f"{perspective.framing.model_dump_json() if perspective.framing else 'Not synthesized.'}\n\n"
+        "## RECENT CONVERSATION\n"
         + "\n".join(history[-8:])
         + f"\n\n## RESEARCHER QUESTION\n{question}",
         ChatReply,
@@ -2160,22 +1048,152 @@ async def reply_to_user(
     if parsed and parsed.text:
         return Statement(text=parsed.text, citations=parsed.citations)
     focus = "; ".join(
-        f"{facet}: {_display(_facet_text(perspective, facet))}" for facet in facets
-    )
-    round_summary = (
-        round_context.split("Moderator resolution:", 1)[-1].strip()
-        if round_context
-        else "No completed round has been recorded yet."
-    )
-    hypothesis_text = (
-        working_hypothesis.hypothesis if working_hypothesis is not None else ""
+        f"{facet}: {_display(_facet_text(perspective, facet))}" for facet in FACETS
     )
     return Statement(
         text=(
-            f"Regarding “{question.strip()}”, {perspective.name} reads the active "
-            f"evidence as {focus}. The latest panel record says {round_summary[:500]}"
+            f"With “{perspective.summary[:180]}” as its orientation, "
+            f"{perspective.name} would answer “{question.strip()}” by weighing "
+            f"this evidence: {focus}."
         ),
         relation="reply",
-        hypothesis_fragments=[hypothesis_text] if hypothesis_text else [],
         citations=list(perspective.sources[:2]),
+    )
+
+
+_PART_FACETS: dict[NotepadPart, tuple[Facet, ...]] = {
+    "framing": ("scope", "explanation"),
+    "prior": ("scope", "explanation", "significance"),
+    "method": ("approach",),
+    "expected": ("significance",),
+}
+
+
+async def review_draft_element(
+    perspective: Perspective,
+    part: NotepadPart,
+    subject_text: str,
+    *,
+    provider: FocusedProvider | None = None,
+) -> Statement:
+    """Give one independent, evidence-grounded review of one draft element."""
+    facet_names = _PART_FACETS[part]
+    parsed = await _structured(
+        provider,
+        "Review exactly one element of a researcher's draft as one scientific "
+        "Perspective. Give concrete feedback, state what is strong or missing, "
+        "and recommend what the researcher should reconsider. Use the hidden "
+        "Perspective profile and its evidence. Do not mention other agents or "
+        "their feedback. Put paper IDs only in citations; never mention IDs in "
+        "the feedback text. Do not rewrite the draft.",
+        f"## JOB\n{perspective.name}\n\n"
+        f"## ORIENTATION\n{perspective.summary}\n\n"
+        f"## DRAFT ELEMENT\n{NOTEPAD_LABELS[part]}: {subject_text or 'Not written.'}\n\n"
+        f"## FRAMING AND POSITION\n"
+        f"{perspective.framing.model_dump_json() if perspective.framing else 'Not synthesized.'}\n\n"
+        f"## RELEVANT FRAGMENTS\n"
+        + "\n".join(
+            f"- {facet}: {_facet_text(perspective, facet)}" for facet in facet_names
+        ),
+        ChatReply,
+        task=FocusedTask.review_draft_element,
+        temperature=0.2,
+    )
+    if parsed and parsed.text.strip():
+        return Statement(text=parsed.text.strip(), citations=parsed.citations)
+    evidence = " ".join(
+        _sentence(_facet_text(perspective, facet))
+        for facet in facet_names
+        if _facet_text(perspective, facet).strip()
+    ).strip()
+    draft = subject_text.strip() or "This element is not written yet."
+    return Statement(
+        text=(
+            f"Working from “{perspective.summary[:180]}”, {perspective.name} "
+            f"would test “{draft[:240]}” against this evidence: "
+            f"{evidence or 'The profile does not establish this element yet.'} "
+            "Clarify the boundary or claim that the evidence does not yet establish."
+        ),
+        relation="answer",
+        citations=list(perspective.sources),
+    )
+
+
+async def compare_draft_feedback(
+    perspective: Perspective,
+    part: NotepadPart,
+    subject_text: str,
+    feedback: list[NotepadTurn],
+    *,
+    provider: FocusedProvider | None = None,
+) -> Statement:
+    """Compare the complete independent feedback set from one Perspective."""
+    transcript = "\n".join(f"- {turn.author_label}: {turn.text}" for turn in feedback)
+    parsed = await _structured(
+        provider,
+        "Compare the independent feedback on one draft element as one "
+        "Perspective. Identify a substantive agreement or difference, explain "
+        "why it matters for the draft, and say what the researcher should weigh. "
+        "Do not rewrite the draft. Put your supporting paper IDs only in citations; "
+        "never mention IDs in the feedback text.",
+        f"## DRAFT ELEMENT\n{NOTEPAD_LABELS[part]}: {subject_text or 'Not written.'}\n\n"
+        f"## JOB\n{perspective.name}\n\n"
+        f"## ORIENTATION\n{perspective.summary}\n\n"
+        f"## FRAMING AND POSITION\n"
+        f"{perspective.framing.model_dump_json() if perspective.framing else 'Not synthesized.'}\n\n"
+        f"## YOUR PROFILE\n{_facets_block(perspective)}\n\n"
+        f"## INDEPENDENT FEEDBACK\n{transcript}",
+        ChatReply,
+        task=FocusedTask.compare_draft_feedback,
+        temperature=0.2,
+    )
+    if parsed and parsed.text.strip():
+        return Statement(text=parsed.text.strip(), citations=parsed.citations)
+    peers = [turn for turn in feedback if turn.author_id != perspective.id]
+    peer_text = peers[0].text if peers else "The feedback emphasizes the same boundary."
+    return Statement(
+        text=(
+            f"Working from “{perspective.summary[:180]}”, {perspective.name} "
+            f"compares the {NOTEPAD_LABELS[part]} feedback this way: "
+            f"{peer_text[:320]} The key decision is which boundary the "
+            "researcher wants the draft to defend."
+        ),
+        relation="reply",
+        citations=list(perspective.sources),
+    )
+
+
+async def summarize_notepad_turns(
+    turns: list[NotepadTurn],
+    *,
+    provider: FocusedProvider | None = None,
+) -> Statement:
+    """Summarize visible baseline feedback without mutating the draft."""
+    transcript = "\n".join(
+        f"- {turn.author_label}: {turn.text}"
+        for turn in turns
+        if turn.kind in {"feedback", "comparison", "direct_reply"}
+    )
+    parsed = await _structured(
+        provider,
+        "Summarize the feedback the researcher has received. Preserve the main "
+        "agreements, differences, and actionable questions. Do not rewrite or "
+        "claim to update the draft.",
+        f"## FEEDBACK\n{transcript}",
+        ChatReply,
+        task=FocusedTask.summarize_notepad,
+        temperature=0.1,
+    )
+    if parsed and parsed.text.strip():
+        return Statement(text=parsed.text.strip(), citations=parsed.citations)
+    recent = [
+        f"{turn.author_label}: {turn.text}"
+        for turn in turns
+        if turn.kind in {"feedback", "comparison", "direct_reply"}
+    ][-6:]
+    return Statement(
+        text="Feedback so far: " + " ".join(recent),
+        citations=list(
+            dict.fromkeys(citation for turn in turns for citation in turn.citations)
+        ),
     )

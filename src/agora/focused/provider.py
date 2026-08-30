@@ -32,8 +32,6 @@ class FocusedProvider:
                 return self._models.query
             case FocusedModelRole.reasoning:
                 return self._models.reasoning
-            case FocusedModelRole.evaluation:
-                return self._models.evaluation
 
     def set_cache_scope(self, scope: str) -> None:
         self._cache_scope = scope.strip()

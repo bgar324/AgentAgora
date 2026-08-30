@@ -1,9 +1,4 @@
-"""The group-chat stage over a four-part notepad.
-
-These tests pin the study's manipulation: the two arms must differ in
-exactly one thing (perspective guidance), never in step count or in
-whether the researcher is asked.
-"""
+"""Observable contracts for the baseline four-part draft review."""
 
 from __future__ import annotations
 
@@ -12,16 +7,19 @@ import sqlite3
 
 import pytest
 
+from agora.focused import agents
+from agora.focused import notepad as notepad_module
 from agora.focused.models import (
     FACETS,
+    ClusterCard,
     ExpPaper,
-    Facet,
     FacetEvidence,
     NotepadDoc,
     Perspective,
+    Statement,
 )
 from agora.focused.persistence import FocusedPersistence
-from agora.focused.service import FocusedPanelService
+from agora.focused.service import FocusedPanelService, SessionError
 
 PROBLEM = "Should antibiotics be prescribed broadly?"
 POSITION = {
@@ -45,632 +43,561 @@ def _facet_map(prefix: str, paper_id: str) -> dict[str, FacetEvidence]:
     }
 
 
-def _perspective(name: str, prefix: str, paper_id: str) -> Perspective:
+def _perspective(index: int) -> Perspective:
+    paper_id = f"p{index}"
     return Perspective(
-        id=name.lower(),
-        name=name,
+        id=f"persp-{index}",
+        name=f"Perspective {index}",
         color="#336699",
-        summary=f"{prefix} reads the problem one way. A second sentence follows.",
-        facets=_facet_map(prefix, paper_id),
+        summary=f"Orientation {index}.",
+        facets=_facet_map(f"Evidence {index}", paper_id),
         sources=[paper_id],
+        anchor_paper_id=paper_id,
+        related_paper_count=2,
+        cluster_id="cluster-1",
+        origin=f"paper:{paper_id}",
     )
 
 
-async def _panel(arm: str) -> tuple[FocusedPanelService, str]:
-    service = FocusedPanelService()
+def _paper(index: int) -> ExpPaper:
+    sentence = f"Evidence {index} supports a bounded antibiotic policy."
+    return ExpPaper(
+        id=f"p{index}",
+        title=f"Paper {index}",
+        abstract=sentence,
+        abstract_sentences=[sentence],
+        specter_v2=[float(index), 1.0],
+    )
+
+
+async def _panel(
+    *,
+    persistence: FocusedPersistence | None = None,
+    participants: int = 3,
+) -> tuple[FocusedPanelService, str, str]:
+    service = FocusedPanelService(persistence=persistence)
     view = service.create_workspace(
         problem=PROBLEM,
-        research_questions=[],
         position=dict(POSITION),
-        arm=arm,
         demo=True,
     )
     session_id = view.active.id
     state = service.get(session_id)
-    state.papers = [
-        ExpPaper(
-            id=f"p{index}",
-            title=f"Paper {index}",
-            abstract="Shared evidence.",
-            abstract_sentences=["Shared evidence."],
+    state.papers = [_paper(index) for index in range(1, participants + 1)]
+    state.clusters = [
+        ClusterCard(
+            id="cluster-1",
+            name="Bounded policy",
+            blurb="Evidence about antibiotic policy boundaries.",
+            facets=list(_facet_map("Cluster", "p1").values()),
+            paper_ids=[paper.id for paper in state.papers],
+            representative_paper_ids=[paper.id for paper in state.papers],
         )
-        for index in (1, 2, 3)
     ]
-    state.perspectives = [
-        _perspective("First", "Alpha", "p1"),
-        _perspective("Second", "Beta", "p2"),
-        _perspective("Third", "Gamma", "p3"),
-    ]
+    state.perspectives = [_perspective(index) for index in range(1, participants + 1)]
     state.searched = True
     await service.start_notepad(session_id)
-    return service, session_id
+    return service, session_id, view.workspace.id
 
 
-def _active_doc(service: FocusedPanelService, session_id: str) -> NotepadDoc:
+def _notepad(service: FocusedPanelService, session_id: str):
     notepad = service.get(session_id).notepad
     assert notepad is not None
-    version = notepad.active_version()
+    return notepad
+
+
+def _version(service: FocusedPanelService, session_id: str):
+    version = _notepad(service, session_id).active_version()
     assert version is not None
-    return version.doc
+    return version
 
 
-def _active_version_id(service: FocusedPanelService, session_id: str) -> str:
-    notepad = service.get(session_id).notepad
-    assert notepad is not None
-    version = notepad.active_version()
-    assert version is not None
-    return version.id
-
-
-def test_notepad_v1_is_seeded_from_the_input_screen() -> None:
+def test_v1_is_seeded_and_edits_update_the_current_agenda_subject() -> None:
     async def go() -> None:
-        service, session_id = await _panel("guided")
-        doc = _active_doc(service, session_id)
-        assert doc.framing == POSITION["framing"]
-        assert doc.expected == POSITION["expected"]
-        notepad = service.get(session_id).notepad
-        assert notepad is not None
-        assert [version.name for version in notepad.versions] == ["v1"]
-        # Everyone with a Perspective starts in the chat.
-        assert len(notepad.in_chat) == 3
-
-    asyncio.run(go())
-
-
-def test_researcher_edits_take_effect_without_a_save_step() -> None:
-    async def go() -> None:
-        service, session_id = await _panel("guided")
+        service, session_id, _ = await _panel()
+        version = _version(service, session_id)
+        assert version.doc == NotepadDoc(**POSITION)
+        assert version.agenda.part == "framing"
+        assert version.agenda.subject_text == POSITION["framing"]
         await service.edit_notepad_part(
             session_id,
-            version_id=_active_version_id(service, session_id),
-            part="method",
-            text="Rewritten.",
-        )
-        assert _active_doc(service, session_id).method == "Rewritten."
-
-    asyncio.run(go())
-
-
-def test_versions_are_independent_and_the_first_is_never_mutated() -> None:
-    async def go() -> None:
-        service, session_id = await _panel("guided")
-        await service.add_notepad_version(session_id, copy_current=True)
-        await service.edit_notepad_part(
-            session_id,
-            version_id=_active_version_id(service, session_id),
+            version_id=version.id,
             part="framing",
-            text="v2 wording.",
+            text="A revised evolutionary framing.",
         )
-        notepad = service.get(session_id).notepad
-        assert notepad is not None
-        assert [version.name for version in notepad.versions] == ["v1", "v2"]
-        assert notepad.versions[0].doc.framing == POSITION["framing"]
-        assert notepad.versions[1].doc.framing == "v2 wording."
-        # Switching back exposes the original wording again.
-        await service.switch_notepad_version(
-            session_id, version_id=notepad.versions[0].id
-        )
-        assert _active_doc(service, session_id).framing == POSITION["framing"]
+        version = _version(service, session_id)
+        assert version.doc.framing == "A revised evolutionary framing."
+        assert version.agenda.subject_text == "A revised evolutionary framing."
 
     asyncio.run(go())
 
 
-def test_a_blank_version_starts_with_four_empty_parts() -> None:
+def test_each_click_emits_exactly_the_selected_turns_and_resumes() -> None:
     async def go() -> None:
-        service, session_id = await _panel("guided")
-        await service.add_notepad_version(session_id, copy_current=False)
-        assert _active_doc(service, session_id) == NotepadDoc()
+        service, session_id, _ = await _panel()
+        version_id = _version(service, session_id).id
+        await service.discuss_notepad(session_id, version_id=version_id, turns=4)
+        notepad = _notepad(service, session_id)
+        review_turns = [
+            turn for turn in notepad.turns if turn.kind in {"feedback", "comparison"}
+        ]
+        assert len(review_turns) == 4
+        assert [turn.kind for turn in review_turns] == [
+            "feedback",
+            "feedback",
+            "feedback",
+            "comparison",
+        ]
+        assert len({turn.author_id for turn in review_turns[:3]}) == 3
+        await service.discuss_notepad(session_id, version_id=version_id, turns=2)
+        review_turns = [
+            turn
+            for turn in _notepad(service, session_id).turns
+            if turn.kind in {"feedback", "comparison"}
+        ]
+        assert len(review_turns) == 6
+        assert [turn.kind for turn in review_turns[3:]] == [
+            "comparison",
+            "comparison",
+            "comparison",
+        ]
+        version = _version(service, session_id)
+        assert version.agenda.part == "prior"
+        assert version.agenda.phase == "feedback"
+        assert version.agenda.turn_budget == 2
 
     asyncio.run(go())
 
-def test_new_version_names_do_not_reuse_an_existing_name() -> None:
+
+def test_all_independent_feedback_precedes_every_comparison() -> None:
     async def go() -> None:
-        service, session_id = await _panel("guided")
-        await service.add_notepad_version(session_id, copy_current=True)
-        notepad = service.get(session_id).notepad
-        assert notepad is not None
-        await service.delete_notepad_version(
+        service, session_id, _ = await _panel(participants=2)
+        version_id = _version(service, session_id).id
+        await service.discuss_notepad(session_id, version_id=version_id, turns=4)
+        turns = _notepad(service, session_id).turns
+        assert [turn.kind for turn in turns] == [
+            "feedback",
+            "feedback",
+            "comparison",
+            "comparison",
+        ]
+        assert {turn.author_id for turn in turns[:2]} == {
+            "persp-1",
+            "persp-2",
+        }
+        assert {turn.author_id for turn in turns[2:]} == {
+            "persp-1",
+            "persp-2",
+        }
+
+    asyncio.run(go())
+
+
+def test_direct_exchange_gets_one_reply_from_every_perspective_then_resumes() -> None:
+    async def go() -> None:
+        service, session_id, _ = await _panel()
+        version = _version(service, session_id)
+        await service.discuss_notepad(session_id, version_id=version.id, turns=2)
+        before = version.agenda.model_copy(deep=True)
+        await service.ask_notepad(
             session_id,
-            version_id=notepad.versions[0].id,
+            version_id=version.id,
+            message="What boundary should I defend?",
         )
-        await service.add_notepad_version(session_id, copy_current=False)
-        notepad = service.get(session_id).notepad
-        assert notepad is not None
-        assert [version.name for version in notepad.versions] == ["v2", "v3"]
+        turns = _notepad(service, session_id).turns
+        assert [turn.kind for turn in turns[-4:]] == [
+            "researcher",
+            "direct_reply",
+            "direct_reply",
+            "direct_reply",
+        ]
+        assert len({turn.author_id for turn in turns[-3:]}) == 3
+        after = _version(service, session_id).agenda
+        assert after.part == before.part
+        assert after.phase == before.phase
+        assert after.feedback_done_ids == before.feedback_done_ids
+        await service.discuss_notepad(session_id, version_id=version.id, turns=1)
+        assert _notepad(service, session_id).turns[-1].kind == "feedback"
 
     asyncio.run(go())
 
 
-def test_a_queued_edit_stays_with_the_version_that_owned_it() -> None:
+def test_newcomer_joins_the_current_element_before_comparison_resumes() -> None:
     async def go() -> None:
-        service, session_id = await _panel("guided")
-        v1_id = _active_version_id(service, session_id)
-        await service.add_notepad_version(session_id, copy_current=True)
-        v2_id = _active_version_id(service, session_id)
-        await service.switch_notepad_version(session_id, version_id=v1_id)
-
-        await service.edit_notepad_part(
-            session_id,
-            version_id=v2_id,
-            part="framing",
-            text="Late edit for v2.",
-        )
-
-        notepad = service.get(session_id).notepad
-        assert notepad is not None
-        assert notepad.active_version_id == v1_id
-        assert notepad.active_version() is not None
-        assert notepad.active_version().doc.framing == POSITION["framing"]
-        v2 = next(version for version in notepad.versions if version.id == v2_id)
-        assert v2.doc.framing == "Late edit for v2."
-
-    asyncio.run(go())
-
-
-def test_the_last_version_cannot_be_deleted() -> None:
-    async def go() -> None:
-        service, session_id = await _panel("guided")
-        notepad = service.get(session_id).notepad
-        assert notepad is not None
-        with pytest.raises(Exception, match="last version cannot be deleted"):
-            await service.delete_notepad_version(
-                session_id, version_id=notepad.versions[0].id
-            )
-
-    asyncio.run(go())
-
-
-def test_guided_turns_cite_evidence_and_quote_the_researchers_wording() -> None:
-    async def go() -> None:
-        service, session_id = await _panel("guided")
-        await service.discuss_notepad(session_id, turns=3)
-        notepad = service.get(session_id).notepad
-        assert notepad is not None
-        spoken = [turn for turn in notepad.turns if turn.role == "perspective"]
-        assert len(spoken) == 3
-        # Every guided turn is grounded in its own cluster's paper.
-        assert all(turn.citations for turn in spoken)
-        # And at least one names the researcher's own wording back to them,
-        # quoted rather than spliced into a clause.
-        assert any('"' in turn.text for turn in spoken)
-
-    asyncio.run(go())
-
-
-def test_baseline_turns_are_ungrounded_and_grammatical() -> None:
-    async def go() -> None:
-        service, session_id = await _panel("baseline")
-        await service.discuss_notepad(session_id, turns=3)
-        notepad = service.get(session_id).notepad
-        assert notepad is not None
-        spoken = [turn for turn in notepad.turns if turn.role == "perspective"]
-        assert len(spoken) == 3
-        assert all(not turn.citations for turn in spoken)
-        # A persona blurb runs several sentences; splicing it into a frame
-        # produced "…resistance genes is what matters here."
-        assert all(
-            ". That is what I am weighing here." not in turn.text[:1] for turn in spoken
-        )
-        for turn in spoken:
-            assert not turn.text.endswith("is what matters here.")
-
-    asyncio.run(go())
-
-
-def test_a_speaker_taking_a_second_turn_answers_instead_of_repeating() -> None:
-    async def go() -> None:
-        for arm in ("guided", "baseline"):
-            service, session_id = await _panel(arm)
-            await service.discuss_notepad(session_id, turns=8)
-            notepad = service.get(session_id).notepad
-            assert notepad is not None
-            spoken = [turn.text for turn in notepad.turns if turn.role == "perspective"]
-            assert len(spoken) == 8
-            assert len(set(spoken)) == 8, f"{arm} repeated a turn verbatim"
-
-    asyncio.run(go())
-
-
-def test_neither_arm_writes_the_notepad_without_a_researcher_decision() -> None:
-    async def go() -> None:
-        for arm in ("guided", "baseline"):
-            service, session_id = await _panel(arm)
-            await service.discuss_notepad(session_id, turns=4)
-            await service.summarize_notepad(session_id, part="prior")
-            notepad = service.get(session_id).notepad
-            assert notepad is not None
-            pending = notepad.pending_proposals()
-            # Same seam, same count, in both arms.
-            assert len(pending) == 1, arm
-            assert _active_doc(service, session_id).prior == POSITION["prior"], arm
-
-            await service.decide_notepad_proposal(
-                session_id, proposal_id=pending[0].id, action="approve"
-            )
-            assert _active_doc(service, session_id).prior != POSITION["prior"], arm
-
-    asyncio.run(go())
-
-
-def test_only_the_guided_seam_carries_a_reason_and_its_evidence() -> None:
-    async def go() -> None:
-        guided, guided_id = await _panel("guided")
-        await guided.discuss_notepad(guided_id, turns=4)
-        await guided.summarize_notepad(guided_id, part="prior")
-        guided_notepad = guided.get(guided_id).notepad
-        assert guided_notepad is not None
-        proposal = guided_notepad.pending_proposals()[0]
-        assert proposal.reason
-        assert proposal.citations
-
-        baseline, baseline_id = await _panel("baseline")
-        await baseline.discuss_notepad(baseline_id, turns=4)
-        await baseline.summarize_notepad(baseline_id, part="prior")
-        baseline_notepad = baseline.get(baseline_id).notepad
-        assert baseline_notepad is not None
-        bare = baseline_notepad.pending_proposals()[0]
-        assert not bare.reason
-        assert not bare.citations
-
-    asyncio.run(go())
-
-
-def test_approving_after_your_own_edit_keeps_both() -> None:
-    """The notepad is editable while a proposal is pending.
-
-    Writing the proposal's frozen text here would silently restore the
-    wording it was raised against, discarding the researcher's edit.
-    """
-
-    async def go() -> None:
-        for arm in ("guided", "baseline"):
-            service, session_id = await _panel(arm)
-            await service.discuss_notepad(session_id, turns=4)
-            await service.summarize_notepad(session_id, part="prior")
-            notepad = service.get(session_id).notepad
-            assert notepad is not None
-            proposal_id = notepad.pending_proposals()[0].id
-
-            edit = f"{POSITION['prior']} And my own qualification."
-            await service.edit_notepad_part(
-                session_id,
-                version_id=_active_version_id(service, session_id),
-                part="prior",
-                text=edit,
-            )
-            await service.decide_notepad_proposal(
-                session_id, proposal_id=proposal_id, action="approve"
-            )
-
-            final = _active_doc(service, session_id).prior
-            assert "And my own qualification." in final, arm
-            assert "The discussion so far" in final, arm
-            # The stale prefix is not pasted back in a second time.
-            assert final.count(POSITION["prior"]) == 1, arm
-            notepad = service.get(session_id).notepad
-            assert notepad is not None
-            assert any(
-                "folded into your newer wording" in turn.text
-                for turn in notepad.turns
-                if turn.role == "system"
-            ), arm
-
-    asyncio.run(go())
-
-
-def test_approving_without_an_edit_appends_as_proposed() -> None:
-    async def go() -> None:
-        service, session_id = await _panel("guided")
-        await service.discuss_notepad(session_id, turns=4)
-        await service.summarize_notepad(session_id, part="prior")
-        notepad = service.get(session_id).notepad
-        assert notepad is not None
-        await service.decide_notepad_proposal(
-            session_id,
-            proposal_id=notepad.pending_proposals()[0].id,
-            action="approve",
-        )
-        final = _active_doc(service, session_id).prior
-        assert final.startswith(POSITION["prior"])
-        assert "The discussion so far" in final
-        notepad = service.get(session_id).notepad
-        assert notepad is not None
-        assert any(
-            "as proposed" in turn.text
-            for turn in notepad.turns
-            if turn.role == "system"
-        )
-
-    asyncio.run(go())
-
-
-def test_switching_versions_leaves_a_pending_proposal_decidable() -> None:
-    """A proposal names its version, so a fork cannot orphan it."""
-
-    async def go() -> None:
-        service, session_id = await _panel("guided")
-        await service.discuss_notepad(session_id, turns=4)
-        await service.summarize_notepad(session_id, part="expected")
-        notepad = service.get(session_id).notepad
-        assert notepad is not None
-        proposal = notepad.pending_proposals()[0]
-        v1_id = proposal.version_id
-
-        await service.add_notepad_version(session_id, copy_current=True)
-        await service.decide_notepad_proposal(
-            session_id, proposal_id=proposal.id, action="approve"
-        )
-
-        notepad = service.get(session_id).notepad
-        assert notepad is not None
-        v1 = next(item for item in notepad.versions if item.id == v1_id)
-        v2 = next(item for item in notepad.versions if item.id != v1_id)
-        # The decision lands on the version it was raised against, not on
-        # whichever version happens to be open.
-        assert "The discussion so far" in v1.doc.expected
-        assert v2.doc.expected == POSITION["expected"]
-
-    asyncio.run(go())
-
-
-def test_editing_a_proposal_lands_the_researchers_wording_verbatim() -> None:
-    async def go() -> None:
-        service, session_id = await _panel("guided")
-        await service.discuss_notepad(session_id, turns=4)
-        await service.summarize_notepad(session_id, part="expected")
-        notepad = service.get(session_id).notepad
-        assert notepad is not None
-        proposal = notepad.pending_proposals()[0]
-        await service.decide_notepad_proposal(
-            session_id,
-            proposal_id=proposal.id,
-            action="edit",
-            text="Only my wording survives.",
-        )
-        assert _active_doc(service, session_id).expected == "Only my wording survives."
-        notepad = service.get(session_id).notepad
-        assert notepad is not None
-        assert notepad.proposals[0].status == "edited"
-
-    asyncio.run(go())
-
-
-def test_rejecting_a_proposal_leaves_the_notepad_and_records_the_reason() -> None:
-    async def go() -> None:
-        service, session_id = await _panel("guided")
-        await service.discuss_notepad(session_id, turns=4)
-        await service.summarize_notepad(session_id, part="framing")
-        notepad = service.get(session_id).notepad
-        assert notepad is not None
-        proposal = notepad.pending_proposals()[0]
-        await service.decide_notepad_proposal(
-            session_id,
-            proposal_id=proposal.id,
-            action="reject",
-            reason="Wrong endpoint.",
-        )
-        assert _active_doc(service, session_id).framing == POSITION["framing"]
-        notepad = service.get(session_id).notepad
-        assert notepad is not None
-        rejected = notepad.proposals[0]
-        assert rejected.status == "rejected"
-        assert rejected.decision_reason == "Wrong endpoint."
-        # The panel reads the rejection back.
-        assert any(
-            "Wrong endpoint." in turn.text
-            for turn in notepad.turns
-            if turn.role in {"researcher", "system"}
-        )
-
-    asyncio.run(go())
-
-
-def test_a_proposal_is_decided_once() -> None:
-    async def go() -> None:
-        service, session_id = await _panel("guided")
-        await service.discuss_notepad(session_id, turns=4)
-        await service.summarize_notepad(session_id, part="prior")
-        notepad = service.get(session_id).notepad
-        assert notepad is not None
-        proposal_id = notepad.pending_proposals()[0].id
-        await service.decide_notepad_proposal(
-            session_id, proposal_id=proposal_id, action="approve"
-        )
-        with pytest.raises(Exception, match="already"):
-            await service.decide_notepad_proposal(
-                session_id, proposal_id=proposal_id, action="reject"
-            )
-
-    asyncio.run(go())
-
-
-def test_removing_every_participant_stops_the_discussion() -> None:
-    async def go() -> None:
-        service, session_id = await _panel("guided")
-        for perspective in service.get(session_id).perspectives:
-            await service.set_notepad_participant(
-                session_id, perspective_id=perspective.id, participating=False
-            )
-        notepad = service.get(session_id).notepad
-        assert notepad is not None
-        assert notepad.in_chat == []
-        with pytest.raises(Exception, match="Nobody is in the chat"):
-            await service.discuss_notepad(session_id, turns=2)
-
-    asyncio.run(go())
-
-
-def test_clearing_the_chat_leaves_the_notepad_alone() -> None:
-    async def go() -> None:
-        service, session_id = await _panel("guided")
-        await service.discuss_notepad(session_id, turns=4)
-        await service.summarize_notepad(session_id, part="prior")
-        notepad = service.get(session_id).notepad
-        assert notepad is not None
-        proposal_id = notepad.pending_proposals()[0].id
-        await service.decide_notepad_proposal(
-            session_id, proposal_id=proposal_id, action="approve"
-        )
-        written = _active_doc(service, session_id).prior
-
-        await service.clear_notepad_chat(session_id)
-        notepad = service.get(session_id).notepad
-        assert notepad is not None
-        assert [turn.role for turn in notepad.turns] == ["system"]
-        assert _active_doc(service, session_id).prior == written
-
-    asyncio.run(go())
-
-
-def test_asking_the_panel_gets_one_answer_from_a_participant() -> None:
-    async def go() -> None:
-        service, session_id = await _panel("guided")
-        await service.ask_notepad(session_id, message="Which endpoint decides this?")
-        notepad = service.get(session_id).notepad
-        assert notepad is not None
-        roles = [turn.role for turn in notepad.turns]
-        assert roles == ["researcher", "perspective"]
-        assert notepad.turns[0].text == "Which endpoint decides this?"
-        assert "Which endpoint decides this?" in notepad.turns[1].text
-
-    asyncio.run(go())
-
-def test_asking_with_an_empty_roster_is_refused_before_recording() -> None:
-    async def go() -> None:
-        service, session_id = await _panel("guided")
-        notepad = service.get(session_id).notepad
-        assert notepad is not None
-        for perspective_id in list(notepad.in_chat):
-            await service.set_notepad_participant(
-                session_id,
-                perspective_id=perspective_id,
-                participating=False,
-            )
-        with pytest.raises(Exception, match="Nobody is in the chat"):
-            await service.ask_notepad(session_id, message="Can anyone answer?")
-        assert notepad.turns == []
-
-    asyncio.run(go())
-
-
-def test_summary_uses_the_recorded_discussion() -> None:
-    async def go() -> None:
-        service, session_id = await _panel("guided")
-        await service.discuss_notepad(session_id, turns=2)
-        notepad = service.get(session_id).notepad
-        assert notepad is not None
-        spoken = [turn for turn in notepad.turns if turn.role == "perspective"]
-        await service.summarize_notepad(session_id, part="prior")
-        proposal = notepad.pending_proposals()[0]
-        assert spoken[-1].author_label in proposal.addition
-        assert spoken[-1].text in proposal.addition
-
-    asyncio.run(go())
-
-
-def test_a_turn_budget_is_bounded() -> None:
-    async def go() -> None:
-        service, session_id = await _panel("guided")
-        with pytest.raises(Exception, match="between 1 and"):
-            await service.discuss_notepad(session_id, turns=99)
-
-    asyncio.run(go())
-
-
-def test_summarizing_before_a_discussion_is_refused() -> None:
-    async def go() -> None:
-        service, session_id = await _panel("guided")
-        with pytest.raises(Exception, match="summarize"):
-            await service.summarize_notepad(session_id, part="prior")
-
-    asyncio.run(go())
-
-
-@pytest.mark.parametrize("facet", list(FACETS))
-def test_every_facet_has_display_evidence(facet: Facet) -> None:
-    # The Perspective column shows a facet sentence per card; a missing
-    # facet would render an empty card.
-    evidence = _facet_map("Alpha", "p1")[facet]
-    assert evidence.text
-    assert evidence.paper_id == "p1"
-
-
-def test_the_notepad_survives_a_cold_reload(tmp_path) -> None:
-    """A study session outlives the process that created it."""
-
-    def store() -> FocusedPersistence:
-        connection = sqlite3.connect(tmp_path / "focused.db", check_same_thread=False)
-        connection.row_factory = sqlite3.Row
-        return FocusedPersistence(connection)
-
-    async def go() -> None:
-        service = FocusedPanelService(persistence=store())
-        view = service.create_workspace(
-            problem=PROBLEM,
-            research_questions=[],
-            position=dict(POSITION),
-            arm="guided",
-            demo=True,
-        )
-        session_id = view.active.id
-        workspace_id = view.workspace.id
+        service, session_id, _ = await _panel()
+        version_id = _version(service, session_id).id
+        await service.discuss_notepad(session_id, version_id=version_id, turns=4)
         state = service.get(session_id)
-        state.papers = [
-            ExpPaper(
-                id=f"p{index}",
-                title=f"Paper {index}",
-                abstract="Shared evidence.",
-                abstract_sentences=["Shared evidence."],
-            )
-            for index in (1, 2, 3)
-        ]
-        state.perspectives = [
-            _perspective("First", "Alpha", "p1"),
-            _perspective("Second", "Beta", "p2"),
-            _perspective("Third", "Gamma", "p3"),
-        ]
-        state.searched = True
-        await service.start_notepad(session_id)
-        await service.discuss_notepad(session_id, turns=4)
-        await service.summarize_notepad(session_id, part="prior")
-        notepad = service.get(session_id).notepad
-        assert notepad is not None
-        await service.decide_notepad_proposal(
-            session_id,
-            proposal_id=notepad.pending_proposals()[0].id,
-            action="edit",
-            text="Researcher wording only.",
-        )
+        state.papers.append(_paper(4))
+        state.clusters[0].paper_ids.append("p4")
+        state.perspectives.append(_perspective(4))
+        assert state.notepad is not None
+        state.notepad.in_chat.append("persp-4")
+        await service.discuss_notepad(session_id, version_id=version_id, turns=1)
+        latest = _notepad(service, session_id).turns[-1]
+        assert latest.kind == "feedback"
+        assert latest.author_id == "persp-4"
+        agenda = _version(service, session_id).agenda
+        assert agenda.part == "framing"
+        assert agenda.phase == "comparison"
+        assert agenda.comparison_done_ids == []
+
+    asyncio.run(go())
+
+
+def test_removing_a_perspective_prunes_the_roster_and_pending_agenda() -> None:
+    async def go() -> None:
+        service, session_id, _ = await _panel()
+        version_id = _version(service, session_id).id
+        await service.discuss_notepad(session_id, version_id=version_id, turns=1)
+        await service.remove_perspective(session_id, "persp-3")
+        await service.discuss_notepad(session_id, version_id=version_id, turns=1)
+        notepad = _notepad(service, session_id)
+        assert "persp-3" not in notepad.in_chat
+        assert "persp-3" not in _version(service, session_id).agenda.participant_ids
+        assert all(turn.author_id != "persp-3" for turn in notepad.turns)
+
+    asyncio.run(go())
+
+
+def test_versions_keep_independent_agendas_histories_and_turn_budgets() -> None:
+    async def go() -> None:
+        service, session_id, _ = await _panel(participants=2)
+        v1 = _version(service, session_id)
+        await service.discuss_notepad(session_id, version_id=v1.id, turns=3)
         await service.add_notepad_version(session_id, copy_current=True)
+        v2 = _version(service, session_id)
+        await service.discuss_notepad(session_id, version_id=v2.id, turns=1)
+        notepad = _notepad(service, session_id)
+        assert len([turn for turn in notepad.turns if turn.version_id == v1.id]) == 3
+        assert len([turn for turn in notepad.turns if turn.version_id == v2.id]) == 1
+        assert v1.agenda.turn_budget == 3
+        assert v2.agenda.turn_budget == 1
+        assert v1.agenda.phase == "comparison"
+        assert v2.agenda.phase == "feedback"
+
+    asyncio.run(go())
+
+
+def test_review_stops_at_completion_and_requires_an_explicit_restart() -> None:
+    async def go() -> None:
+        service, session_id, _ = await _panel(participants=1)
+        version_id = _version(service, session_id).id
+        for _ in range(4):
+            await service.discuss_notepad(session_id, version_id=version_id, turns=2)
+        agenda = _version(service, session_id).agenda
+        assert agenda.phase == "complete"
+        assert agenda.completed_at is not None
+        with pytest.raises(SessionError, match="complete"):
+            await service.discuss_notepad(
+                session_id,
+                version_id=version_id,
+                turns=1,
+            )
+        await service.restart_notepad_review(session_id, version_id=version_id)
+        agenda = _version(service, session_id).agenda
+        assert agenda.review_n == 2
+        assert agenda.part == "framing"
+        assert agenda.phase == "feedback"
+
+    asyncio.run(go())
+
+
+def test_too_large_final_budget_is_rejected_without_partial_turns() -> None:
+    async def go() -> None:
+        service, session_id, _ = await _panel()
+        version_id = _version(service, session_id).id
+        for turns in (8, 8, 7):
+            await service.discuss_notepad(
+                session_id,
+                version_id=version_id,
+                turns=turns,
+            )
+        before = len(_notepad(service, session_id).turns)
+        with pytest.raises(SessionError, match="Only 1 review turn remains"):
+            await service.discuss_notepad(
+                session_id,
+                version_id=version_id,
+                turns=2,
+            )
+        assert len(_notepad(service, session_id).turns) == before
+        await service.discuss_notepad(session_id, version_id=version_id, turns=1)
+        assert _version(service, session_id).agenda.phase == "complete"
+
+    asyncio.run(go())
+
+
+def test_provider_failure_rolls_back_every_turn_from_the_click(monkeypatch) -> None:
+    async def go() -> None:
+        service, session_id, _ = await _panel()
+        version_id = _version(service, session_id).id
+        original = agents.review_draft_element
+        calls = 0
+
+        async def fail_second(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("provider failed")
+            return await original(*args, **kwargs)
+
+        monkeypatch.setattr(agents, "review_draft_element", fail_second)
+        with pytest.raises(RuntimeError, match="provider failed"):
+            await service.discuss_notepad(
+                session_id,
+                version_id=version_id,
+                turns=2,
+            )
+        notepad = _notepad(service, session_id)
+        assert notepad.turns == []
+        assert _version(service, session_id).agenda.feedback_done_ids == []
+
+    asyncio.run(go())
+
+
+def test_summary_is_clipboard_content_and_never_mutates_the_draft() -> None:
+    async def go() -> None:
+        service, session_id, workspace_id = await _panel()
+        version = _version(service, session_id)
+        before = version.doc.model_copy(deep=True)
+        await service.discuss_notepad(session_id, version_id=version.id, turns=2)
+        await service.summarize_notepad(session_id, version_id=version.id)
+        notepad = _notepad(service, session_id)
+        assert notepad.turns[-1].kind == "summary"
+        assert _version(service, session_id).doc == before
+        public = service.workspace_view(workspace_id).active
+        assert public.notepad is not None
+        assert public.notepad.turns[-1].citations == []
+
+    asyncio.run(go())
+
+
+def test_clear_is_version_scoped_and_preserves_document_and_progress() -> None:
+    async def go() -> None:
+        service, session_id, workspace_id = await _panel()
+        version = _version(service, session_id)
+        await service.discuss_notepad(session_id, version_id=version.id, turns=2)
+        before_doc = version.doc.model_copy(deep=True)
+        before_agenda = version.agenda.model_copy(deep=True)
+        await service.clear_notepad_chat(session_id)
+        version = _version(service, session_id)
+        assert version.visible_turn_start == 2
+        assert version.doc == before_doc
+        assert version.agenda == before_agenda
+        assert _notepad(service, session_id).turns[-1].kind == "system"
+        assert len(_notepad(service, session_id).turns) == 3
+        public = service.workspace_view(workspace_id).active.notepad
+        assert public is not None
+        assert [turn.kind for turn in public.turns] == ["system"]
+        assert all(item.visible_turn_start == 0 for item in public.versions)
+
+    asyncio.run(go())
+
+
+def test_finish_snapshots_every_version_and_makes_the_study_read_only() -> None:
+    async def go() -> None:
+        service, session_id, workspace_id = await _panel()
+        await service.add_notepad_version(session_id, copy_current=False)
+        active_id = _version(service, session_id).id
         await service.edit_notepad_part(
             session_id,
-            version_id=_active_version_id(service, session_id),
-            part="framing",
-            text="v2 framing.",
+            version_id=active_id,
+            part="method",
+            text="Alternative method.",
         )
-
-        reloaded_service = FocusedPanelService(persistence=store())
-        restored = reloaded_service.workspace_view(workspace_id)
-        assert restored.active.arm == "guided"
-        assert restored.active.position.framing == POSITION["framing"]
-        reloaded = restored.active.notepad
-        assert reloaded is not None
-        assert [version.name for version in reloaded.versions] == ["v1", "v2"]
-        active = reloaded.active_version()
-        assert active is not None and active.name == "v2"
-        assert reloaded.versions[0].doc.framing == POSITION["framing"]
-        assert reloaded.versions[0].doc.prior == "Researcher wording only."
-        assert reloaded.versions[1].doc.framing == "v2 framing."
-        assert [item.status for item in reloaded.proposals] == ["edited"]
-        assert any(turn.citations for turn in reloaded.turns)
-        assert len(reloaded.in_chat) == 3
-        exported = reloaded_service.export_workspace(workspace_id)
-        exported_notepad = exported["investigations"][0]["notepad"]
-        assert [version["name"] for version in exported_notepad["versions"]] == [
+        await service.finish_notepad_study(session_id)
+        notepad = _notepad(service, session_id)
+        assert notepad.final_snapshot is not None
+        assert [version.name for version in notepad.final_snapshot.versions] == [
             "v1",
             "v2",
         ]
-        assert exported_notepad["versions"][1]["doc"]["framing"] == "v2 framing."
-        assert reloaded.turn_cursor == 4
+        assert notepad.final_snapshot.versions[1].doc.method == "Alternative method."
+        with pytest.raises(SessionError, match="read-only"):
+            await service.edit_notepad_part(
+                session_id,
+                version_id=active_id,
+                part="method",
+                text="Late change.",
+            )
+        with pytest.raises(SessionError, match="read-only"):
+            await service.remove_perspective(session_id, "persp-1")
+        revision = service.workspace_view(workspace_id).workspace.revision
+        await service.finish_notepad_study(session_id)
+        assert service.workspace_view(workspace_id).workspace.revision == revision
+        assert _notepad(service, session_id).final_snapshot == notepad.final_snapshot
+
+    asyncio.run(go())
+
+
+def test_finished_versions_survive_a_cold_reload() -> None:
+    async def go() -> None:
+        connection = sqlite3.connect(":memory:", check_same_thread=False)
+        connection.row_factory = sqlite3.Row
+        persistence = FocusedPersistence(connection)
+        service, session_id, workspace_id = await _panel(persistence=persistence)
+        await service.finish_notepad_study(session_id)
+        reloaded = FocusedPanelService(persistence=persistence)
+        state = reloaded.workspace_view(workspace_id).active
+        assert state.notepad is not None
+        assert state.notepad.final_snapshot is not None
+        assert state.notepad.final_snapshot.versions[0].doc == NotepadDoc(**POSITION)
+
+    asyncio.run(go())
+
+
+def test_removing_every_perspective_stops_without_marking_review_complete() -> None:
+    async def go() -> None:
+        service, session_id, _ = await _panel(participants=1)
+        version_id = _version(service, session_id).id
+        await service.remove_perspective(session_id, "persp-1")
+        with pytest.raises(SessionError, match="No Perspectives are available"):
+            await service.discuss_notepad(
+                session_id,
+                version_id=version_id,
+                turns=1,
+            )
+        assert _version(service, session_id).agenda.phase == "feedback"
+        assert _notepad(service, session_id).turns == []
+
+    asyncio.run(go())
+
+
+def test_deleting_another_version_does_not_shift_the_clear_boundary() -> None:
+    async def go() -> None:
+        service, session_id, _ = await _panel(participants=1)
+        v1 = _version(service, session_id)
+        await service.discuss_notepad(session_id, version_id=v1.id, turns=2)
+        await service.add_notepad_version(session_id, copy_current=True)
+        v2 = _version(service, session_id)
+        await service.discuss_notepad(session_id, version_id=v2.id, turns=2)
+        await service.clear_notepad_chat(session_id)
+        await service.delete_notepad_version(session_id, version_id=v1.id)
+        await service.discuss_notepad(session_id, version_id=v2.id, turns=1)
+        notepad = _notepad(service, session_id)
+        version_turns = [turn for turn in notepad.turns if turn.version_id == v2.id]
+        visible = version_turns[v2.visible_turn_start :]
+        assert [turn.kind for turn in visible] == ["system", "feedback"]
+
+    asyncio.run(go())
+
+
+def test_blank_direct_message_is_rejected_before_agent_work(monkeypatch) -> None:
+    async def go() -> None:
+        service, session_id, _ = await _panel(participants=1)
+        version_id = _version(service, session_id).id
+
+        async def should_not_run(*args, **kwargs):
+            raise AssertionError("blank message reached an agent")
+
+        monkeypatch.setattr(agents, "reply_to_user", should_not_run)
+        with pytest.raises(SessionError, match="message requires text"):
+            await service.ask_notepad(
+                session_id,
+                version_id=version_id,
+                message="   ",
+            )
+        assert _notepad(service, session_id).turns == []
+
+    asyncio.run(go())
+
+
+def test_roster_removal_advances_an_already_satisfied_comparison() -> None:
+    async def go() -> None:
+        service, session_id, _ = await _panel(participants=2)
+        version_id = _version(service, session_id).id
+        await service.discuss_notepad(
+            session_id,
+            version_id=version_id,
+            turns=3,
+        )
+        assert _version(service, session_id).agenda.phase == "comparison"
+        await service.remove_perspective(session_id, "persp-2")
+        agenda = _version(service, session_id).agenda
+        assert agenda.part == "prior"
+        assert agenda.phase == "feedback"
+        await service.discuss_notepad(
+            session_id,
+            version_id=version_id,
+            turns=1,
+        )
+        latest = _notepad(service, session_id).turns[-1]
+        assert latest.kind == "feedback"
+        assert latest.part == "prior"
+
+    asyncio.run(go())
+
+
+def test_comparison_uses_feedback_from_current_perspectives_only() -> None:
+    async def go() -> None:
+        service, session_id, _ = await _panel(participants=2)
+        version_id = _version(service, session_id).id
+        await service.discuss_notepad(
+            session_id,
+            version_id=version_id,
+            turns=2,
+        )
+        await service.remove_perspective(session_id, "persp-2")
+        plan = notepad_module.plan_review_turn(
+            service.get(session_id),
+            version_id=version_id,
+            turns=1,
+        )
+        assert plan.phase == "comparison"
+        assert plan.speaker.id == "persp-1"
+        assert [turn.author_id for turn in plan.feedback] == ["persp-1"]
+
+    asyncio.run(go())
+
+
+def test_finished_summary_is_rejected_before_agent_work(monkeypatch) -> None:
+    async def go() -> None:
+        service, session_id, _ = await _panel(participants=1)
+        version_id = _version(service, session_id).id
+        await service.discuss_notepad(
+            session_id,
+            version_id=version_id,
+            turns=2,
+        )
+        await service.finish_notepad_study(session_id)
+
+        async def should_not_run(*args, **kwargs):
+            raise AssertionError("finished summary reached an agent")
+
+        monkeypatch.setattr(agents, "summarize_notepad_turns", should_not_run)
+        with pytest.raises(SessionError, match="read-only") as caught:
+            await service.summarize_notepad(
+                session_id,
+                version_id=version_id,
+            )
+        assert caught.value.status == 409
+
+    asyncio.run(go())
+
+
+def test_feedback_text_never_exposes_internal_paper_ids(monkeypatch) -> None:
+    async def go() -> None:
+        service, session_id, workspace_id = await _panel(participants=1)
+        version_id = _version(service, session_id).id
+
+        async def cited_feedback(*args, **kwargs):
+            return Statement(
+                text="Evidence [p1] and p1 supports the boundary.",
+                citations=["p1"],
+            )
+
+        monkeypatch.setattr(agents, "review_draft_element", cited_feedback)
+        await service.discuss_notepad(
+            session_id,
+            version_id=version_id,
+            turns=1,
+        )
+        private_turn = _notepad(service, session_id).turns[-1]
+        assert "p1" not in private_turn.text
+        assert private_turn.citations == ["p1"]
+        public = service.workspace_view(workspace_id).active.notepad
+        assert public is not None
+        assert "p1" not in public.turns[-1].text
+        assert public.turns[-1].citations == []
 
     asyncio.run(go())

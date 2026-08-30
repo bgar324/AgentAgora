@@ -16,13 +16,15 @@ async function activeView(page: Page, workspaceId: string) {
 }
 
 /** A baseline Demo workspace stopped at Step 2, corpus already searched. */
-async function atStepTwo(page: Page) {
+async function atStepTwo(
+  page: Page,
+  brief: { problem?: string; position?: typeof POSITION } = {},
+) {
   const created = await page.request.post("/api/focused/workspaces", {
     data: {
-      problem: "Should antibiotics be prescribed broadly?",
-      research_questions: [],
-      position: POSITION,
-      arm: "baseline",
+      problem:
+        brief.problem ?? "Should antibiotics be prescribed broadly?",
+      position: brief.position ?? POSITION,
       demo: true,
     },
   })
@@ -67,6 +69,34 @@ test("Step 2 is the three-column paper workflow and lists every paper", async ({
   await expect(page.getByTestId("paper-result")).toHaveCount(
     view.active.papers.length,
   )
+})
+
+test("the Problem column scrolls independently", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 700 })
+  const long = "A long research statement that must remain readable. ".repeat(
+    30,
+  )
+  await atStepTwo(page, {
+    problem: long,
+    position: {
+      framing: long,
+      prior: long,
+      method: long,
+      expected: long,
+    },
+  })
+
+  const recap = page.getByTestId("search-brief")
+  const dimensions = await recap.evaluate((element) => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+  }))
+  expect(dimensions.scrollHeight).toBeGreaterThan(dimensions.clientHeight)
+  await recap.hover()
+  await page.mouse.wheel(0, 600)
+  await expect
+    .poll(() => recap.evaluate((element) => element.scrollTop))
+    .toBeGreaterThan(0)
 })
 
 test("Step 2 keeps the problem and four parts on screen, read only", async ({
@@ -318,7 +348,7 @@ test("building another Perspective returns to papers and rejoins on return", asy
   expect(view.active.perspectives).toHaveLength(2)
 })
 
-test("a Perspective links its source paper and shows four Fragments plus synthesis", async ({
+test("a Perspective shows only its anchor paper and related count", async ({
   page,
 }) => {
   const { workspaceId } = await atStepTwo(page)
@@ -327,20 +357,42 @@ test("a Perspective links its source paper and shows four Fragments plus synthes
 
   await carryPaper(page)
   await page.getByRole("button", { name: "Build Perspective" }).click()
-  await page.getByRole("button", { name: "Continue", exact: true }).click()
-  const rail = page.getByTestId("notepad-perspectives")
-  await expect(rail).toBeVisible({ timeout: 30_000 })
-  await rail.getByRole("button", { name: sourceTitle }).first().click()
-  const sourceLink = rail.getByRole("button", {
-    name: `Open source paper: ${sourceTitle}`,
-  })
-  await expect(sourceLink).toBeVisible()
-  for (const fragment of ["Scope", "Explanation", "Approach", "Significance"]) {
-    await expect(rail).toContainText(fragment)
-  }
-  await expect(rail).toContainText("Framing & Position")
-  await sourceLink.click()
+  await expect(page.getByTestId("built-perspectives")).toContainText(sourceTitle)
+  await expect(page.getByTestId("built-perspectives")).toContainText(/related papers?/)
+  await expect(
+    page.getByText(/Scope|Explanation|Approach|Significance|Fragment/i),
+  ).toHaveCount(0)
+  await page.getByTestId("built-perspectives").getByRole("button", {
+    name: sourceTitle,
+    exact: true,
+  }).click()
   await expect(page.getByRole("dialog", { name: sourceTitle })).toBeVisible({
     timeout: 30_000,
   })
+})
+
+test("six Perspectives is a hard limit in Step 2", async ({ page }) => {
+  const { workspaceId } = await atStepTwo(page)
+  let view = await activeView(page, workspaceId)
+  for (const [index, paper] of view.active.papers.slice(0, 6).entries()) {
+    const response = await page.request.post(
+      `/api/focused/sessions/${view.active.id}/perspectives`,
+      {
+        data: {
+          paper_id: paper.id,
+          name: `Perspective ${index + 1}`,
+          description: `Orientation ${index + 1}`,
+        },
+      },
+    )
+    expect(response.ok(), await response.text()).toBeTruthy()
+    view = await response.json()
+  }
+  await page.reload()
+  await expect(page.getByText("6 / 6", { exact: true })).toBeVisible()
+  const seventh = page.getByTestId("paper-result").nth(6)
+  await seventh.getByRole("button").first().click()
+  await expect(
+    seventh.getByRole("button", { name: "Add to editor" }),
+  ).toBeDisabled()
 })

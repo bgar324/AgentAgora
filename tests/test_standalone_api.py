@@ -50,7 +50,6 @@ def test_focused_demo_is_runnable_without_api_keys() -> None:
                 "/api/v1/focused/workspaces",
                 json={
                     "problem": "Should antibiotics be prescribed broadly?",
-                    "research_questions": [],
                     "demo": True,
                 },
             )
@@ -65,14 +64,17 @@ def test_focused_demo_is_runnable_without_api_keys() -> None:
                 json={"queries": selected},
             )
             assert searched.status_code == 200
-            clusters = searched.json()["active"]["clusters"]
-            assert clusters
-            assert {item["facet"] for item in clusters[0]["facets"]} == {
-                "scope",
-                "explanation",
-                "approach",
-                "significance",
-            }
+            state = searched.json()["active"]
+            assert state["papers"]
+            assert "clusters" not in state
+            built = client.post(
+                f"/api/v1/focused/sessions/{state['id']}/perspectives",
+                json={"paper_id": state["papers"][0]["id"]},
+            )
+            assert built.status_code == 200
+            perspective = built.json()["active"]["perspectives"][0]
+            assert perspective["anchor_paper_id"] == state["papers"][0]["id"]
+            assert "facets" not in perspective
             assert "torch" not in sys.modules
         """
     )

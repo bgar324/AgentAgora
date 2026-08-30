@@ -254,13 +254,6 @@ class HermeticProvider:
         return SimpleNamespace(parsed=parsed)
 
 
-class FailingEmbedder:
-    embedding_model = "broken"
-
-    async def embed_batch(self, _texts: list[str]):
-        raise RuntimeError("embedding unavailable")
-
-
 class FailingRetrieval:
     async def search(self, _query: str, **_: Any):
         raise RuntimeError("provider unavailable")
@@ -274,12 +267,12 @@ def test_question_search_records_reach_and_miss() -> None:
         service = FocusedPanelService(provider=provider, s2=retrieval)
         state = service.create_workspace(
             problem="How do AI writing tools affect knowledge work?",
-            research_questions=[
-                "When do draft suggestions reduce output diversity?",
-                "What capability remains after the tool is withdrawn?",
-            ],
             demo=False,
         ).active
+        service.get(state.id).research_questions = [
+            "When do draft suggestions reduce output diversity?",
+            "Does capability persist after the tool is withdrawn?",
+        ]
         state = await service.suggest_queries(state.id)
         selected = [query.query for query in state.suggested_queries]
         assert len(state.suggested_queries) == 5
@@ -404,7 +397,6 @@ def test_live_retrieval_surfaces_provider_failure() -> None:
         service = FocusedPanelService(provider=provider, s2=FailingRetrieval())
         state = service.create_workspace(
             problem="How do AI writing tools affect knowledge work?",
-            research_questions=[],
             demo=False,
         ).active
         state = await service.suggest_queries(state.id)
@@ -424,7 +416,6 @@ def test_questionless_live_start_derives_research_questions() -> None:
         service = FocusedPanelService(provider=provider, s2=retrieval)
         state = service.create_workspace(
             problem="How do AI writing tools affect knowledge work?",
-            research_questions=[],
             demo=False,
         ).active
         state = await service.suggest_queries(state.id)
@@ -455,9 +446,6 @@ def test_empty_live_search_rolls_back_and_can_retry() -> None:
         service = FocusedPanelService(provider=provider, s2=retrieval)
         state = service.create_workspace(
             problem="How do AI writing tools affect knowledge work?",
-            research_questions=[
-                "When do draft suggestions reduce output diversity?",
-            ],
             demo=False,
         ).active
         state = await service.suggest_queries(state.id)
@@ -471,16 +459,6 @@ def test_empty_live_search_rolls_back_and_can_retry() -> None:
         assert not failed.searched
         assert failed.papers == []
         assert failed.searched_queries == []
-
-        failed.searched = True
-        failed.searched_queries = selected
-        updated = service.update_brief(
-            state.id,
-            problem=state.problem,
-            research_questions=state.research_questions,
-        )
-        assert not updated.searched
-        assert updated.searched_queries == []
 
         updated = await service.suggest_queries(state.id)
         selected = [query.query for query in updated.suggested_queries]
@@ -536,37 +514,11 @@ def test_automated_facet_without_abstract_grounding_is_blank() -> None:
     assert researcher_edit.paper_id is None
 
 
-def test_metric_failure_is_explicitly_unavailable() -> None:
-    async def go() -> None:
-        service = FocusedPanelService(provider=FailingEmbedder())
-        state = service.create_workspace(
-            problem="A metric test",
-            research_questions=[],
-            demo=False,
-        ).active
-        snapshot = {
-            1: {facet: "first account" for facet in FACETS},
-            2: {facet: "second account" for facet in FACETS},
-        }
-        metrics = await service._round_metrics(
-            service._require(state.id),
-            snapshot,
-            snapshot,
-        )
-        assert metrics.method == "unavailable:embedding-failed"
-        assert metrics.direction == "insufficient"
-        assert metrics.before == []
-        assert metrics.after == []
-
-    asyncio.run(go())
-
-
 def test_citation_filter_accepts_only_known_allowed_sources() -> None:
     state = (
         FocusedPanelService()
         .create_workspace(
             problem="Citation filter",
-            research_questions=[],
             demo=True,
         )
         .active
@@ -766,7 +718,6 @@ def test_rate_limited_query_does_not_cancel_successful_siblings() -> None:
         service = FocusedPanelService(s2=PartialRetrieval())
         state = service.create_workspace(
             problem="How does urban greening affect heat exposure?",
-            research_questions=[],
             demo=True,
         ).active
         generation = service.start_search_progress(state.id)
@@ -806,7 +757,6 @@ def test_all_rate_limited_queries_keep_retry_guidance() -> None:
         )
         state = service.create_workspace(
             problem="How does urban greening affect heat exposure?",
-            research_questions=[],
             demo=False,
         ).active
         state.suggested_queries = [
@@ -833,9 +783,9 @@ def test_question_retrieval_pipelines_overlap(monkeypatch) -> None:
         service = FocusedPanelService()
         state = service.create_workspace(
             problem="Should antibiotics be prescribed broadly?",
-            research_questions=DEMO_RESEARCH_QUESTIONS,
             demo=True,
         ).active
+        service.get(state.id).research_questions = list(DEMO_RESEARCH_QUESTIONS)
         state = await service.suggest_queries(state.id)
         active = 0
         peak = 0

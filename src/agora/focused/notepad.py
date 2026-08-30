@@ -1,123 +1,112 @@
-"""Group-chat stage over a four-part notepad.
-
-Implements the surface Youngseung specified: a notepad of four parts with
-independent versions, a group chat whose participants are the panel's
-Perspectives, and summaries that reach the notepad only through an
-explicit researcher decision.
-
-The two study arms share this module. The arm decides how a turn is
-produced and whether a notepad write must be reviewed:
-
-* ``baseline`` - personas speak without grounding; a summary is copied
-  into a part directly.
-* ``guided`` - Perspectives speak from their abstract-grounded facets and
-  cite evidence; a summary arrives as a proposal the researcher must
-  approve, edit, or reject, following the human-in-the-loop decision
-  vocabulary Kat referenced.
-
-No dspy import lives here. Live turns are produced through the existing
-``FocusedProvider`` task boundary, so this module stays importable in the
-hermetic tests.
-"""
+"""Baseline four-part draft and persistent multi-Perspective review agenda."""
 
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
+from typing import Literal
 
 from agora.focused.models import (
-    NOTEPAD_LABELS,
-    ExpPaper,
+    NOTEPAD_PARTS,
+    NotepadAgenda,
     NotepadDoc,
+    NotepadFinalSnapshot,
     NotepadPart,
-    NotepadProposal,
     NotepadState,
     NotepadTurn,
     NotepadVersion,
     Perspective,
     SessionState,
+    Statement,
+    utcnow,
 )
 
 MAX_DISCUSSION_TURNS = 8
 MAX_VERSIONS = 8
-SUMMARY_AUTHOR = "moderator"
+MAX_PERSPECTIVES = 6
 
 
 class NotepadError(Exception):
-    """A notepad command hit an invalid state."""
+    """A baseline study command hit an invalid state."""
+
+    def __init__(self, message: str, *, status: int = 400) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+@dataclass(frozen=True)
+class ReviewTurnPlan:
+    version_id: str
+    review_n: int
+    part: NotepadPart
+    phase: Literal["feedback", "comparison"]
+    comparison_cycle: int
+    speaker: Perspective
+    subject_text: str
+    feedback: tuple[NotepadTurn, ...]
 
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
 
-def _facet_text(perspective: Perspective, facet: str) -> str:
-    evidence = perspective.facets.get(facet)  # type: ignore[arg-type]
-    return " ".join((evidence.text if evidence else "").split())
+def _require(state: SessionState) -> NotepadState:
+    if state.notepad is None:
+        raise NotepadError("The discussion has not started yet.")
+    return state.notepad
 
 
-def _sentence(text: str) -> str:
-    body = " ".join((text or "").split())
-    if not body:
-        return ""
-    body = body[0].upper() + body[1:]
-    return body if body.endswith((".", "?", "!")) else f"{body}."
+def _ensure_open(notepad: NotepadState) -> None:
+    if notepad.final_snapshot is not None:
+        raise NotepadError("This study is finished and read-only.", status=409)
 
 
-def _lower_first(text: str) -> str:
-    return text[:1].lower() + text[1:] if text else text
+def _version(notepad: NotepadState, version_id: str) -> NotepadVersion:
+    version = next((item for item in notepad.versions if item.id == version_id), None)
+    if version is None:
+        raise NotepadError(
+            f"Document version '{version_id}' was not found.",
+            status=404,
+        )
+    return version
 
 
-def _quote(text: str, words: int = 12) -> str:
-    """A short quotation of the researcher's own wording.
-
-    Quoted and self-contained: never spliced into a subordinate clause,
-    which is what produced ungrammatical turns.
-    """
-    parts = " ".join(text.split()).rstrip(".").split()
-    if not parts:
-        return ""
-    clipped = " ".join(parts[:words])
-    tail = "..." if len(parts) > words else ""
-    return f'"{clipped}{tail}"'
+def _cast(state: SessionState, notepad: NotepadState) -> list[Perspective]:
+    by_id = {perspective.id: perspective for perspective in state.perspectives}
+    return [by_id[identifier] for identifier in notepad.in_chat if identifier in by_id]
 
 
-def _source_paper(state: SessionState, perspective: Perspective) -> ExpPaper | None:
-    for source in perspective.sources:
-        for paper in state.papers:
-            if paper.id == source:
-                return paper
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Lifecycle
-# ---------------------------------------------------------------------------
+def _fresh_agenda(
+    doc: NotepadDoc, participants: list[str], review_n: int = 1
+) -> NotepadAgenda:
+    return NotepadAgenda(
+        review_n=review_n,
+        part="framing",
+        phase="feedback",
+        subject_text=doc.framing,
+        participant_ids=list(participants),
+    )
 
 
 def start_notepad(state: SessionState) -> NotepadState:
-    """Open the group-chat stage, seeding v1 from the input screen."""
+    """Open Step 3 and seed v1 from Step 1. Idempotent."""
     if state.notepad is not None:
         return state.notepad
     if not state.perspectives:
         raise NotepadError("Build at least one Perspective first.")
+    participants = [perspective.id for perspective in state.perspectives]
     version = NotepadVersion(
         id=_new_id("ver"),
         name="v1",
         doc=NotepadDoc(**state.position.model_dump()),
     )
-    notepad = NotepadState(
+    version.agenda = _fresh_agenda(version.doc, participants)
+    state.notepad = NotepadState(
         id=state.id,
         versions=[version],
         active_version_id=version.id,
-        in_chat=[perspective.id for perspective in state.perspectives],
+        in_chat=participants,
     )
-    state.notepad = notepad
-    return notepad
-
-
-def _require(state: SessionState) -> NotepadState:
-    if state.notepad is None:
-        raise NotepadError("The group chat has not started yet.")
     return state.notepad
 
 
@@ -128,22 +117,20 @@ def edit_part(
     part: NotepadPart,
     text: str,
 ) -> NotepadState:
-    """Researcher edit. Never reviewed, never blocked."""
     notepad = _require(state)
-    version = next(
-        (item for item in notepad.versions if item.id == version_id),
-        None,
-    )
-    if version is None:
-        raise NotepadError(f"Notepad version '{version_id}' was not found.")
+    _ensure_open(notepad)
+    version = _version(notepad, version_id)
     setattr(version.doc, part, text)
+    if version.agenda.part == part and version.agenda.phase != "complete":
+        version.agenda.subject_text = text
     return notepad
 
 
 def add_version(state: SessionState, *, copy_current: bool) -> NotepadState:
     notepad = _require(state)
+    _ensure_open(notepad)
     if len(notepad.versions) >= MAX_VERSIONS:
-        raise NotepadError(f"A notepad holds at most {MAX_VERSIONS} versions.")
+        raise NotepadError(f"A Document holds at most {MAX_VERSIONS} versions.")
     current = notepad.active_version()
     doc = (
         NotepadDoc(**current.doc.model_dump())
@@ -159,6 +146,7 @@ def add_version(state: SessionState, *, copy_current: bool) -> NotepadState:
         id=_new_id("ver"),
         name=f"v{max(version_numbers, default=0) + 1}",
         doc=doc,
+        agenda=_fresh_agenda(doc, notepad.in_chat),
         created_from=current.id if copy_current and current else None,
     )
     notepad.versions.append(version)
@@ -168,489 +156,368 @@ def add_version(state: SessionState, *, copy_current: bool) -> NotepadState:
 
 def switch_version(state: SessionState, *, version_id: str) -> NotepadState:
     notepad = _require(state)
-    if all(version.id != version_id for version in notepad.versions):
-        raise NotepadError("Unknown notepad version.")
+    _version(notepad, version_id)
     notepad.active_version_id = version_id
     return notepad
 
 
 def delete_version(state: SessionState, *, version_id: str) -> NotepadState:
     notepad = _require(state)
+    _ensure_open(notepad)
     if len(notepad.versions) <= 1:
         raise NotepadError("The last version cannot be deleted.")
-    notepad.versions = [
-        version for version in notepad.versions if version.id != version_id
-    ]
+    _version(notepad, version_id)
+    notepad.versions = [item for item in notepad.versions if item.id != version_id]
+    notepad.turns = [turn for turn in notepad.turns if turn.version_id != version_id]
     if notepad.active_version_id == version_id:
-        notepad.active_version_id = notepad.versions[-1].id
-    # Pending proposals against a deleted version can no longer apply.
-    for proposal in notepad.proposals:
-        if proposal.version_id == version_id and proposal.status == "pending":
-            proposal.status = "rejected"
-            proposal.decision_reason = "Its notepad version was deleted."
-    return notepad
-
-
-def set_in_chat(
-    state: SessionState, *, perspective_id: str, participating: bool
-) -> NotepadState:
-    notepad = _require(state)
-    known = {perspective.id for perspective in state.perspectives}
-    if perspective_id not in known:
-        raise NotepadError("Unknown Perspective.")
-    if participating and perspective_id not in notepad.in_chat:
-        notepad.in_chat.append(perspective_id)
-    if not participating:
-        notepad.in_chat = [item for item in notepad.in_chat if item != perspective_id]
+        notepad.active_version_id = notepad.versions[0].id
     return notepad
 
 
 def clear_chat(state: SessionState) -> NotepadState:
-    """Clear the conversation. The notepad is untouched."""
     notepad = _require(state)
-    notepad.turns = []
-    notepad.turn_cursor = 0
+    _ensure_open(notepad)
+    version = notepad.active_version()
+    if version is None:
+        raise NotepadError("No Document version is open.")
+    version.visible_turn_start = sum(
+        turn.version_id == version.id for turn in notepad.turns
+    )
     notepad.turns.append(
         NotepadTurn(
             id=_new_id("turn"),
+            version_id=version.id,
+            kind="system",
             role="system",
-            text="Chat cleared. The document is unchanged.",
+            text="Chat cleared. The document and review progress are unchanged.",
         )
     )
     return notepad
 
 
-# ---------------------------------------------------------------------------
-# Conversation
-# ---------------------------------------------------------------------------
-
-
-def _cast(state: SessionState, notepad: NotepadState) -> list[Perspective]:
-    order = {pid: index for index, pid in enumerate(notepad.in_chat)}
-    cast = [p for p in state.perspectives if p.id in order]
-    cast.sort(key=lambda p: order[p.id])
+def _sync_participants(
+    state: SessionState, version: NotepadVersion
+) -> list[Perspective]:
+    agenda = version.agenda
+    cast = _cast(state, _require(state))
+    cast_ids = [perspective.id for perspective in cast]
+    previous_ids = list(agenda.participant_ids)
+    newcomers = [
+        identifier for identifier in cast_ids if identifier not in previous_ids
+    ]
+    if newcomers:
+        agenda.participant_ids.extend(newcomers)
+        if agenda.phase in {"comparison", "complete"}:
+            agenda.phase = "feedback"
+            agenda.completed_at = None
+            agenda.feedback_done_ids = [
+                identifier
+                for identifier in agenda.feedback_done_ids
+                if identifier in previous_ids
+            ]
+            agenda.comparison_done_ids = []
+            agenda.comparison_cycle += 1
+    agenda.participant_ids = [
+        identifier for identifier in agenda.participant_ids if identifier in cast_ids
+    ]
+    agenda.feedback_done_ids = [
+        identifier for identifier in agenda.feedback_done_ids if identifier in cast_ids
+    ]
+    agenda.comparison_done_ids = [
+        identifier
+        for identifier in agenda.comparison_done_ids
+        if identifier in cast_ids
+    ]
+    if (
+        cast_ids
+        and agenda.phase == "feedback"
+        and set(agenda.feedback_done_ids) >= set(agenda.participant_ids)
+    ):
+        agenda.phase = "comparison"
+    if (
+        cast_ids
+        and agenda.phase == "comparison"
+        and set(agenda.comparison_done_ids) >= set(agenda.participant_ids)
+    ):
+        _advance_element(version)
     return cast
 
 
-def _transcript(notepad: NotepadState, limit: int = 12) -> list[str]:
-    return [
-        f"{turn.author_label or turn.role}: {turn.text}"
-        for turn in notepad.turns[-limit:]
-        if turn.role in {"researcher", "perspective"}
-    ]
-
-
-def _guided_line(
-    state: SessionState,
-    perspective: Perspective,
-    doc: NotepadDoc,
-    index: int,
-    *,
-    round_n: int = 0,
-    prior: Perspective | None = None,
-) -> tuple[str, list[str]]:
-    """A grounded turn: the Perspective's own facet evidence, cited.
-
-    A speaker's first turn states its claim against the researcher's own
-    wording. Later turns answer the previous speaker by name, so the
-    transcript reads as an exchange instead of repeating the opening.
-    """
-    paper = _source_paper(state, perspective)
-    citation = [paper.id] if paper else []
-    explanation = _facet_text(perspective, "explanation")
-    approach = _facet_text(perspective, "approach")
-    scope = _facet_text(perspective, "scope")
-    significance = _facet_text(perspective, "significance")
-    marker = " [1]" if citation else ""
-    if round_n > 0 and prior is not None:
-        own = explanation or significance or scope
-        if index % 2 == 0:
-            text = (
-                f"{prior.name}, you are holding the outcome measure fixed. "
-                f"Did you say that because the effect only shows up there? I "
-                f"read it the other way: {_lower_first(_sentence(own).rstrip('.'))}"
-                f"{marker}."
-            )
-        else:
-            text = (
-                f"Yes, and the reason is {_lower_first(_sentence(own).rstrip('.'))}"
-                f"{marker}. Where {prior.name} and I part is what counts as the "
-                "endpoint, not whether the trade-off is real."
-            )
-        return text, citation
-
-    if index % 3 == 0 and explanation:
-        quote = _quote(doc.framing)
-        pointer = (
-            f"You framed it as {quote}. That puts the outcome first, where my "
-            "evidence makes the mechanism the question."
-            if quote
-            else (
-                "Your framing does not say where the mechanism enters, and on "
-                "this evidence that is what decides the answer."
-            )
-        )
-        text = f"{_sentence(explanation).rstrip('.')}{marker}. {pointer}"
-    elif index % 3 == 1 and approach:
-        quote = _quote(doc.method)
-        pointer = (
-            f"Your methodology reads {quote}. Measured that way it would not "
-            "register the effect I am pointing at."
-            if quote
-            else (
-                "Your methodology does not fix how exposure is measured, and "
-                "the measure decides whether the effect shows up at all."
-            )
-        )
-        text = f"{_sentence(approach).rstrip('.')}{marker}. {pointer}"
-    else:
-        base = significance or scope
-        quote = _quote(doc.expected)
-        pointer = (
-            f"You expect {quote}. That holds only inside the conditions my "
-            "evidence covers."
-            if quote
-            else (
-                "Your expected result is not stated, so there is nothing yet "
-                "for my evidence to hold against."
-            )
-        )
-        text = f"{_sentence(base).rstrip('.')}{marker}. {pointer}"
-    return text, citation
-
-
-def _baseline_line(
-    perspective: Perspective,
-    index: int,
-    *,
-    round_n: int = 0,
-    prior: Perspective | None = None,
-) -> tuple[str, list[str]]:
-    """An ungrounded turn: the persona's own description, no citation.
-
-    Later turns address the previous speaker so the transcript does not
-    repeat verbatim. Turn-taking is not perspective guidance: these turns
-    still cite nothing and never reference the notepad.
-    """
-    if round_n > 0 and prior is not None:
-        replies = [
-            (
-                f"{prior.name}, that is where I disagree. The harm you are "
-                "pricing is not the harm I am pricing."
-            ),
-            (
-                f"I hear {prior.name}, but the same reasoning would justify the "
-                "opposite call, which tells me the reasoning is not doing the "
-                "work."
-            ),
-            (
-                f"{prior.name} and I want different things from the same "
-                "number. That is the whole disagreement."
-            ),
-            (
-                "Say more about the endpoint. If it is cure, I concede the "
-                "point; if it is carriage, I do not."
-            ),
-            (
-                "That framing settles the answer before the question is asked, "
-                "which is why we keep landing in different places."
-            ),
-        ]
-        return replies[index % len(replies)], []
-
-    # First sentence only, kept as its own sentence: the persona's blurb runs
-    # several sentences, and wrapping it in a frame produced broken prose.
-    blurb = " ".join((perspective.summary or perspective.name).split())
-    lead = blurb.split(". ")[0].rstrip(".")
-    openers = [
-        f"{lead}. That is what I am weighing here.",
-        (
-            "I would push back on that. The measure I care about would not "
-            "register the effect you are describing."
-        ),
-        (
-            "Both of those hold only if exposure is measured the same way. It "
-            "usually is not, and that is where the disagreement lives."
-        ),
-    ]
-    return openers[index % len(openers)], []
-
-
-def discuss(
-    state: SessionState,
-    *,
-    turns: int,
-    guided: bool,
-) -> NotepadState:
-    """Run a bounded round of agent turns. Cost is stated before the click."""
+def reconcile_roster(state: SessionState) -> NotepadState:
+    """Apply the current Perspective roster to every version agenda."""
     notepad = _require(state)
-    if turns < 1 or turns > MAX_DISCUSSION_TURNS:
-        raise NotepadError(f"Choose between 1 and {MAX_DISCUSSION_TURNS} turns.")
-    cast = _cast(state, notepad)
-    if not cast:
-        raise NotepadError("Nobody is in the chat. Add a Perspective first.")
-    version = notepad.active_version()
-    doc = version.doc if version else NotepadDoc()
-    for offset in range(turns):
-        cursor = notepad.turn_cursor + offset
-        speaker = cast[cursor % len(cast)]
-        if guided:
-            text, citations = _guided_line(
-                state,
-                speaker,
-                doc,
-                cursor,
-                round_n=cursor // len(cast),
-                prior=cast[(cursor - 1) % len(cast)] if cursor > 0 else None,
-            )
-        else:
-            text, citations = _baseline_line(
-                speaker,
-                cursor,
-                round_n=cursor // len(cast),
-                prior=cast[(cursor - 1) % len(cast)] if cursor > 0 else None,
-            )
-        notepad.turns.append(
-            NotepadTurn(
-                id=_new_id("turn"),
-                role="perspective",
-                author_id=speaker.id,
-                author_label=speaker.name,
-                text=text,
-                citations=citations,
-            )
-        )
-    notepad.turn_cursor += turns
+    _ensure_open(notepad)
+    for version in notepad.versions:
+        _sync_participants(state, version)
     return notepad
 
 
-def next_speaker(state: SessionState) -> Perspective:
+def _feedback_turns(
+    notepad: NotepadState,
+    version: NotepadVersion,
+) -> tuple[NotepadTurn, ...]:
+    agenda = version.agenda
+    return tuple(
+        turn
+        for turn in notepad.turns
+        if turn.version_id == version.id
+        and turn.review_n == agenda.review_n
+        and turn.part == agenda.part
+        and turn.kind == "feedback"
+        and turn.author_id in agenda.participant_ids
+    )
+
+
+def remaining_review_turns(state: SessionState, *, version_id: str) -> int:
+    """Return the exact number of agenda turns left before terminal completion."""
     notepad = _require(state)
+    _ensure_open(notepad)
+    version = _version(notepad, version_id)
+    agenda = version.agenda
+    cast = _sync_participants(state, version)
+    if not cast:
+        raise NotepadError("No Perspectives are available. Build one first.")
+    if agenda.phase == "complete":
+        return 0
+    participant_count = len(agenda.participant_ids)
+    part_index = NOTEPAD_PARTS.index(agenda.part)
+    future_parts = len(NOTEPAD_PARTS) - part_index - 1
+    if agenda.phase == "feedback":
+        current = participant_count - len(agenda.feedback_done_ids) + participant_count
+    else:
+        current = participant_count - len(agenda.comparison_done_ids)
+    return current + future_parts * participant_count * 2
+
+
+def plan_review_turn(
+    state: SessionState, *, version_id: str, turns: int
+) -> ReviewTurnPlan:
+    notepad = _require(state)
+    _ensure_open(notepad)
+    if turns < 1 or turns > MAX_DISCUSSION_TURNS:
+        raise NotepadError(f"Choose between 1 and {MAX_DISCUSSION_TURNS} turns.")
+    version = _version(notepad, version_id)
+    agenda = version.agenda
+    agenda.turn_budget = turns
+    cast = _sync_participants(state, version)
+    if not cast:
+        raise NotepadError("Nobody is in the chat. Add a Perspective first.")
+    if agenda.phase == "complete":
+        raise NotepadError(
+            "This draft review is complete. Start another review to continue."
+        )
+
+    by_id = {perspective.id: perspective for perspective in cast}
+    feedback_missing = [
+        identifier
+        for identifier in agenda.participant_ids
+        if identifier not in agenda.feedback_done_ids
+    ]
+    if feedback_missing:
+        agenda.phase = "feedback"
+        speaker = by_id[feedback_missing[0]]
+        phase = "feedback"
+    else:
+        agenda.phase = "comparison"
+        comparison_missing = [
+            identifier
+            for identifier in agenda.participant_ids
+            if identifier not in agenda.comparison_done_ids
+        ]
+        if not comparison_missing:
+            raise NotepadError("The current review element is ready to advance.")
+        speaker = by_id[comparison_missing[0]]
+        phase = "comparison"
+
+    return ReviewTurnPlan(
+        version_id=version.id,
+        review_n=agenda.review_n,
+        part=agenda.part,
+        phase=phase,
+        comparison_cycle=agenda.comparison_cycle,
+        speaker=speaker,
+        subject_text=agenda.subject_text,
+        feedback=_feedback_turns(notepad, version),
+    )
+
+
+def _advance_element(version: NotepadVersion) -> None:
+    agenda = version.agenda
+    index = NOTEPAD_PARTS.index(agenda.part)
+    if index == len(NOTEPAD_PARTS) - 1:
+        agenda.phase = "complete"
+        agenda.completed_at = utcnow()
+        return
+    agenda.part = NOTEPAD_PARTS[index + 1]
+    agenda.phase = "feedback"
+    agenda.subject_text = getattr(version.doc, agenda.part)
+    agenda.feedback_done_ids = []
+    agenda.comparison_done_ids = []
+    agenda.comparison_cycle = 1
+
+
+def record_review_turn(
+    state: SessionState,
+    *,
+    plan: ReviewTurnPlan,
+    statement: Statement,
+) -> NotepadState:
+    notepad = _require(state)
+    _ensure_open(notepad)
+    version = _version(notepad, plan.version_id)
+    agenda = version.agenda
+    if plan.review_n != agenda.review_n or plan.part != agenda.part:
+        raise NotepadError("The review agenda changed before the turn was recorded.")
+    notepad.turns.append(
+        NotepadTurn(
+            id=_new_id("turn"),
+            version_id=version.id,
+            kind=plan.phase,
+            role="perspective",
+            author_id=plan.speaker.id,
+            author_label=plan.speaker.name,
+            text=statement.text,
+            citations=statement.citations,
+            review_n=agenda.review_n,
+            part=agenda.part,
+            comparison_cycle=agenda.comparison_cycle,
+        )
+    )
+    target = (
+        agenda.feedback_done_ids
+        if plan.phase == "feedback"
+        else agenda.comparison_done_ids
+    )
+    if plan.speaker.id not in target:
+        target.append(plan.speaker.id)
+    agenda.turns_emitted += 1
+    if plan.phase == "feedback" and set(agenda.feedback_done_ids) >= set(
+        agenda.participant_ids
+    ):
+        agenda.phase = "comparison"
+    if plan.phase == "comparison" and set(agenda.comparison_done_ids) >= set(
+        agenda.participant_ids
+    ):
+        _advance_element(version)
+    return notepad
+
+
+def next_direct_speakers(state: SessionState) -> list[Perspective]:
+    notepad = _require(state)
+    _ensure_open(notepad)
     cast = _cast(state, notepad)
     if not cast:
         raise NotepadError("Nobody is in the chat. Add a Perspective first.")
-    return cast[notepad.turn_cursor % len(cast)]
+    return cast
 
 
-def ask(
+def record_direct_exchange(
     state: SessionState,
     *,
+    version_id: str,
     message: str,
-    reply: str,
-    citations: list[str],
+    replies: list[tuple[Perspective, Statement]],
 ) -> NotepadState:
-    """Record the researcher's message and one relevant participant answer."""
     notepad = _require(state)
+    _ensure_open(notepad)
+    version = _version(notepad, version_id)
     text = " ".join(message.split())
     if not text:
         raise NotepadError("A message requires text.")
-    speaker = next_speaker(state)
-    notepad.turns.append(
-        NotepadTurn(
-            id=_new_id("turn"),
-            role="researcher",
-            author_label="You",
-            text=text,
-        )
+    user_turn = NotepadTurn(
+        id=_new_id("turn"),
+        version_id=version.id,
+        kind="researcher",
+        role="researcher",
+        author_label="You",
+        text=text,
     )
-    notepad.turn_cursor += 1
-    notepad.turns.append(
-        NotepadTurn(
-            id=_new_id("turn"),
-            role="perspective",
-            author_id=speaker.id,
-            author_label=speaker.name,
-            text=reply,
-            citations=citations,
-        )
-    )
-    return notepad
-
-
-# ---------------------------------------------------------------------------
-# Summaries: the only path from the chat into the notepad
-# ---------------------------------------------------------------------------
-
-
-def _summary_text(notepad: NotepadState) -> str:
-    spoken = [turn for turn in notepad.turns if turn.role == "perspective"]
-    recent: list[str] = []
-    for turn in spoken[-4:]:
-        text = " ".join(turn.text.split())
-        if len(text) > 240:
-            text = f"{text[:237].rstrip()}..."
-        statement = f"{turn.author_label}: {text}"
-        if statement not in recent:
-            recent.append(statement)
-    return "The discussion so far: " + " ".join(recent)
-
-
-def summarize(
-    state: SessionState,
-    *,
-    part: NotepadPart,
-    guided: bool,
-) -> NotepadState:
-    """Summarize the discussion for one notepad part.
-
-    Both arms stage the summary and wait for the researcher: the baseline
-    exposes Youngseung's single ``Copy into the notepad`` seam, the guided arm
-    exposes the same seam as a reviewable proposal carrying its evidence and
-    a reason. Only the affordance differs, so a measured difference is
-    attributable to perspective guidance rather than to step count.
-    """
-    notepad = _require(state)
-    spoken = [turn for turn in notepad.turns if turn.role == "perspective"]
-    if len(spoken) < 2:
-        raise NotepadError("Not much to summarize yet.")
-    version = notepad.active_version()
-    if version is None:
-        raise NotepadError("No notepad version is open.")
-    summary = _summary_text(notepad)
-    current = getattr(version.doc, part)
-    proposed = f"{current} {summary}".strip() if current else summary
-
-    citations = (
-        list(dict.fromkeys(c for turn in spoken for c in turn.citations))
-        if guided
-        else []
-    )
-    notepad.turns.append(
-        NotepadTurn(
-            id=_new_id("turn"),
-            role="summary",
-            author_label="Panel summary" if guided else "Summary",
-            text=summary,
-            citations=citations,
-        )
-    )
-
-    if not guided:
-        # The baseline summary card carries no diff, reason, or evidence:
-        # one button blind-appends it.
-        notepad.proposals.append(
-            NotepadProposal(
-                id=_new_id("prop"),
-                version_id=version.id,
-                part=part,
-                author_id=SUMMARY_AUTHOR,
-                author_label="Summary",
-                current_text=current,
-                proposed_text=proposed,
-                addition=summary,
-            )
-        )
-        return notepad
-
-    notepad.proposals.append(
-        NotepadProposal(
-            id=_new_id("prop"),
-            version_id=version.id,
-            part=part,
-            author_id=SUMMARY_AUTHOR,
-            author_label="Panel summary",
-            current_text=current,
-            proposed_text=proposed,
-            addition=summary,
-            reason=(
-                f"The discussion bears on {NOTEPAD_LABELS[part]}; this folds "
-                "what the panel settled into that part."
-            ),
-            citations=citations,
-        )
-    )
-    return notepad
-
-
-def decide_proposal(
-    state: SessionState,
-    *,
-    proposal_id: str,
-    action: str,
-    text: str | None = None,
-    reason: str = "",
-) -> NotepadState:
-    """Approve, edit, or reject a pending proposal.
-
-    The decision vocabulary matches the human-in-the-loop middleware Kat
-    referenced: approve takes it as written, edit takes the researcher's
-    wording, reject records why so a later proposal can differ.
-    """
-    notepad = _require(state)
-    if action not in {"approve", "edit", "reject"}:
-        raise NotepadError("Unknown decision.")
-    proposal = next(
-        (item for item in notepad.proposals if item.id == proposal_id), None
-    )
-    if proposal is None:
-        raise NotepadError("Unknown proposal.")
-    if proposal.status != "pending":
-        raise NotepadError("That proposal has already been decided.")
-    version = next(
-        (item for item in notepad.versions if item.id == proposal.version_id),
-        None,
-    )
-    if version is None:
-        raise NotepadError("The proposal's notepad version is gone.")
-
-    if action == "reject":
-        proposal.status = "rejected"
-        proposal.decision_reason = " ".join(reason.split())
+    notepad.turns.append(user_turn)
+    for perspective, statement in replies:
         notepad.turns.append(
             NotepadTurn(
                 id=_new_id("turn"),
-                role="system",
-                text=(
-                    "Researcher rejected the proposed "
-                    f"{NOTEPAD_LABELS[proposal.part]} change"
-                    + (f": {proposal.decision_reason}" if reason.strip() else ".")
-                ),
+                version_id=version.id,
+                kind="direct_reply",
+                role="perspective",
+                author_id=perspective.id,
+                author_label=perspective.name,
+                text=statement.text,
+                citations=statement.citations,
+                reply_to_turn_id=user_turn.id,
             )
         )
-        return notepad
+        version.agenda.turns_emitted += 1
+    return notepad
 
-    live = getattr(version.doc, proposal.part)
-    rebased = live != proposal.current_text
-    if action == "approve":
-        # The notepad stays editable while a proposal is pending, so the
-        # researcher's newer wording wins and the panel's addition folds
-        # onto it. Writing proposal.proposed_text here would silently
-        # restore the text the proposal was raised against.
-        addition = proposal.addition or proposal.proposed_text
-        accepted = f"{live} {addition}".strip() if live else addition
-    else:
-        accepted = " ".join((text or "").split())
-    if not accepted:
-        raise NotepadError("An edited proposal requires replacement text.")
-    setattr(version.doc, proposal.part, accepted)
-    proposal.status = "accepted" if action == "approve" else "edited"
-    proposal.decided_text = accepted
-    if action == "approve":
-        detail = "folded into your newer wording" if rebased else "as proposed"
-    else:
-        detail = "researcher wording"
+
+def record_summary(
+    state: SessionState,
+    *,
+    version_id: str,
+    statement: Statement,
+) -> NotepadState:
+    notepad = _require(state)
+    _ensure_open(notepad)
+    version = _version(notepad, version_id)
     notepad.turns.append(
         NotepadTurn(
             id=_new_id("turn"),
-            role="system",
-            text=f"{NOTEPAD_LABELS[proposal.part]} updated in {version.name} ({detail}).",
+            version_id=version.id,
+            kind="summary",
+            role="summary",
+            author_label="Summary",
+            text=statement.text,
+            citations=statement.citations,
+            review_n=version.agenda.review_n,
+            part=version.agenda.part,
         )
     )
+    return notepad
+
+
+def restart_review(state: SessionState, *, version_id: str) -> NotepadState:
+    notepad = _require(state)
+    _ensure_open(notepad)
+    version = _version(notepad, version_id)
+    if version.agenda.phase != "complete":
+        raise NotepadError("Finish the current review before starting another.")
+    version.agenda = _fresh_agenda(
+        version.doc,
+        notepad.in_chat,
+        review_n=version.agenda.review_n + 1,
+    )
+    return notepad
+
+
+def finish_study(state: SessionState) -> NotepadState:
+    notepad = _require(state)
+    if notepad.final_snapshot is None:
+        notepad.final_snapshot = NotepadFinalSnapshot(
+            versions=[version.model_copy(deep=True) for version in notepad.versions]
+        )
     return notepad
 
 
 __all__ = [
     "MAX_DISCUSSION_TURNS",
+    "MAX_PERSPECTIVES",
+    "MAX_VERSIONS",
     "NotepadError",
+    "ReviewTurnPlan",
     "add_version",
-    "ask",
     "clear_chat",
-    "decide_proposal",
     "delete_version",
-    "discuss",
     "edit_part",
-    "set_in_chat",
+    "finish_study",
+    "next_direct_speakers",
+    "plan_review_turn",
+    "reconcile_roster",
+    "record_direct_exchange",
+    "record_review_turn",
+    "record_summary",
+    "remaining_review_turns",
+    "restart_review",
     "start_notepad",
-    "summarize",
     "switch_version",
 ]

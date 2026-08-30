@@ -7,7 +7,6 @@ class FocusedModelRole(StrEnum):
     corpus = "corpus"
     query = "query"
     reasoning = "reasoning"
-    evaluation = "evaluation"
 
 
 class FocusedTask(StrEnum):
@@ -19,20 +18,10 @@ class FocusedTask(StrEnum):
     name_clusters = "name_clusters"
     extract_cluster_facets = "extract_cluster_facets"
     derive_framing = "derive_framing"
-    suggest_deliberation_threads = "suggest_deliberation_threads"
-    open_statement = "open_statement"
-    answer_statement = "answer_statement"
-    find_support_query = "find_support_query"
-    select_support_passage = "select_support_passage"
-    judge_thread = "judge_thread"
-    assent_shared_ground = "assent_shared_ground"
-    summarize_thread = "summarize_thread"
-    synthesize_document = "synthesize_document"
-    reflect_on_round = "reflect_on_round"
-    develop_hypothesis = "develop_hypothesis"
-    develop_hypothesis_from_consensus = "develop_hypothesis_from_consensus"
-    recommend_questions = "recommend_questions"
     reply_to_user = "reply_to_user"
+    review_draft_element = "review_draft_element"
+    compare_draft_feedback = "compare_draft_feedback"
+    summarize_notepad = "summarize_notepad"
 
 
 TASK_ROLES: Final = MappingProxyType(
@@ -44,21 +33,11 @@ TASK_ROLES: Final = MappingProxyType(
         FocusedTask.assess_question_papers: FocusedModelRole.corpus,
         FocusedTask.name_clusters: FocusedModelRole.corpus,
         FocusedTask.extract_cluster_facets: FocusedModelRole.corpus,
-        FocusedTask.suggest_deliberation_threads: FocusedModelRole.reasoning,
         FocusedTask.derive_framing: FocusedModelRole.reasoning,
-        FocusedTask.open_statement: FocusedModelRole.reasoning,
-        FocusedTask.answer_statement: FocusedModelRole.reasoning,
-        FocusedTask.find_support_query: FocusedModelRole.query,
-        FocusedTask.select_support_passage: FocusedModelRole.corpus,
-        FocusedTask.judge_thread: FocusedModelRole.evaluation,
-        FocusedTask.assent_shared_ground: FocusedModelRole.reasoning,
-        FocusedTask.summarize_thread: FocusedModelRole.evaluation,
-        FocusedTask.synthesize_document: FocusedModelRole.evaluation,
-        FocusedTask.reflect_on_round: FocusedModelRole.reasoning,
-        FocusedTask.develop_hypothesis: FocusedModelRole.reasoning,
-        FocusedTask.develop_hypothesis_from_consensus: FocusedModelRole.evaluation,
-        FocusedTask.recommend_questions: FocusedModelRole.reasoning,
         FocusedTask.reply_to_user: FocusedModelRole.reasoning,
+        FocusedTask.review_draft_element: FocusedModelRole.reasoning,
+        FocusedTask.compare_draft_feedback: FocusedModelRole.reasoning,
+        FocusedTask.summarize_notepad: FocusedModelRole.reasoning,
     }
 )
 
