@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import re
+import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from functools import wraps
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
+from pydantic import ValidationError
 
 from agora.focused import agents
 from agora.focused.clustering import density_partition
@@ -41,6 +46,14 @@ from agora.focused.models import (
     WorkspaceView,
 )
 from agora.focused.notepad import MAX_PERSPECTIVES, reconcile_roster
+from agora.focused.study_log import (
+    StudyAction,
+    StudyAssignment,
+    StudyErrorCode,
+    StudyEvent,
+    StudyOutcome,
+    build_study_event,
+)
 
 if TYPE_CHECKING:
     from agora.focused.persistence import WorkspacePersistence
@@ -77,6 +90,26 @@ class QuestionRetrieval:
     expansion_queries: list[str]
 
 
+@dataclass
+class _StudyOperation:
+    event_id: str
+    action: StudyAction
+    assignment: StudyAssignment | None
+    workspace_id: str
+    session_id: str | None
+    occurred_at: datetime
+    started_at: float
+    revision_before: int | None
+    arguments: Mapping[str, object]
+    persisted: bool = False
+
+
+_current_study_operation: ContextVar[_StudyOperation | None] = ContextVar(
+    "focused_study_operation",
+    default=None,
+)
+
+
 class SessionError(Exception):
     def __init__(self, message: str, status: int = 400) -> None:
         super().__init__(message)
@@ -91,29 +124,63 @@ class WorkspaceConflict(SessionError):
         )
 
 
-def _serialized_session_mutation(method):
-    @wraps(method)
-    async def wrapped(
-        self: FocusedPanelService,
-        session_id: str,
-        *args,
-        **kwargs,
-    ):
-        session = self._require(session_id)
-        workspace_id = session.state.workspace_id
-        async with self._workspace_lock(workspace_id):
-            session = self._require(session_id)
-            async with session.lock:
-                snapshot = self._snapshot_workspace(workspace_id)
-                try:
-                    return await method(self, session_id, *args, **kwargs)
-                except WorkspaceConflict:
-                    raise
-                except BaseException:
-                    self._restore_workspace(snapshot)
-                    raise
+def _serialized_session_mutation(action: StudyAction):
+    def decorate(method):
+        signature = inspect.signature(method)
 
-    return wrapped
+        @wraps(method)
+        async def wrapped(
+            self: FocusedPanelService,
+            session_id: str,
+            *args,
+            **kwargs,
+        ):
+            session = self._require(session_id)
+            workspace_id = session.state.workspace_id
+            async with self._workspace_lock(workspace_id):
+                session = self._require(session_id)
+                async with session.lock:
+                    snapshot = self._snapshot_workspace(workspace_id)
+                    bound = signature.bind(self, session_id, *args, **kwargs)
+                    operation = _StudyOperation(
+                        event_id=uuid.uuid4().hex,
+                        action=action,
+                        assignment=self._study_assignments.get(workspace_id),
+                        workspace_id=workspace_id,
+                        session_id=session_id,
+                        occurred_at=datetime.now(UTC),
+                        started_at=time.monotonic(),
+                        revision_before=snapshot[0].revision,
+                        arguments={
+                            name: value
+                            for name, value in bound.arguments.items()
+                            if name not in {"self", "session_id"}
+                        },
+                    )
+                    token = _current_study_operation.set(operation)
+                    try:
+                        result = await method(self, session_id, *args, **kwargs)
+                    except WorkspaceConflict as error:
+                        self._record_study_failure(operation, error)
+                        raise
+                    except BaseException as error:
+                        self._restore_workspace(snapshot)
+                        self._record_study_failure(operation, error)
+                        raise
+                    else:
+                        if not operation.persisted:
+                            revision = self._require_workspace(workspace_id).revision
+                            self._record_study_success(
+                                operation,
+                                revision_after=revision,
+                            )
+                        return result
+                    finally:
+                        _current_study_operation.reset(token)
+
+        return wrapped
+
+    return decorate
 
 
 class _Session:
@@ -158,6 +225,7 @@ class FocusedPanelService:
         self._sessions: dict[str, _Session] = {}
         self._workspaces: dict[str, WorkspaceState] = {}
         self._workspace_locks: dict[str, asyncio.Lock] = {}
+        self._study_assignments: dict[str, StudyAssignment] = {}
         self._retain_search_embeddings = retain_search_embeddings
         self._search_progress: dict[str, list[dict[str, Any]]] = {}
         self._search_progress_sequence: dict[str, int] = {}
@@ -186,6 +254,105 @@ class FocusedPanelService:
                         states[investigation_id]
                     )
                 self._remember_durable(workspace.id)
+            current_workspace_ids = set(self._workspaces)
+            self._study_assignments = {
+                assignment.workspace_id: assignment
+                for assignment in persistence.load_study_assignments()
+                if assignment.workspace_id in current_workspace_ids
+            }
+
+    @staticmethod
+    def _study_error_code(error: BaseException) -> StudyErrorCode:
+        if isinstance(error, asyncio.CancelledError):
+            return StudyErrorCode.CANCELLED
+        if isinstance(error, WorkspaceConflict):
+            return StudyErrorCode.CONFLICT
+        if isinstance(error, SessionError):
+            if error.status == 404:
+                return StudyErrorCode.NOT_FOUND
+            if error.status == 409:
+                return StudyErrorCode.CONFLICT
+            return StudyErrorCode.INVALID_REQUEST
+        if isinstance(error, agents.FocusedAgentError):
+            return StudyErrorCode.MODEL_FAILURE
+        if isinstance(error, PersistenceConflict):
+            return StudyErrorCode.STORAGE_FAILURE
+        return StudyErrorCode.INTERNAL_ERROR
+
+    @staticmethod
+    def _terminal_study_event(
+        operation: _StudyOperation,
+        *,
+        outcome: StudyOutcome,
+        revision_after: int | None,
+        error_code: StudyErrorCode | None = None,
+    ) -> StudyEvent:
+        return build_study_event(
+            event_id=operation.event_id,
+            action=operation.action,
+            assignment=operation.assignment,
+            workspace_id=operation.workspace_id,
+            session_id=operation.session_id,
+            outcome=outcome,
+            occurred_at=operation.occurred_at,
+            duration_ms=max(
+                0,
+                int((time.monotonic() - operation.started_at) * 1000),
+            ),
+            revision_before=operation.revision_before,
+            revision_after=revision_after,
+            arguments=operation.arguments,
+            error_code=error_code,
+        )
+
+    def _append_terminal_study_event(
+        self,
+        operation: _StudyOperation,
+        *,
+        outcome: StudyOutcome,
+        revision_after: int | None,
+        error_code: StudyErrorCode | None = None,
+    ) -> None:
+        if self._persistence is None:
+            return
+        try:
+            event = self._terminal_study_event(
+                operation,
+                outcome=outcome,
+                revision_after=revision_after,
+                error_code=error_code,
+            )
+            self._persistence.append_study_event(event)
+        except Exception:
+            logger.exception(
+                "Failed to append focused study event %s for workspace %s",
+                operation.action.value,
+                operation.workspace_id,
+            )
+
+    def _record_study_success(
+        self,
+        operation: _StudyOperation,
+        *,
+        revision_after: int | None,
+    ) -> None:
+        self._append_terminal_study_event(
+            operation,
+            outcome=StudyOutcome.SUCCESS,
+            revision_after=revision_after,
+        )
+
+    def _record_study_failure(
+        self,
+        operation: _StudyOperation,
+        error: BaseException,
+    ) -> None:
+        self._append_terminal_study_event(
+            operation,
+            outcome=StudyOutcome.FAILURE,
+            revision_after=operation.revision_before,
+            error_code=self._study_error_code(error),
+        )
 
     # -- plumbing ----------------------------------------------------------
 
@@ -340,6 +507,7 @@ class FocusedPanelService:
             self._workspaces.pop(workspace_id, None)
             self._workspace_locks.pop(workspace_id, None)
             self._durable_snapshots.pop(workspace_id, None)
+            self._study_assignments.pop(workspace_id, None)
             return
         states = {
             state.id: state
@@ -378,16 +546,27 @@ class FocusedPanelService:
         workspace = self._require_workspace(workspace_id)
         expected_revision = workspace.revision
         workspace.revision += 1
+        operation = _current_study_operation.get()
+        event: StudyEvent | None = None
         try:
             validated_workspace, investigations = self._validated_workspace_state(
                 workspace
             )
+            if operation is not None and operation.workspace_id == workspace_id:
+                event = self._terminal_study_event(
+                    operation,
+                    outcome=StudyOutcome.SUCCESS,
+                    revision_after=workspace.revision,
+                )
             if self._persistence is not None:
                 self._persistence.save(
                     validated_workspace,
                     investigations,
                     expected_revision=expected_revision,
+                    event=event,
                 )
+                if operation is not None and event is not None:
+                    operation.persisted = True
         except PersistenceConflict as error:
             workspace.revision = expected_revision
             self._reload_workspace(workspace_id)
@@ -477,12 +656,33 @@ class FocusedPanelService:
         problem: str,
         position: dict[str, str] | None = None,
         demo: bool,
+        participant_id: str | None = None,
+        condition: str = "baseline",
     ) -> WorkspaceView:
         clean_problem = problem.strip()
         if len(clean_problem) < 3:
             raise SessionError("Problem must be at least three characters.")
         workspace_id = uuid.uuid4().hex
         investigation_id = uuid.uuid4().hex
+        try:
+            assignment = StudyAssignment(
+                workspace_id=workspace_id,
+                participant_id=participant_id,
+                condition=condition,
+            )
+        except ValidationError as error:
+            raise SessionError("Invalid study assignment.", status=422) from error
+        operation = _StudyOperation(
+            event_id=uuid.uuid4().hex,
+            action=StudyAction.WORKSPACE_CREATE,
+            assignment=assignment,
+            workspace_id=workspace_id,
+            session_id=investigation_id,
+            occurred_at=datetime.now(UTC),
+            started_at=time.monotonic(),
+            revision_before=None,
+            arguments={"problem": clean_problem, "demo": demo},
+        )
         state = SessionState(
             id=investigation_id,
             workspace_id=workspace_id,
@@ -501,39 +701,77 @@ class FocusedPanelService:
         self._sessions[state.id] = _Session(state)
         self._workspaces[workspace.id] = workspace
         self._workspace_locks[workspace.id] = asyncio.Lock()
+        self._study_assignments[workspace.id] = assignment
         try:
             if self._persistence is not None:
                 validated_workspace, investigations = self._validated_workspace_state(
                     workspace
                 )
-                self._persistence.create(validated_workspace, investigations)
+                event = self._terminal_study_event(
+                    operation,
+                    outcome=StudyOutcome.SUCCESS,
+                    revision_after=workspace.revision,
+                )
+                self._persistence.create(
+                    validated_workspace,
+                    investigations,
+                    assignment=assignment,
+                    event=event,
+                )
+                operation.persisted = True
             self._remember_durable(workspace.id)
-        except Exception:
+        except Exception as error:
             self._sessions.pop(state.id, None)
             self._forget_search_progress(state.id)
             self._workspaces.pop(workspace.id, None)
             self._workspace_locks.pop(workspace.id, None)
+            self._study_assignments.pop(workspace.id, None)
             self._durable_snapshots.pop(workspace.id, None)
+            self._record_study_failure(operation, error)
             raise
         return self.workspace_view(workspace.id)
 
     def delete_workspace(self, workspace_id: str) -> None:
         workspace = self._require_workspace(workspace_id)
-        self._ensure_workspace_idle(workspace)
-        if self._persistence is not None:
-            try:
+        operation = _StudyOperation(
+            event_id=uuid.uuid4().hex,
+            action=StudyAction.WORKSPACE_DELETE,
+            assignment=self._study_assignments.get(workspace_id),
+            workspace_id=workspace_id,
+            session_id=workspace.active_investigation_id,
+            occurred_at=datetime.now(UTC),
+            started_at=time.monotonic(),
+            revision_before=workspace.revision,
+            arguments={},
+        )
+        try:
+            self._ensure_workspace_idle(workspace)
+            if self._persistence is not None:
+                event = self._terminal_study_event(
+                    operation,
+                    outcome=StudyOutcome.SUCCESS,
+                    revision_after=None,
+                )
                 self._persistence.delete(
                     workspace.id,
                     expected_revision=workspace.revision,
+                    event=event,
                 )
-            except PersistenceConflict as error:
-                self._reload_workspace(workspace_id)
-                raise WorkspaceConflict() from error
+                operation.persisted = True
+        except PersistenceConflict as error:
+            self._reload_workspace(workspace_id)
+            conflict = WorkspaceConflict()
+            self._record_study_failure(operation, conflict)
+            raise conflict from error
+        except BaseException as error:
+            self._record_study_failure(operation, error)
+            raise
         for investigation_id in workspace.investigation_ids:
             self._sessions.pop(investigation_id, None)
             self._forget_search_progress(investigation_id)
         self._workspaces.pop(workspace.id, None)
         self._workspace_locks.pop(workspace.id, None)
+        self._study_assignments.pop(workspace.id, None)
         self._durable_snapshots.pop(workspace.id, None)
 
     @staticmethod
@@ -552,7 +790,7 @@ class FocusedPanelService:
                 "This study already has literature. Start over to replace it."
             )
 
-    @_serialized_session_mutation
+    @_serialized_session_mutation(StudyAction.QUERIES_SUGGEST)
     async def suggest_queries(self, session_id: str) -> SessionState:
         session = self._require(session_id)
         state = session.state
@@ -1116,7 +1354,7 @@ class FocusedPanelService:
             expansion_queries=round2_queries,
         )
 
-    @_serialized_session_mutation
+    @_serialized_session_mutation(StudyAction.PAPERS_SEARCH)
     async def run_search(
         self,
         session_id: str,
@@ -1429,13 +1667,36 @@ class FocusedPanelService:
         return self._save_state(state)
 
     async def paper_detail(self, session_id: str, paper_id: str) -> ExpPaper:
-        state = self._require(session_id).state
-        for paper in state.papers:
-            if paper.id == paper_id:
-                return paper
-        raise SessionError(f"paper '{paper_id}' not in this session", status=404)
+        session = self._require(session_id)
+        state = session.state
+        workspace = self._require_workspace(state.workspace_id)
+        operation = _StudyOperation(
+            event_id=uuid.uuid4().hex,
+            action=StudyAction.PAPER_VIEW,
+            assignment=self._study_assignments.get(workspace.id),
+            workspace_id=workspace.id,
+            session_id=session_id,
+            occurred_at=datetime.now(UTC),
+            started_at=time.monotonic(),
+            revision_before=workspace.revision,
+            arguments={"paper_id": paper_id},
+        )
+        try:
+            paper = next(item for item in state.papers if item.id == paper_id)
+        except StopIteration:
+            error = SessionError(
+                f"paper '{paper_id}' not in this session",
+                status=404,
+            )
+            self._record_study_failure(operation, error)
+            raise error from None
+        self._record_study_success(
+            operation,
+            revision_after=workspace.revision,
+        )
+        return paper
 
-    @_serialized_session_mutation
+    @_serialized_session_mutation(StudyAction.PERSPECTIVE_CREATE)
     async def generate_perspective(
         self,
         session_id: str,
@@ -1559,7 +1820,7 @@ class FocusedPanelService:
             reconcile_roster(state)
         return self._save_state(state)
 
-    @_serialized_session_mutation
+    @_serialized_session_mutation(StudyAction.PERSPECTIVE_REMOVE)
     async def remove_perspective(
         self, session_id: str, perspective_id: str
     ) -> SessionState:
@@ -1639,14 +1900,14 @@ class FocusedPanelService:
             raise SessionError(str(error), status=error.status) from error
         return self._save_state(session.state)
 
-    @_serialized_session_mutation
+    @_serialized_session_mutation(StudyAction.DISCUSSION_START)
     async def start_notepad(self, session_id: str) -> SessionState:
         """Open the discussion and seed v1 from the input screen."""
         return self._notepad_call(
             session_id, lambda mod, state: mod.start_notepad(state)
         )
 
-    @_serialized_session_mutation
+    @_serialized_session_mutation(StudyAction.DOCUMENT_EDIT)
     async def edit_notepad_part(
         self,
         session_id: str,
@@ -1666,7 +1927,7 @@ class FocusedPanelService:
             ),
         )
 
-    @_serialized_session_mutation
+    @_serialized_session_mutation(StudyAction.VERSION_CREATE)
     async def add_notepad_version(
         self, session_id: str, *, copy_current: bool
     ) -> SessionState:
@@ -1675,7 +1936,7 @@ class FocusedPanelService:
             lambda mod, state: mod.add_version(state, copy_current=copy_current),
         )
 
-    @_serialized_session_mutation
+    @_serialized_session_mutation(StudyAction.VERSION_SWITCH)
     async def switch_notepad_version(
         self, session_id: str, *, version_id: str
     ) -> SessionState:
@@ -1684,7 +1945,7 @@ class FocusedPanelService:
             lambda mod, state: mod.switch_version(state, version_id=version_id),
         )
 
-    @_serialized_session_mutation
+    @_serialized_session_mutation(StudyAction.VERSION_DELETE)
     async def delete_notepad_version(
         self, session_id: str, *, version_id: str
     ) -> SessionState:
@@ -1693,11 +1954,11 @@ class FocusedPanelService:
             lambda mod, state: mod.delete_version(state, version_id=version_id),
         )
 
-    @_serialized_session_mutation
+    @_serialized_session_mutation(StudyAction.CHAT_CLEAR)
     async def clear_notepad_chat(self, session_id: str) -> SessionState:
         return self._notepad_call(session_id, lambda mod, state: mod.clear_chat(state))
 
-    @_serialized_session_mutation
+    @_serialized_session_mutation(StudyAction.DISCUSSION_RUN)
     async def discuss_notepad(
         self,
         session_id: str,
@@ -1770,7 +2031,7 @@ class FocusedPanelService:
                 break
         return self._save_state(state)
 
-    @_serialized_session_mutation
+    @_serialized_session_mutation(StudyAction.QUESTION_SEND)
     async def ask_notepad(
         self,
         session_id: str,
@@ -1840,7 +2101,7 @@ class FocusedPanelService:
         )
         return self._save_state(state)
 
-    @_serialized_session_mutation
+    @_serialized_session_mutation(StudyAction.SUMMARY_CREATE)
     async def summarize_notepad(
         self,
         session_id: str,
@@ -1889,7 +2150,7 @@ class FocusedPanelService:
         )
         return self._save_state(state)
 
-    @_serialized_session_mutation
+    @_serialized_session_mutation(StudyAction.REVIEW_RESTART)
     async def restart_notepad_review(
         self,
         session_id: str,
@@ -1901,7 +2162,7 @@ class FocusedPanelService:
             lambda mod, state: mod.restart_review(state, version_id=version_id),
         )
 
-    @_serialized_session_mutation
+    @_serialized_session_mutation(StudyAction.STUDY_FINISH)
     async def finish_notepad_study(self, session_id: str) -> SessionState:
         state = self._require(session_id).state
         if state.notepad is not None and state.notepad.final_snapshot is not None:

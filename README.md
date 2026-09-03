@@ -64,6 +64,15 @@ overwriting newer work, malformed rows are quarantined without taking down
 healthy workspaces, and failed in-process mutations roll back before another
 request can observe them.
 
+Each new workspace also gets an immutable pseudonymous study assignment.
+Meaningful server interactions, including paper opens, append one terminal
+success or failure event with duration, revisions, and content-free metadata.
+Successful snapshot and event writes are atomic. A process exit before the
+terminal write leaves no event. Start over removes the working snapshot but
+retains assignment and interaction history. Each repeated (`participant_id`,
+`condition`) pair starts another workspace attempt. Use `assigned_at` to order
+the attempts.
+
 The app has no actor accounts or tenant authorization. Production deploys gate
 the FastAPI service behind the Vercel server proxy token.
 
@@ -135,9 +144,9 @@ The browser never receives the Supabase secret or the API proxy token.
 ### 1. Create the Supabase tables
 
 Create a Supabase project, then run every file in `supabase/migrations/` in
-its SQL editor, in filename order (workspace snapshots, then pre-migration
-workspace archives). Copy the project URL and secret key after the migrations
-succeed.
+filename order. The migrations create workspace snapshots and archives, then
+the study assignment and append-only interaction tables. Copy the project URL
+and secret key after the migrations succeed.
 
 To import existing local workspaces, run:
 
@@ -148,6 +157,18 @@ To import existing local workspaces, run:
 
 The importer skips identical workspaces on repeated runs and stops instead of
 overwriting a workspace that differs.
+
+Export assignment and interaction records only from a trusted operator
+environment. Supabase uses the configured service credentials; local SQLite
+accepts an explicit database path. Files are written with owner-only
+permissions.
+
+```bash
+.venv/bin/python -m agora.focused.study_export --output study-events.ndjson
+.venv/bin/python -m agora.focused.study_export \
+  --sqlite artifacts/agora.db \
+  --output study-events.ndjson
+```
 
 ### 2. Deploy FastAPI to Railway
 

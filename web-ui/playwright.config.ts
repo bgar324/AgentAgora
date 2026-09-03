@@ -22,7 +22,7 @@ export default defineConfig({
   webServer: [
     {
       command:
-        `${repositoryRoot}/.venv/bin/uvicorn e2e_server:app ` +
+        `\"${path.join(repositoryRoot, ".venv/bin/uvicorn")}\" e2e_server:app ` +
         "--app-dir tests --host 127.0.0.1 --port 8011",
       cwd: repositoryRoot,
       url: "http://127.0.0.1:8011/api/v1/focused/health",

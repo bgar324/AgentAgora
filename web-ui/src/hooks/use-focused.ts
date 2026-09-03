@@ -28,6 +28,14 @@ type SearchProgressResponse = {
   items: SearchProgressItem[]
   next: number
 }
+type CreateWorkspaceInput = {
+  problem: string
+  demo: boolean
+  position: NotepadDoc
+  participantId?: string
+  condition: string
+}
+
 
 function isPathSegment(value: unknown): value is string | number {
   return typeof value === "string" || typeof value === "number"
@@ -299,10 +307,22 @@ export function useFocusedPanel() {
   }, [exclusive, workspaceId])
 
   const createWorkspace = useCallback(
-    async (problem: string, demo: boolean, position: NotepadDoc) => {
+    async ({
+      problem,
+      demo,
+      position,
+      participantId,
+      condition,
+    }: CreateWorkspaceInput) => {
       const view = await viewCall("Starting study", "workspaces", {
         method: "POST",
-        body: JSON.stringify({ problem, position, demo }),
+        body: JSON.stringify({
+          problem,
+          position,
+          demo,
+          participant_id: participantId,
+          condition,
+        }),
       })
       return view.active
     },

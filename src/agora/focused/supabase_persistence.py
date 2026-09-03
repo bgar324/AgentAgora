@@ -13,11 +13,18 @@ from pydantic import ValidationError
 
 from agora.focused.models import SessionState, WorkspaceState
 from agora.focused.persistence import FocusedPersistence, PersistenceConflict
+from agora.focused.study_log import StudyAssignment, StudyEvent
 
 logger = logging.getLogger(__name__)
 
 SNAPSHOT_TABLE = "focused_workspace_snapshots"
 QUARANTINE_TABLE = "focused_workspace_quarantine"
+ASSIGNMENT_TABLE = "focused_study_assignments"
+EVENT_TABLE = "focused_interaction_events"
+CREATE_STUDY_RPC = "create_focused_study_workspace"
+SAVE_STUDY_RPC = "save_focused_study_workspace"
+DELETE_STUDY_RPC = "delete_focused_study_workspace"
+ASSIGNMENT_PAGE_SIZE = 1000
 
 
 class SupabaseFocusedPersistence:
@@ -59,6 +66,17 @@ class SupabaseFocusedPersistence:
                 for investigation in investigations
             ],
         }
+
+    @staticmethod
+    def _assignment_payload(assignment: StudyAssignment) -> dict[str, Any]:
+        return assignment.model_dump(mode="json")
+
+    @staticmethod
+    def _event_payload(event: StudyEvent) -> dict[str, Any]:
+        return event.model_dump(
+            mode="json",
+            exclude={"event_seq", "recorded_at"},
+        )
 
     @staticmethod
     def _parse_row(row: Mapping[str, Any]) -> tuple[WorkspaceState, list[SessionState]]:
@@ -136,18 +154,95 @@ class SupabaseFocusedPersistence:
                 investigations.extend(states)
             return workspaces, investigations
 
+    def load_study_assignments(self) -> list[StudyAssignment]:
+        rows: list[Mapping[str, Any]] = []
+        after_workspace_id = ""
+        with self._lock:
+            while True:
+                query = (
+                    self._client.table(ASSIGNMENT_TABLE)
+                    .select(
+                        "schema_version,workspace_id,participant_id,"
+                        "condition,assigned_at"
+                    )
+                    .order("workspace_id")
+                    .limit(ASSIGNMENT_PAGE_SIZE)
+                )
+                if after_workspace_id:
+                    query = query.gt("workspace_id", after_workspace_id)
+                page = query.execute().data or []
+                if not page:
+                    break
+                rows.extend(page)
+                next_workspace_id = page[-1].get("workspace_id")
+                if (
+                    not isinstance(next_workspace_id, str)
+                    or next_workspace_id <= after_workspace_id
+                ):
+                    raise ValueError(
+                        "assignment page is not ordered by workspace ID"
+                    )
+                after_workspace_id = next_workspace_id
+        return [StudyAssignment.model_validate(row) for row in rows]
+
+    def load_study_events(
+        self,
+        *,
+        after_sequence: int = 0,
+        limit: int = 1000,
+    ) -> list[StudyEvent]:
+        if after_sequence < 0:
+            raise ValueError("study event sequence cannot be negative")
+        if not 1 <= limit <= 10_000:
+            raise ValueError("study event page size must be between 1 and 10000")
+        with self._lock:
+            rows = (
+                self._client.table(EVENT_TABLE)
+                .select("*")
+                .gt("event_seq", after_sequence)
+                .order("event_seq")
+                .limit(limit)
+                .execute()
+                .data
+                or []
+            )
+        return [StudyEvent.model_validate(row) for row in rows]
+
+    def append_study_event(self, event: StudyEvent) -> None:
+        with self._lock:
+            self._client.table(EVENT_TABLE).insert(self._event_payload(event)).execute()
+
     def create(
         self,
         workspace: WorkspaceState,
         investigations: list[SessionState],
+        *,
+        assignment: StudyAssignment | None = None,
+        event: StudyEvent | None = None,
     ) -> None:
-        row = {
-            "workspace_id": workspace.id,
-            "revision": workspace.revision,
-            "payload": self._payload(workspace, investigations),
-        }
+        payload = self._payload(workspace, investigations)
+        if (assignment is None) != (event is None):
+            raise ValueError("study workspace creation requires assignment and event")
         with self._lock:
-            self._client.table(SNAPSHOT_TABLE).insert(row).execute()
+            if assignment is None:
+                self._client.table(SNAPSHOT_TABLE).insert(
+                    {
+                        "workspace_id": workspace.id,
+                        "revision": workspace.revision,
+                        "payload": payload,
+                    }
+                ).execute()
+                return
+            self._client.rpc(
+                CREATE_STUDY_RPC,
+                {
+                    "p_workspace_id": workspace.id,
+                    "p_revision": workspace.revision,
+                    "p_payload": payload,
+                    "p_assignment": self._assignment_payload(assignment),
+                    "p_event": self._event_payload(event),
+                },
+            ).execute()
 
     def save(
         self,
@@ -155,36 +250,69 @@ class SupabaseFocusedPersistence:
         investigations: list[SessionState],
         *,
         expected_revision: int,
+        event: StudyEvent | None = None,
     ) -> None:
         if workspace.revision != expected_revision + 1:
             raise ValueError("workspace revision must advance exactly once")
-        update = {
-            "revision": workspace.revision,
-            "payload": self._payload(workspace, investigations),
-        }
+        payload = self._payload(workspace, investigations)
         with self._lock:
-            response = (
-                self._client.table(SNAPSHOT_TABLE)
-                .update(update, returning=ReturnMethod.representation)
-                .eq("workspace_id", workspace.id)
-                .eq("revision", expected_revision)
-                .execute()
-            )
-        if len(response.data or []) != 1:
+            if event is None:
+                response = (
+                    self._client.table(SNAPSHOT_TABLE)
+                    .update(
+                        {"revision": workspace.revision, "payload": payload},
+                        returning=ReturnMethod.representation,
+                    )
+                    .eq("workspace_id", workspace.id)
+                    .eq("revision", expected_revision)
+                    .execute()
+                )
+                saved = len(response.data or []) == 1
+            else:
+                response = self._client.rpc(
+                    SAVE_STUDY_RPC,
+                    {
+                        "p_workspace_id": workspace.id,
+                        "p_expected_revision": expected_revision,
+                        "p_revision": workspace.revision,
+                        "p_payload": payload,
+                        "p_event": self._event_payload(event),
+                    },
+                ).execute()
+                saved = response.data is True
+        if not saved:
             raise PersistenceConflict(
                 f"workspace {workspace.id} changed or was deleted"
             )
 
-    def delete(self, workspace_id: str, *, expected_revision: int) -> None:
+    def delete(
+        self,
+        workspace_id: str,
+        *,
+        expected_revision: int,
+        event: StudyEvent | None = None,
+    ) -> None:
         with self._lock:
-            response = (
-                self._client.table(SNAPSHOT_TABLE)
-                .delete(returning=ReturnMethod.representation)
-                .eq("workspace_id", workspace_id)
-                .eq("revision", expected_revision)
-                .execute()
-            )
-        if len(response.data or []) != 1:
+            if event is None:
+                response = (
+                    self._client.table(SNAPSHOT_TABLE)
+                    .delete(returning=ReturnMethod.representation)
+                    .eq("workspace_id", workspace_id)
+                    .eq("revision", expected_revision)
+                    .execute()
+                )
+                deleted = len(response.data or []) == 1
+            else:
+                response = self._client.rpc(
+                    DELETE_STUDY_RPC,
+                    {
+                        "p_workspace_id": workspace_id,
+                        "p_expected_revision": expected_revision,
+                        "p_event": self._event_payload(event),
+                    },
+                ).execute()
+                deleted = response.data is True
+        if not deleted:
             raise PersistenceConflict(
                 f"workspace {workspace_id} changed or was deleted"
             )

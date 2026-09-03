@@ -120,7 +120,7 @@ def test_live_provider_failure_is_typed_not_silently_fabricated() -> None:
     asyncio.run(go())
 
 
-def test_removed_condition_fields_and_legacy_routes_are_rejected() -> None:
+def test_removed_arm_field_and_legacy_routes_are_rejected() -> None:
     app = FastAPI()
     app.state.focused = FocusedPanelService()
     app.include_router(focused_router)

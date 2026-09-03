@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from agora.focused.agents import FocusedAgentError
 from agora.focused.models import PaperView, SearchQuery, SessionState, WorkspaceView
 from agora.focused.service import FocusedPanelService, SessionError
+from agora.focused.study_log import CONDITION_PATTERN, PARTICIPANT_ID_PATTERN
 
 focused_router = APIRouter(prefix="/focused", tags=["focused-panel"])
 T = TypeVar("T")
@@ -77,6 +78,18 @@ class CreateWorkspaceRequest(RequestModel):
     problem: str = Field(min_length=3, max_length=4000)
     position: PositionRequest | None = None
     demo: bool = False
+    participant_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        pattern=PARTICIPANT_ID_PATTERN,
+    )
+    condition: str = Field(
+        default="baseline",
+        min_length=1,
+        max_length=64,
+        pattern=CONDITION_PATTERN,
+    )
 
 
 class SearchRequest(RequestModel):
@@ -124,6 +137,8 @@ async def create_workspace(
             problem=request.problem,
             position=request.position.model_dump() if request.position else None,
             demo=request.demo,
+            participant_id=request.participant_id,
+            condition=request.condition,
         )
     )
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from datetime import UTC, datetime
@@ -11,6 +12,7 @@ from typing import Protocol
 from pydantic import ValidationError
 
 from agora.focused.models import SessionState, WorkspaceState
+from agora.focused.study_log import StudyAssignment, StudyEvent
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +28,9 @@ class WorkspacePersistence(Protocol):
         self,
         workspace: WorkspaceState,
         investigations: list[SessionState],
+        *,
+        assignment: StudyAssignment | None = None,
+        event: StudyEvent | None = None,
     ) -> None: ...
 
     def save(
@@ -34,9 +39,27 @@ class WorkspacePersistence(Protocol):
         investigations: list[SessionState],
         *,
         expected_revision: int,
+        event: StudyEvent | None = None,
     ) -> None: ...
 
-    def delete(self, workspace_id: str, *, expected_revision: int) -> None: ...
+    def delete(
+        self,
+        workspace_id: str,
+        *,
+        expected_revision: int,
+        event: StudyEvent | None = None,
+    ) -> None: ...
+
+    def load_study_assignments(self) -> list[StudyAssignment]: ...
+
+    def load_study_events(
+        self,
+        *,
+        after_sequence: int = 0,
+        limit: int = 1000,
+    ) -> list[StudyEvent]: ...
+
+    def append_study_event(self, event: StudyEvent) -> None: ...
 
 
 class FocusedPersistence:
@@ -78,6 +101,68 @@ class FocusedPersistence:
                     archived_at text not null,
                     primary key(workspace_id, schema_version)
                 );
+                create table if not exists focused_study_assignments(
+                    workspace_id text primary key,
+                    schema_version integer not null,
+                    participant_id text,
+                    condition text not null,
+                    assigned_at text not null,
+                    check(schema_version = 1)
+                );
+                create table if not exists focused_interaction_events(
+                    event_seq integer primary key autoincrement,
+                    event_id text not null unique,
+                    schema_version integer not null,
+                    workspace_id text not null,
+                    session_id text,
+                    participant_id text,
+                    condition text,
+                    action text not null,
+                    stage text not null,
+                    outcome text not null,
+                    occurred_at text not null,
+                    recorded_at text not null,
+                    duration_ms integer not null check(duration_ms >= 0),
+                    revision_before integer,
+                    revision_after integer,
+                    object_type text,
+                    object_id text,
+                    error_code text,
+                    details text not null,
+                    check(schema_version = 1),
+                    check(outcome in ('success', 'failure')),
+                    check((object_type is null) = (object_id is null)),
+                    check(
+                        (outcome = 'success' and error_code is null)
+                        or (outcome = 'failure' and error_code is not null)
+                    )
+                );
+                create index if not exists focused_interaction_workspace
+                    on focused_interaction_events(workspace_id, event_seq);
+                create index if not exists focused_interaction_participant
+                    on focused_interaction_events(participant_id, event_seq);
+                create index if not exists focused_interaction_condition
+                    on focused_interaction_events(condition, event_seq);
+                create trigger if not exists reject_focused_assignment_update
+                before update on focused_study_assignments
+                begin
+                    select raise(abort, 'focused study assignments are immutable');
+                end;
+                create trigger if not exists reject_focused_assignment_delete
+                before delete on focused_study_assignments
+                begin
+                    select raise(abort, 'focused study assignments are immutable');
+                end;
+                create trigger if not exists reject_focused_interaction_update
+                before update on focused_interaction_events
+                begin
+                    select raise(abort, 'focused interaction events are append-only');
+                end;
+                create trigger if not exists reject_focused_interaction_delete
+                before delete on focused_interaction_events
+                begin
+                    select raise(abort, 'focused interaction events are append-only');
+                end;
                 """
             )
             columns = {
@@ -295,6 +380,112 @@ class FocusedPersistence:
 
         return list(workspaces.values()), list(investigations.values())
 
+    def load_study_assignments(self) -> list[StudyAssignment]:
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                select schema_version, workspace_id, participant_id,
+                       condition, assigned_at
+                from focused_study_assignments
+                order by assigned_at, workspace_id
+                """
+            ).fetchall()
+        return [StudyAssignment.model_validate(dict(row)) for row in rows]
+
+    def load_study_events(
+        self,
+        *,
+        after_sequence: int = 0,
+        limit: int = 1000,
+    ) -> list[StudyEvent]:
+        if after_sequence < 0:
+            raise ValueError("study event sequence cannot be negative")
+        if not 1 <= limit <= 10_000:
+            raise ValueError("study event page size must be between 1 and 10000")
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                select event_seq, event_id, schema_version, workspace_id,
+                       session_id, participant_id, condition, action, stage,
+                       outcome, occurred_at, recorded_at, duration_ms,
+                       revision_before, revision_after, object_type, object_id,
+                       error_code, details
+                from focused_interaction_events
+                where event_seq > ?
+                order by event_seq
+                limit ?
+                """,
+                (after_sequence, limit),
+            ).fetchall()
+        return [
+            StudyEvent.model_validate(
+                {
+                    **dict(row),
+                    "details": json.loads(row["details"]),
+                }
+            )
+            for row in rows
+        ]
+
+    def _write_study_assignment(self, assignment: StudyAssignment) -> None:
+        self._connection.execute(
+            """
+            insert into focused_study_assignments(
+                workspace_id, schema_version, participant_id,
+                condition, assigned_at
+            ) values (?, ?, ?, ?, ?)
+            """,
+            (
+                assignment.workspace_id,
+                assignment.schema_version,
+                assignment.participant_id,
+                assignment.condition,
+                assignment.assigned_at.isoformat(),
+            ),
+        )
+
+    def _write_study_event(self, event: StudyEvent) -> None:
+        self._connection.execute(
+            """
+            insert into focused_interaction_events(
+                event_id, schema_version, workspace_id, session_id,
+                participant_id, condition, action, stage, outcome,
+                occurred_at, recorded_at, duration_ms, revision_before,
+                revision_after, object_type, object_id, error_code, details
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event.event_id,
+                event.schema_version,
+                event.workspace_id,
+                event.session_id,
+                event.participant_id,
+                event.condition,
+                event.action.value,
+                event.stage.value,
+                event.outcome.value,
+                event.occurred_at.isoformat(),
+                datetime.now(UTC).isoformat(),
+                event.duration_ms,
+                event.revision_before,
+                event.revision_after,
+                event.object_type,
+                event.object_id,
+                event.error_code.value if event.error_code else None,
+                json.dumps(event.details, separators=(",", ":"), sort_keys=True),
+            ),
+        )
+
+    def append_study_event(self, event: StudyEvent) -> None:
+        with self._lock:
+            self._begin_write()
+            try:
+                self._write_study_event(event)
+            except Exception:
+                self._rollback()
+                raise
+            self._commit()
+
     @staticmethod
     def _validate_membership(
         workspace: WorkspaceState,
@@ -311,8 +502,17 @@ class FocusedPersistence:
         self,
         workspace: WorkspaceState,
         investigations: list[SessionState],
+        *,
+        assignment: StudyAssignment | None = None,
+        event: StudyEvent | None = None,
     ) -> None:
         self._validate_membership(workspace, investigations)
+        if (assignment is None) != (event is None):
+            raise ValueError("study workspace creation requires assignment and event")
+        if assignment is not None and assignment.workspace_id != workspace.id:
+            raise ValueError("study assignment belongs to another workspace")
+        if event is not None and event.workspace_id != workspace.id:
+            raise ValueError("study event belongs to another workspace")
         with self._lock:
             self._begin_write()
             try:
@@ -322,6 +522,10 @@ class FocusedPersistence:
                     (workspace.id, workspace.revision, workspace.model_dump_json()),
                 )
                 self._write_investigations(workspace, investigations)
+                if assignment is not None:
+                    self._write_study_assignment(assignment)
+                if event is not None:
+                    self._write_study_event(event)
             except Exception:
                 self._rollback()
                 raise
@@ -364,10 +568,13 @@ class FocusedPersistence:
         investigations: list[SessionState],
         *,
         expected_revision: int,
+        event: StudyEvent | None = None,
     ) -> None:
         self._validate_membership(workspace, investigations)
         if workspace.revision != expected_revision + 1:
             raise ValueError("workspace revision must advance exactly once")
+        if event is not None and event.workspace_id != workspace.id:
+            raise ValueError("study event belongs to another workspace")
         with self._lock:
             self._begin_write()
             try:
@@ -389,12 +596,22 @@ class FocusedPersistence:
                         f"workspace {workspace.id} changed or was deleted"
                     )
                 self._write_investigations(workspace, investigations)
+                if event is not None:
+                    self._write_study_event(event)
             except Exception:
                 self._rollback()
                 raise
             self._commit()
 
-    def delete(self, workspace_id: str, *, expected_revision: int) -> None:
+    def delete(
+        self,
+        workspace_id: str,
+        *,
+        expected_revision: int,
+        event: StudyEvent | None = None,
+    ) -> None:
+        if event is not None and event.workspace_id != workspace_id:
+            raise ValueError("study event belongs to another workspace")
         with self._lock:
             self._begin_write()
             try:
@@ -411,6 +628,8 @@ class FocusedPersistence:
                     "delete from focused_investigations where workspace_id = ?",
                     (workspace_id,),
                 )
+                if event is not None:
+                    self._write_study_event(event)
             except Exception:
                 self._rollback()
                 raise

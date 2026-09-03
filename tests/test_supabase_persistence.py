@@ -5,6 +5,7 @@ import sqlite3
 from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any
+from uuid import UUID
 
 import pytest
 
@@ -13,8 +14,18 @@ from agora.core.errors import ConfigurationError
 from agora.focused.importer import import_snapshots
 from agora.focused.persistence import FocusedPersistence
 from agora.focused.service import FocusedPanelService, SessionError
+from agora.focused.study_log import (
+    StudyAction,
+    StudyAssignment,
+    StudyOutcome,
+)
 from agora.focused.supabase_persistence import (
+    ASSIGNMENT_TABLE,
+    CREATE_STUDY_RPC,
+    DELETE_STUDY_RPC,
+    EVENT_TABLE,
     QUARANTINE_TABLE,
+    SAVE_STUDY_RPC,
     SNAPSHOT_TABLE,
     SupabaseFocusedPersistence,
 )
@@ -27,6 +38,9 @@ class FakeQuery:
         self.operation = "select"
         self.value: dict[str, Any] | None = None
         self.filters: list[tuple[str, Any]] = []
+        self.greater_than: list[tuple[str, Any]] = []
+        self.order_field: str | None = None
+        self.limit_count: int | None = None
 
     def select(self, *_: Any, **__: Any) -> FakeQuery:
         self.operation = "select"
@@ -55,23 +69,40 @@ class FakeQuery:
         self.filters.append((field, value))
         return self
 
+    def gt(self, field: str, value: Any) -> FakeQuery:
+        self.greater_than.append((field, value))
+        return self
+
+    def order(self, field: str, **_: Any) -> FakeQuery:
+        self.order_field = field
+        return self
+
+    def limit(self, count: int) -> FakeQuery:
+        self.limit_count = count
+        return self
+
     def _matches(self, row: dict[str, Any]) -> bool:
-        return all(row.get(field) == value for field, value in self.filters)
+        return all(row.get(field) == value for field, value in self.filters) and all(
+            row.get(field, 0) > value for field, value in self.greater_than
+        )
 
     def execute(self) -> SimpleNamespace:
         rows = self.client.rows.setdefault(self.table, {})
         matched = [row for row in rows.values() if self._matches(row)]
+        if self.order_field is not None:
+            matched.sort(key=lambda row: row[self.order_field])
+        if self.limit_count is not None:
+            matched = matched[: self.limit_count]
         if self.operation == "select":
+            if self.client.max_select_rows is not None:
+                matched = matched[: self.client.max_select_rows]
             return SimpleNamespace(data=deepcopy(matched))
         assert self.value is not None or self.operation == "delete"
         if self.operation == "insert":
-            key = str(self.value["workspace_id"])
-            if key in rows:
-                raise RuntimeError("duplicate workspace")
-            rows[key] = deepcopy(self.value)
-            return SimpleNamespace(data=[deepcopy(rows[key])])
+            inserted = self.client.insert(self.table, self.value)
+            return SimpleNamespace(data=[deepcopy(inserted)])
         if self.operation == "upsert":
-            key = str(self.value["workspace_id"])
+            key = self.client.key(self.table, self.value)
             rows[key] = deepcopy(self.value)
             return SimpleNamespace(data=[deepcopy(rows[key])])
         if self.operation == "update":
@@ -87,15 +118,94 @@ class FakeQuery:
         return SimpleNamespace(data=deleted)
 
 
+class FakeRpc:
+    def __init__(
+        self,
+        client: FakeSupabaseClient,
+        name: str,
+        params: dict[str, Any],
+    ) -> None:
+        self.client = client
+        self.name = name
+        self.params = params
+
+    def execute(self) -> SimpleNamespace:
+        rows_before = deepcopy(self.client.rows)
+        sequence_before = self.client.next_event_sequence
+        try:
+            workspace_id = str(self.params["p_workspace_id"])
+            if self.name == CREATE_STUDY_RPC:
+                self.client.insert(
+                    SNAPSHOT_TABLE,
+                    {
+                        "workspace_id": workspace_id,
+                        "revision": self.params["p_revision"],
+                        "payload": self.params["p_payload"],
+                    },
+                )
+                self.client.insert(ASSIGNMENT_TABLE, self.params["p_assignment"])
+                self.client.insert(EVENT_TABLE, self.params["p_event"])
+                return SimpleNamespace(data=None)
+
+            snapshot = self.client.rows[SNAPSHOT_TABLE].get(workspace_id)
+            expected_revision = self.params["p_expected_revision"]
+            if snapshot is None or snapshot["revision"] != expected_revision:
+                return SimpleNamespace(data=False)
+            if self.name == SAVE_STUDY_RPC:
+                snapshot.update(
+                    {
+                        "revision": self.params["p_revision"],
+                        "payload": deepcopy(self.params["p_payload"]),
+                    }
+                )
+            elif self.name == DELETE_STUDY_RPC:
+                self.client.rows[SNAPSHOT_TABLE].pop(workspace_id)
+            else:
+                raise AssertionError(f"unknown fake RPC {self.name}")
+            self.client.insert(EVENT_TABLE, self.params["p_event"])
+            return SimpleNamespace(data=True)
+        except Exception:
+            self.client.rows = rows_before
+            self.client.next_event_sequence = sequence_before
+            raise
+
+
 class FakeSupabaseClient:
     def __init__(self) -> None:
         self.rows: dict[str, dict[str, dict[str, Any]]] = {
             SNAPSHOT_TABLE: {},
             QUARANTINE_TABLE: {},
+            ASSIGNMENT_TABLE: {},
+            EVENT_TABLE: {},
         }
+        self.next_event_sequence = 1
+        self.max_select_rows: int | None = None
+
+    @staticmethod
+    def key(table: str, value: dict[str, Any]) -> str:
+        if table == EVENT_TABLE:
+            return str(value["event_id"])
+        return str(value["workspace_id"])
+
+    def insert(self, table: str, value: dict[str, Any]) -> dict[str, Any]:
+        rows = self.rows.setdefault(table, {})
+        row = deepcopy(value)
+        if table == EVENT_TABLE:
+            row["event_id"] = str(UUID(str(row["event_id"])))
+        key = self.key(table, row)
+        if key in rows:
+            raise RuntimeError(f"duplicate row in {table}")
+        if table == EVENT_TABLE:
+            row["event_seq"] = self.next_event_sequence
+            self.next_event_sequence += 1
+        rows[key] = row
+        return row
 
     def table(self, name: str) -> FakeQuery:
         return FakeQuery(self, name)
+
+    def rpc(self, name: str, params: dict[str, Any]) -> FakeRpc:
+        return FakeRpc(self, name, params)
 
 
 def persistence(client: FakeSupabaseClient) -> SupabaseFocusedPersistence:
@@ -124,6 +234,45 @@ def test_supabase_snapshot_round_trip_and_revision_conflict() -> None:
             root.workspace_id
         )
 
+    assignments = persistence(client).load_study_assignments()
+    assert len(assignments) == 1
+    assert assignments[0].workspace_id == root.workspace_id
+    assert assignments[0].condition == "baseline"
+    events = persistence(client).load_study_events()
+    assert [event.action for event in events] == [
+        StudyAction.WORKSPACE_CREATE,
+        StudyAction.QUERIES_SUGGEST,
+        StudyAction.QUERIES_SUGGEST,
+        StudyAction.WORKSPACE_DELETE,
+    ]
+    assert [event.outcome for event in events] == [
+        StudyOutcome.SUCCESS,
+        StudyOutcome.SUCCESS,
+        StudyOutcome.FAILURE,
+        StudyOutcome.SUCCESS,
+    ]
+
+
+
+def test_supabase_assignment_loading_paginates_past_row_limit() -> None:
+    client = FakeSupabaseClient()
+    client.max_select_rows = 1000
+    for index in range(1001):
+        assignment = StudyAssignment(
+            workspace_id=f"workspace-{index:04d}",
+            participant_id=f"P-{index:04d}",
+            condition="baseline",
+        )
+        client.insert(
+            ASSIGNMENT_TABLE,
+            assignment.model_dump(mode="json"),
+        )
+
+    assignments = persistence(client).load_study_assignments()
+
+    assert len(assignments) == 1001
+    assert assignments[0].workspace_id == "workspace-0000"
+    assert assignments[-1].workspace_id == "workspace-1000"
 
 def test_supabase_snapshot_quarantines_malformed_rows() -> None:
     client = FakeSupabaseClient()

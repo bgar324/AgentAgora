@@ -21,6 +21,62 @@ import {
   SectionLabel,
   Spinner,
 } from "./ui"
+const STUDY_ASSIGNMENT_KEY = "focused-study-assignment"
+
+type StudyAssignment = {
+  participantId?: string
+  condition: string
+}
+
+function studyAssignmentFromBrowser(): StudyAssignment {
+  const params = new URL(window.location.href).searchParams
+  const hasUrlAssignment =
+    params.has("participant_id") || params.has("condition")
+  if (hasUrlAssignment) {
+    const participantId = params.get("participant_id")?.trim() || undefined
+    const assignment = {
+      participantId,
+      condition: params.get("condition")?.trim() || "baseline",
+    }
+    window.sessionStorage.setItem(
+      STUDY_ASSIGNMENT_KEY,
+      JSON.stringify(assignment),
+    )
+    return assignment
+  }
+
+  const stored = window.sessionStorage.getItem(STUDY_ASSIGNMENT_KEY)
+  if (stored) {
+    try {
+      const assignment: unknown = JSON.parse(stored)
+      if (
+        typeof assignment === "object" &&
+        assignment !== null &&
+        "condition" in assignment &&
+        typeof assignment.condition === "string" &&
+        (!("participantId" in assignment) ||
+          assignment.participantId === undefined ||
+          typeof assignment.participantId === "string")
+      ) {
+        return {
+          condition: assignment.condition,
+          participantId:
+            "participantId" in assignment &&
+            typeof assignment.participantId === "string"
+              ? assignment.participantId
+              : undefined,
+        }
+      }
+    } catch {
+      window.sessionStorage.removeItem(STUDY_ASSIGNMENT_KEY)
+    }
+  }
+
+  const assignment = { condition: "baseline" }
+  window.sessionStorage.setItem(STUDY_ASSIGNMENT_KEY, JSON.stringify(assignment))
+  return assignment
+}
+
 
 export function FocusedWorkspace({ demo = false }: { demo?: boolean }) {
   const session = useFocusedStore((state) => state.session)
@@ -44,7 +100,10 @@ export function FocusedWorkspace({ demo = false }: { demo?: boolean }) {
     const explicitWorkspaceId = params.get("workspace")
     const assignmentRequested =
       explicitWorkspaceId === null &&
-      (params.get("arm") === "baseline" || demo)
+      (params.has("participant_id") ||
+        params.has("condition") ||
+        params.get("arm") === "baseline" ||
+        demo)
     const workspaceId = assignmentRequested
       ? null
       : (explicitWorkspaceId ??
@@ -75,8 +134,16 @@ export function FocusedWorkspace({ demo = false }: { demo?: boolean }) {
     if (!workspace) return
     window.localStorage.setItem("focused-workspace", workspace.id)
     const url = new URL(window.location.href)
+    if (
+      url.searchParams.has("participant_id") ||
+      url.searchParams.has("condition")
+    ) {
+      studyAssignmentFromBrowser()
+    }
     url.searchParams.set("workspace", workspace.id)
     url.searchParams.set("arm", "baseline")
+    url.searchParams.delete("participant_id")
+    url.searchParams.delete("condition")
     window.history.replaceState({}, "", url)
   }, [workspace])
 
@@ -354,8 +421,8 @@ function ResetDialog({
   return (
     <ModalShell title="Start over?" onClose={onClose}>
       <p className="mb-5 text-[13px] leading-relaxed text-[var(--ink-2)]">
-        Deletes the whole workspace: every Investigation, paper, panel, and
-        saved hypothesis.
+        Deletes the working workspace: every Investigation, paper, panel, and
+        saved hypothesis. Study interaction records remain.
       </p>
       {error && (
         <p role="alert" className="mb-3 text-[12px] text-[var(--red)]">
@@ -418,7 +485,13 @@ function StartScreen({ demo }: { demo: boolean }) {
     setStarting(true)
     setError(null)
     try {
-      await createWorkspace(problem.trim(), demo, position)
+      const assignment = studyAssignmentFromBrowser()
+      await createWorkspace({
+        problem: problem.trim(),
+        demo,
+        position,
+        ...assignment,
+      })
     } catch (err) {
       setError(err instanceof Error ? err.message : "failed to start")
     } finally {
