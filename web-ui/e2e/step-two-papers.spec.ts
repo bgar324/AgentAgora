@@ -369,19 +369,21 @@ test("building another Perspective returns to papers and rejoins on return", asy
   await carryPaper(page, 0)
   await page.getByRole("button", { name: "Build Perspective" }).click()
   await page.getByRole("button", { name: "Continue", exact: true }).click()
+  const roster = page.getByTestId("notepad-roster-toggle")
+  await expect(roster.locator("svg")).toHaveCount(2, { timeout: 30_000 })
+  await roster.click()
   await expect(page.getByTestId("notepad-conversation")).toContainText(
     firstPaper.title,
-    { timeout: 30_000 },
   )
 
   await page.getByTestId("notepad-build-perspective").click()
   await carryPaper(page, 1)
   await page.getByRole("button", { name: "Build Perspective" }).click()
   await page.getByRole("button", { name: "Continue", exact: true }).click()
-
+  await expect(roster.locator("svg")).toHaveCount(3, { timeout: 30_000 })
+  await roster.click()
   await expect(page.getByTestId("notepad-conversation")).toContainText(
     secondPaper.title,
-    { timeout: 30_000 },
   )
   const view = await activeView(page, workspaceId)
   expect(view.active.perspectives).toHaveLength(2)

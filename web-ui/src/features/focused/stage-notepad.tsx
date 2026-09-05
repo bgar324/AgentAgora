@@ -199,6 +199,7 @@ function TopicRow({
             aria-hidden
             size={11}
             strokeWidth={2.2}
+            className="shrink-0"
             style={{ color: perspective?.color ?? "var(--mute)" }}
           />
           <span className="min-w-0 flex-1 break-words text-[12px] font-medium">
@@ -242,6 +243,7 @@ function TopicList({
   const generateNotepadTopics = useFocusedPanel().generateNotepadTopics
   const [error, setError] = useState<string | null>(null)
   const attempted = useRef(new Set<string>())
+  const [open, setOpen] = useState(false)
   const finished = notepad.final_snapshot !== null
   const generating = busy === "Generating topics"
   const topics = useMemo(() => notepad.topics ?? [], [notepad.topics])
@@ -294,8 +296,27 @@ function TopicList({
 
   return (
     <div data-testid="notepad-topics">
-      <div className="flex items-baseline justify-between gap-2">
-        <SectionLabel>Discussion topics</SectionLabel>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <SectionLabel>Discussion topics</SectionLabel>
+          <button
+            type="button"
+            data-testid="notepad-topics-toggle"
+            aria-expanded={open}
+            aria-label={open ? "Hide discussion topics" : "Show discussion topics"}
+            onClick={() => setOpen((value) => !value)}
+            className="inline-flex shrink-0 items-center gap-0.5 rounded-md px-1 py-0.5 text-[11px] tabular-nums text-[var(--mute)] hover:text-[var(--ink-2)]"
+          >
+            {ordered.length}
+            <ChevronRight
+              aria-hidden
+              size={12}
+              strokeWidth={2}
+              className="shrink-0 transition-transform"
+              style={{ transform: open ? "rotate(90deg)" : undefined }}
+            />
+          </button>
+        </div>
         {showAction ? (
           <button
             type="button"
@@ -313,7 +334,7 @@ function TopicList({
           </button>
         ) : null}
       </div>
-      {ordered.length === 0 ? (
+      {!open ? null : ordered.length === 0 ? (
         <p className="mt-1.5 text-[11px] leading-relaxed text-[var(--mute)]">
           {generating
             ? "Generating topics from the retrieved papers."
@@ -338,17 +359,19 @@ function TopicList({
           ))}
         </ul>
       )}
-      {generating && ordered.length > 0 ? (
+      {open && generating && ordered.length > 0 ? (
         <p className="mt-1 text-[10.5px] text-[var(--mute)]">
           Adding topics for the newer Perspectives.
         </p>
       ) : null}
       {error ? <ErrorLine>{error}</ErrorLine> : null}
-      <p className="mt-1 text-[10.5px] leading-relaxed text-[var(--mute)]">
-        {finished
-          ? "Proposals from this study. The topics stay with the final output."
-          : "Proposals to explore, not findings. Select one to prepare a question."}
-      </p>
+      {open ? (
+        <p className="mt-1 text-[10.5px] leading-relaxed text-[var(--mute)]">
+          {finished
+            ? "Proposals from this study. The topics stay with the final output."
+            : "Select one to prepare a question."}
+        </p>
+      ) : null}
     </div>
   )
 }
@@ -608,6 +631,7 @@ function TurnRow({
                 aria-hidden
                 size={12}
                 strokeWidth={2.2}
+                className="shrink-0"
                 style={{ color: color ?? "var(--ink-2)" }}
               />
             ) : null}
@@ -669,6 +693,7 @@ function ConversationColumn({
   const [error, setError] = useState<string | null>(null)
   const [topicNotice, setTopicNotice] = useState<string | null>(null)
   const [turnBudgets, setTurnBudgets] = useState<Record<string, number>>({})
+  const [rosterOpen, setRosterOpen] = useState(false)
   const input = useRef<HTMLTextAreaElement | null>(null)
   const seeded = useRef<{ seed: number; text: string | null } | null>(null)
   const focusPending = useRef(false)
@@ -777,24 +802,57 @@ function ConversationColumn({
       data-testid="notepad-conversation"
       className="ep-enter panel flex min-h-0 flex-col rounded-xl px-4 py-3.5"
     >
-      <SectionLabel>Discussion</SectionLabel>
-      <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        <span className="text-[11px] text-[var(--mute)]">In the chat</span>
-        {session.perspectives.map((perspective) => (
-          <span
-            key={perspective.id}
-            className="inline-flex items-center gap-1 rounded-full border border-[var(--line-strong)] px-2 py-0.5 text-[11px] text-[var(--ink)]"
-          >
-            <UserRound
-              aria-hidden
-              size={11}
-              strokeWidth={2.2}
-              style={{ color: perspective.color }}
-            />
-            {perspective.name}
-          </span>
-        ))}
+      <div className="flex items-center gap-1.5">
+        <SectionLabel>Discussion</SectionLabel>
+        <button
+          type="button"
+          data-testid="notepad-roster-toggle"
+          aria-expanded={rosterOpen}
+          aria-label={rosterOpen ? "Hide who is in the chat" : "Show who is in the chat"}
+          onClick={() => setRosterOpen((value) => !value)}
+          className="inline-flex shrink-0 items-center gap-0.5 rounded-md px-1 py-0.5 text-[var(--mute)] hover:text-[var(--ink-2)]"
+        >
+          {rosterOpen
+            ? null
+            : session.perspectives.map((perspective) => (
+                <UserRound
+                  key={perspective.id}
+                  aria-hidden
+                  size={11}
+                  strokeWidth={2.2}
+                  className="shrink-0"
+                  style={{ color: perspective.color }}
+                />
+              ))}
+          <ChevronRight
+            aria-hidden
+            size={12}
+            strokeWidth={2}
+            className="shrink-0 transition-transform"
+            style={{ transform: rosterOpen ? "rotate(90deg)" : undefined }}
+          />
+        </button>
       </div>
+      {rosterOpen ? (
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          <span className="text-[11px] text-[var(--mute)]">In the chat</span>
+          {session.perspectives.map((perspective) => (
+            <span
+              key={perspective.id}
+              className="inline-flex items-center gap-1 rounded-full border border-[var(--line-strong)] px-2 py-0.5 text-[11px] text-[var(--ink)]"
+            >
+              <UserRound
+                aria-hidden
+                size={11}
+                strokeWidth={2.2}
+                className="shrink-0"
+                style={{ color: perspective.color }}
+              />
+              {perspective.name}
+            </span>
+          ))}
+        </div>
+      ) : null}
       <div className="mt-2 text-[10.5px] font-medium text-[var(--mute)]">
         <AgendaStatus notepad={notepad} />
       </div>
@@ -956,14 +1014,14 @@ function ConversationColumn({
                 send()
               }
             }}
-            className="field min-h-9 w-full resize-none rounded-lg py-2 pl-3 pr-12 text-[12.5px] leading-snug"
+            className="field block min-h-9 w-full resize-none rounded-lg py-2 pl-3 pr-12 text-[12.5px] leading-snug"
           />
           <button
             type="button"
             aria-label="Send"
             disabled={finished || busy !== null || !message.trim() || !versionId}
             onClick={send}
-            className="absolute bottom-2 right-2 grid size-8 place-items-center rounded-lg bg-[var(--node)] text-white hover:opacity-90 disabled:opacity-35"
+            className="absolute right-2 top-1/2 grid size-8 -translate-y-1/2 place-items-center rounded-lg bg-[var(--node)] text-white hover:opacity-90 disabled:opacity-35"
           >
             {busy === "Sending" ? (
               <Spinner className="size-3.5" />

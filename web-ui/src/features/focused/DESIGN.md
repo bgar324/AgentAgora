@@ -33,8 +33,8 @@ One selected paper anchors one hidden literature cluster. The server derives Sco
 
 The surface has three columns:
 
-1. The left column lists **Discussion topics** above **Document**. Document contains independent versions of the four researcher-authored fields. **Copy current** forks the active version. **Start blank** creates an empty version.
-2. **Discussion** runs the active version's persisted agenda.
+1. The left column lists **Discussion topics** above **Document**. The topic list is collapsed by default; its header shows the topic count and a toggle. Document contains independent versions of the four researcher-authored fields. **Copy current** forks the active version. **Start blank** creates an empty version.
+2. **Discussion** runs the active version's persisted agenda. The roster is collapsed by default; the header shows one colored icon per Perspective beside the label and a toggle that expands the named chips.
 3. **Perspectives** shows the active speakers as plain identity cards. Expanded cards show only the Description, anchor paper, and related-paper count.
 
 Each topic is an evidence-motivated proposal with a title, scientific question, tentative hypothesis, rationale, and citations. Live generation uses the Perspective's source abstracts. The researcher's position guides relevance but is not evidence. Demo mode uses deterministic question types and cited abstract excerpts.
