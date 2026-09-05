@@ -131,7 +131,7 @@ def test_removed_arm_field_and_legacy_routes_are_rejected() -> None:
             "problem": "How should antibiotic breadth be bounded?",
             "position": {},
             "demo": True,
-            "arm": "guided",
+            "participant_id": "P-0042",
         },
     )
     assert response.status_code == 422

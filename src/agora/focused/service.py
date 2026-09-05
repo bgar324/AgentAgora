@@ -16,7 +16,6 @@ from functools import wraps
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
-from pydantic import ValidationError
 
 from agora.focused import agents
 from agora.focused.clustering import density_partition
@@ -657,22 +656,13 @@ class FocusedPanelService:
         problem: str,
         position: dict[str, str] | None = None,
         demo: bool,
-        participant_id: str | None = None,
-        condition: str = "baseline",
     ) -> WorkspaceView:
         clean_problem = problem.strip()
         if len(clean_problem) < 3:
             raise SessionError("Problem must be at least three characters.")
         workspace_id = uuid.uuid4().hex
         investigation_id = uuid.uuid4().hex
-        try:
-            assignment = StudyAssignment(
-                workspace_id=workspace_id,
-                participant_id=participant_id,
-                condition=condition,
-            )
-        except ValidationError as error:
-            raise SessionError("Invalid study assignment.", status=422) from error
+        assignment = StudyAssignment(workspace_id=workspace_id, condition="baseline")
         operation = _StudyOperation(
             event_id=uuid.uuid4().hex,
             action=StudyAction.WORKSPACE_CREATE,

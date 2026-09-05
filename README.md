@@ -64,14 +64,13 @@ overwriting newer work, malformed rows are quarantined without taking down
 healthy workspaces, and failed in-process mutations roll back before another
 request can observe them.
 
-Each new workspace also gets an immutable pseudonymous study assignment.
+Each new workspace gets an immutable study assignment on the baseline condition.
 Meaningful server interactions, including paper opens, append one terminal
-success or failure event with duration, revisions, and content-free metadata.
-Successful snapshot and event writes are atomic. A process exit before the
-terminal write leaves no event. Start over removes the working snapshot but
-retains assignment and interaction history. Each repeated (`participant_id`,
-`condition`) pair starts another workspace attempt. Use `assigned_at` to order
-the attempts.
+success or failure event with duration, revisions, and content-free metadata,
+keyed by workspace ID. Successful snapshot and event writes are atomic. A
+process exit before the terminal write leaves no event. Start over removes the
+working snapshot but retains the assignment and interaction history; the next
+workspace is a separate attempt. Use `assigned_at` to order attempts.
 
 Discussion topic generation records `topics.generate`. A successful topic-linked
 `question.send` records `details.topic_id`, while failed requests omit topic IDs.
@@ -120,7 +119,7 @@ pnpm dev
 
 Open:
 
-- AgentAgora: <http://localhost:3000> (redirects to `/focused`)
+- AgentAgora: <http://localhost:3000> (redirects to `/focused`; `/demo` uses the bundled QA corpus)
 - API health: <http://localhost:8000/api/v1/focused/health>
 
 The frontend route `/api/focused/*` forwards requests to

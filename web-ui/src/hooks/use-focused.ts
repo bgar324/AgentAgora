@@ -32,8 +32,6 @@ type CreateWorkspaceInput = {
   problem: string
   demo: boolean
   position: NotepadDoc
-  participantId?: string
-  condition: string
 }
 
 
@@ -311,8 +309,6 @@ export function useFocusedPanel() {
       problem,
       demo,
       position,
-      participantId,
-      condition,
     }: CreateWorkspaceInput) => {
       const view = await viewCall("Starting study", "workspaces", {
         method: "POST",
@@ -320,8 +316,6 @@ export function useFocusedPanel() {
           problem,
           position,
           demo,
-          participant_id: participantId,
-          condition,
         }),
       })
       return view.active

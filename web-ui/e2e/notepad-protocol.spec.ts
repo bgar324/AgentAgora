@@ -59,7 +59,7 @@ async function baselineWorkspace(page: Page, perspectives = 3) {
     )
   }
   expect(state.perspectives).toHaveLength(perspectives)
-  await page.goto(`/focused?workspace=${workspaceId}&arm=baseline`)
+  await page.goto(`/focused?workspace=${workspaceId}`)
   await expect(
     page.getByRole("button", { name: "Continue", exact: true }),
   ).toBeEnabled()
@@ -76,7 +76,7 @@ async function openDiscussion(page: Page) {
 test("the input screen has one baseline form and no participant condition controls", async ({
   page,
 }) => {
-  await page.goto("/focused?arm=baseline")
+  await page.goto("/focused")
   await expect(page.getByRole("heading", { name: "Hypothesis Studio" })).toBeVisible()
   await expect(page.getByLabel("Problem")).toBeVisible()
   for (const label of [
@@ -91,7 +91,7 @@ test("the input screen has one baseline form and no participant condition contro
   await expect(page.getByText(/Demo mode|guided/i)).toHaveCount(0)
 })
 
-test("the hidden QA Demo flag keeps baseline assignment without a badge", async ({
+test("the demo route ignores prior work and shows no badge", async ({
   page,
 }) => {
   const prior = await page.request.post("/api/focused/workspaces", {
@@ -102,8 +102,8 @@ test("the hidden QA Demo flag keeps baseline assignment without a badge", async 
   await page.addInitScript((workspaceId) => {
     window.localStorage.setItem("focused-workspace", workspaceId)
   }, priorId)
-  await page.goto("/focused?demo=1")
-  await expect(page).toHaveURL(/arm=baseline/)
+  await page.goto("/demo")
+  await expect(page).toHaveURL(/\/demo$/)
   await expect(page).not.toHaveURL(/workspace=/)
   await expect(page.getByLabel("Problem")).toHaveValue(/antibiotics/i)
   await expect(page.getByText(/Demo mode|QA mode/i)).toHaveCount(0)

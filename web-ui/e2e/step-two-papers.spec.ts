@@ -42,7 +42,7 @@ async function atStepTwo(
     },
   )
   expect(searched.ok()).toBeTruthy()
-  await page.goto(`/focused?arm=baseline&workspace=${workspaceId}`)
+  await page.goto(`/focused?workspace=${workspaceId}`)
   await expect(page.getByTestId("paper-result").first()).toBeVisible({
     timeout: 30_000,
   })

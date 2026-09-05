@@ -40,8 +40,6 @@ def test_service_records_terminal_events_and_retains_history_after_delete() -> N
         view = service.create_workspace(
             problem="How should antibiotic breadth be bounded?",
             demo=True,
-            participant_id="P-0042",
-            condition="baseline-a",
         )
         session_id = view.active.id
         workspace_id = view.workspace.id
@@ -71,8 +69,8 @@ def test_service_records_terminal_events_and_retains_history_after_delete() -> N
         assignments = persistence.load_study_assignments()
         assert len(assignments) == 1
         assert assignments[0].workspace_id == workspace_id
-        assert assignments[0].participant_id == "P-0042"
-        assert assignments[0].condition == "baseline-a"
+        assert assignments[0].participant_id is None
+        assert assignments[0].condition == "baseline"
         events = persistence.load_study_events()
         assert [event.action for event in events] == [
             StudyAction.WORKSPACE_CREATE,
@@ -89,8 +87,8 @@ def test_service_records_terminal_events_and_retains_history_after_delete() -> N
             StudyOutcome.SUCCESS,
         ]
         assert [event.event_seq for event in events] == [1, 2, 3, 4, 5]
-        assert all(event.participant_id == "P-0042" for event in events)
-        assert all(event.condition == "baseline-a" for event in events)
+        assert all(event.participant_id is None for event in events)
+        assert all(event.condition == "baseline" for event in events)
         assert events[0].revision_before is None
         assert events[0].revision_after == 0
         assert events[1].revision_before == 0
@@ -114,8 +112,6 @@ def test_paper_detail_records_views_without_leaking_failed_ids() -> None:
         view = service.create_workspace(
             problem="Which retrieved papers did participants inspect?",
             demo=True,
-            participant_id="P-0042",
-            condition="baseline-a",
         )
         paper = DEMO_PAPERS[0].model_copy(deep=True)
         service.get(view.active.id).papers = [paper]
@@ -125,9 +121,7 @@ def test_paper_detail_records_views_without_leaking_failed_ids() -> None:
 
         untrusted_object_id = "RAW PARTICIPANT DRAFT MUST NOT BE LOGGED"
         with pytest.raises(SessionError, match="not in this session"):
-            asyncio.run(
-                service.paper_detail(view.active.id, untrusted_object_id)
-            )
+            asyncio.run(service.paper_detail(view.active.id, untrusted_object_id))
 
         events = persistence.load_study_events()
         assert [event.action for event in events] == [
@@ -297,7 +291,7 @@ def test_sqlite_study_history_rejects_update_and_delete() -> None:
         connection.close()
 
 
-def test_api_validates_and_persists_study_assignment() -> None:
+def test_api_assigns_every_workspace_to_the_baseline() -> None:
     connection, persistence = sqlite_persistence()
     try:
         app = FastAPI()
@@ -307,28 +301,12 @@ def test_api_validates_and_persists_study_assignment() -> None:
 
         response = client.post(
             "/focused/workspaces",
-            json={
-                "problem": "How should antibiotic breadth be bounded?",
-                "participant_id": "P_0042",
-                "condition": "treatment-1",
-                "demo": True,
-            },
+            json={"problem": "How should antibiotic breadth be bounded?", "demo": True},
         )
         assert response.status_code == 200
         assignment = persistence.load_study_assignments()[0]
-        assert assignment.participant_id == "P_0042"
-        assert assignment.condition == "treatment-1"
-
-        invalid = client.post(
-            "/focused/workspaces",
-            json={
-                "problem": "How should antibiotic breadth be bounded?",
-                "participant_id": "person@example.com",
-                "condition": "Treatment Group",
-                "demo": True,
-            },
-        )
-        assert invalid.status_code == 422
+        assert assignment.participant_id is None
+        assert assignment.condition == "baseline"
     finally:
         connection.close()
 
@@ -340,8 +318,6 @@ def test_export_is_stable_ndjson_without_snapshot_content() -> None:
         service.create_workspace(
             problem="SECRET RESEARCH PROBLEM",
             demo=True,
-            participant_id="P-7",
-            condition="baseline",
         )
         output = io.StringIO()
 

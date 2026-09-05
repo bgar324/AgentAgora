@@ -2,7 +2,7 @@
 
 ## Product boundary
 
-The focused surface has one baseline flow. The URL keeps `arm=baseline` for study assignment, but the API stores no arm and the UI shows no condition control. `demo=1` selects deterministic QA data. Demo and live sessions use the same query, clustering, Perspective, and discussion state transitions.
+The focused surface has one baseline flow at `/focused`. `/demo` runs the same flow on deterministic QA data. `?workspace=<id>` reopens a specific workspace; `/focused` without it resumes the last workspace from this browser, and `/demo` without it always starts fresh. The UI shows no condition control. Demo and live sessions use the same query, clustering, Perspective, and discussion state transitions.
 
 ## Flow
 
@@ -66,7 +66,7 @@ Finished topic rows expand their saved hypothesis and rationale for inspection. 
 
 Use Inter, near-monochrome neutrals, hairline borders, compact controls, and restrained semantic color. Hierarchy comes from weight, size, and the gray ramp.
 
-Core tokens live in `app/focused/layout.tsx`:
+Core tokens live in `app/(focused)/layout.tsx`:
 
 - Neutrals: `--bg`, `--panel`, `--ink`, `--ink-2`, `--mute`, `--line`, and `--line-strong`.
 - Inverted controls: `--node` and `--on-node`.
