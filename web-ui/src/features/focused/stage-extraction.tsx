@@ -31,12 +31,13 @@ export function StageExtraction() {
     removePerspective,
   } = useFocusedPanel()
   const [searchError, setSearchError] = useState<string | null>(null)
-  const [buildError, setBuildError] = useState<string | null>(null)
+  const [failedBuilds, setFailedBuilds] = useState<
+    Record<string, { name: string; description: string; error: string }>
+  >({})
   const [openPaperId, setOpenPaperId] = useState<string | null>(null)
   const [selectedPaperId, setSelectedPaperId] = useState<string | null>(null)
   const [job, setJob] = useState("")
   const [description, setDescription] = useState("")
-  const [buildingPaperId, setBuildingPaperId] = useState<string | null>(null)
   const [perspectiveToRemove, setPerspectiveToRemove] = useState<{
     id: string
     name: string
@@ -56,6 +57,7 @@ export function StageExtraction() {
   const selectedPaper = session.papers.find(
     (paper) => paper.id === selectedPaperId,
   )
+  const failedList = Object.entries(failedBuilds)
 
   const act = async (action: () => Promise<unknown>) => {
     setSearchError(null)
@@ -71,33 +73,47 @@ export function StageExtraction() {
     await runSearch(refreshed.suggested_queries.map(({ query }) => query))
   }
 
-  const carryPaper = (paper: ExpPaper) => {
-    setSelectedPaperId(paper.id)
-    setJob(paper.title.slice(0, 200))
-    setDescription(paperAbstract(paper).slice(0, 2000))
-    setBuildError(null)
+  const dismissFailed = (paperId: string) => {
+    setFailedBuilds((current) => {
+      if (!(paperId in current)) return current
+      const next = { ...current }
+      delete next[paperId]
+      return next
+    })
   }
 
+  const carryPaper = (
+    paper: ExpPaper,
+    wording?: { name: string; description: string },
+  ) => {
+    setSelectedPaperId(paper.id)
+    setJob(wording?.name ?? paper.title.slice(0, 200))
+    setDescription(wording?.description ?? paperAbstract(paper).slice(0, 2000))
+    dismissFailed(paper.id)
+  }
+
+  // The editor frees immediately; the optimistic row in the Perspectives
+  // column carries the in-flight state and a failure lands there with Retry.
   const buildPerspective = async () => {
     if (!selectedPaper) return
-    setBuildError(null)
-    setBuildingPaperId(selectedPaper.id)
+    const paper = selectedPaper
+    const wording = { name: job, description }
+    setSelectedPaperId(null)
+    setJob("")
+    setDescription("")
     try {
-      await generatePerspective(selectedPaper.id, {
-        name: job,
-        description,
-      })
-      setSelectedPaperId(null)
-      setJob("")
-      setDescription("")
+      await generatePerspective(paper.id, wording)
     } catch (cause) {
-      setBuildError(
-        cause instanceof Error
-          ? cause.message
-          : "Could not build this Perspective.",
-      )
-    } finally {
-      setBuildingPaperId(null)
+      setFailedBuilds((current) => ({
+        ...current,
+        [paper.id]: {
+          ...wording,
+          error:
+            cause instanceof Error
+              ? cause.message
+              : "Could not build this Perspective.",
+        },
+      }))
     }
   }
 
@@ -310,7 +326,7 @@ export function StageExtraction() {
                 {session.papers.map((paper, index) => {
                   const abstract = paperAbstract(paper)
                   const open = openPaperId === paper.id
-                  const built = session.perspectives.some(
+                  const status = session.perspectives.find(
                     (perspective) => perspective.anchor_paper_id === paper.id,
                   )
                   return (
@@ -355,15 +371,18 @@ export function StageExtraction() {
                             size="sm"
                             disabled={
                               !abstract ||
-                              built ||
+                              status !== undefined ||
                               busy !== null ||
-                              atPerspectiveLimit ||
-                              buildingPaperId !== null
+                              atPerspectiveLimit
                             }
                             onClick={() => carryPaper(paper)}
                             className="mt-3"
                           >
-                            {built ? "Perspective built" : "Add to editor"}
+                            {status === undefined
+                              ? "Add to editor"
+                              : status.id.startsWith("optimistic:")
+                                ? "Adding…"
+                                : "Perspective built"}
                           </Button>
                         </div>
                       )}
@@ -395,7 +414,6 @@ export function StageExtraction() {
                     value={job}
                     onChange={(event) => setJob(event.target.value)}
                     maxLength={200}
-                    disabled={buildingPaperId !== null}
                     className="field mt-1 w-full px-3 py-2 text-[12.5px]"
                   />
                 </label>
@@ -408,7 +426,6 @@ export function StageExtraction() {
                     onChange={(event) => setDescription(event.target.value)}
                     maxLength={2000}
                     rows={8}
-                    disabled={buildingPaperId !== null}
                     className="field mt-1 w-full resize-y px-3 py-2 text-[12px] leading-relaxed"
                   />
                 </label>
@@ -418,26 +435,14 @@ export function StageExtraction() {
                   disabled={
                     !job.trim() ||
                     !description.trim() ||
-                    buildingPaperId !== null ||
                     atPerspectiveLimit ||
                     busy !== null
                   }
                   onClick={() => void buildPerspective()}
                   className="mt-3 w-full"
                 >
-                  {buildingPaperId === selectedPaper.id ? (
-                    <>
-                      <Spinner /> Building…
-                    </>
-                  ) : (
-                    "Build Perspective"
-                  )}
+                  Build Perspective
                 </Button>
-                {buildError && (
-                  <p role="alert" className="mt-2 text-[12px] text-[var(--red)]">
-                    {buildError}
-                  </p>
-                )}
               </div>
             ) : (
               <div className="flex min-h-[150px] items-center justify-center px-4 text-center">
@@ -452,7 +457,7 @@ export function StageExtraction() {
                 {session.perspectives.length} / {MAX_PERSPECTIVES}
               </span>
             </div>
-            {session.perspectives.length === 0 ? (
+            {session.perspectives.length === 0 && failedList.length === 0 ? (
               <div className="py-8 text-center">
                 <EmptyLine>No Perspectives built yet.</EmptyLine>
               </div>
@@ -523,6 +528,46 @@ export function StageExtraction() {
                       ) : (
                         "Source pending"
                       )}
+                    </div>
+                  </article>
+                ))}
+                {failedList.map(([paperId, failed]) => (
+                  <article
+                    key={`failed:${paperId}`}
+                    data-testid="failed-perspective"
+                    className="rounded-lg border border-[var(--line)] bg-[var(--panel)] px-3 py-2.5"
+                  >
+                    <h3 className="text-[12.5px] font-semibold leading-snug text-[var(--ink)]">
+                      {failed.name}
+                    </h3>
+                    <p
+                      role="alert"
+                      className="mt-1 text-[11px] leading-relaxed text-[var(--red)]"
+                    >
+                      {failed.error}
+                    </p>
+                    <div className="mt-2 flex gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={busy !== null}
+                        onClick={() => {
+                          const paper = session.papers.find(
+                            (item) => item.id === paperId,
+                          )
+                          if (paper) carryPaper(paper, failed)
+                          else dismissFailed(paperId)
+                        }}
+                      >
+                        Retry
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => dismissFailed(paperId)}
+                      >
+                        Dismiss
+                      </Button>
                     </div>
                   </article>
                 ))}

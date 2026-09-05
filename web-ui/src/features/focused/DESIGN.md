@@ -25,7 +25,7 @@ The desktop surface has three independently scrolling columns:
 
 1. The **Problem** column shows the problem, the four position fields, and five suggested searches.
 2. The **Papers** column shows a flat paper list. A paper expands its abstract inline.
-3. The **Perspective** column edits the selected paper's Job and Description, then builds the Perspective.
+3. The **Perspective** column edits the selected paper's Job and Description, then builds the Perspective. Building is optimistic: the editor clears at once, the new row shows **Adding…** until the server confirms, and further papers can be carried and built meanwhile. A failed build stays in the column with its error, **Retry** (which restores the wording to the editor), and **Dismiss**.
 
 One selected paper anchors one hidden literature cluster. The server derives Scope, Explanation, Approach, Significance, Framing, and Position from that cluster. The participant sees only the Perspective name, Description, anchor paper, and related-paper count. A study holds at most six Perspectives.
 

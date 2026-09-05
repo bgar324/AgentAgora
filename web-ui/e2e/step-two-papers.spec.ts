@@ -144,8 +144,11 @@ test("a paper expands inline and carries its abstract into an editable Perspecti
   await expect(job).toHaveValue("Resistance ecologist")
 })
 
-test("a build failure is shown beside the Perspective editor", async ({ page }) => {
-  await atStepTwo(page)
+test("a failed build stays in the Perspectives column and can be retried", async ({
+  page,
+}) => {
+  const { workspaceId } = await atStepTwo(page)
+  const paper = (await activeView(page, workspaceId)).active.papers[0]
   await carryPaper(page)
   await page.route(
     "**/api/focused/sessions/*/perspectives",
@@ -159,9 +162,16 @@ test("a build failure is shown beside the Perspective editor", async ({ page }) 
   )
 
   await page.getByRole("button", { name: "Build Perspective" }).click()
-  await expect(
-    page.getByTestId("perspective-editor").getByRole("alert"),
-  ).toHaveText("Perspective model unavailable.")
+  const failed = page.getByTestId("failed-perspective")
+  await expect(failed.getByRole("alert")).toHaveText(
+    "Perspective model unavailable.",
+  )
+  await expect(page.getByTestId("perspective-editor")).toContainText(
+    "Add a paper to start editing.",
+  )
+  await failed.getByRole("button", { name: "Retry" }).click()
+  await expect(page.getByLabel("Job", { exact: true })).toHaveValue(paper.title)
+  await expect(page.getByTestId("failed-perspective")).toHaveCount(0)
 })
 
 test("a structured API failure is readable", async ({ page }) => {
@@ -188,7 +198,7 @@ test("a structured API failure is readable", async ({ page }) => {
   )
 
   await page.getByRole("button", { name: "Build Perspective" }).click()
-  const alert = page.getByTestId("perspective-editor").getByRole("alert")
+  const alert = page.getByTestId("failed-perspective").getByRole("alert")
   await expect(alert).toHaveText(
     "cluster_id: Input should be a valid string",
   )
@@ -260,6 +270,35 @@ test("a paper add accepts an authoritative concurrent removal", async ({
   await expect(built.locator("article")).toHaveCount(1)
   const after = await activeView(page, workspaceId)
   expect(after.active.perspectives).toHaveLength(1)
+})
+
+test("a second paper can be queued while the first Perspective is still adding", async ({
+  page,
+}) => {
+  const { workspaceId } = await atStepTwo(page)
+  let releaseAdds: () => void = () => undefined
+  const addsHeld = new Promise<void>((resolve) => {
+    releaseAdds = resolve
+  })
+  await page.route(
+    "**/api/focused/sessions/*/perspectives",
+    async (route) => {
+      await addsHeld
+      await route.continue()
+    },
+  )
+
+  await carryPaper(page)
+  await page.getByRole("button", { name: "Build Perspective" }).click()
+  await carryPaper(page, 1)
+  await page.getByRole("button", { name: "Build Perspective" }).click()
+  const built = page.getByTestId("built-perspectives")
+  await expect(built.getByText("Adding…")).toHaveCount(2)
+  releaseAdds()
+  await expect(built.getByText("Adding…")).toHaveCount(0, { timeout: 30_000 })
+  await expect(built.locator("article")).toHaveCount(2)
+  const after = await activeView(page, workspaceId)
+  expect(after.active.perspectives).toHaveLength(2)
 })
 
 test("the researcher's wording is built below the editor", async ({ page }) => {
