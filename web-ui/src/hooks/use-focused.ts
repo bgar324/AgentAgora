@@ -640,13 +640,27 @@ export function useFocusedPanel() {
   )
 
   const discussNotepad = useCallback(
-    async (versionId: string, turns: number) => {
-      return notepadCall("Agents discussing", "discuss", {
-        method: "POST",
-        body: JSON.stringify({ version_id: versionId, turns }),
-      })
-    },
-    [notepadCall],
+    (versionId: string, turns: number) =>
+      exclusive("Agents discussing", async () => {
+        await flushNotepadEdits()
+        const path = `sessions/${sessionId}/notepad/discuss`
+        const init = {
+          method: "POST",
+          body: JSON.stringify({ version_id: versionId, turns: 1 }),
+        }
+        // One request per turn so each turn renders as it lands. Stop early
+        // when the agenda completes rather than asking for turns it can't give.
+        let view = await requestView(path, init)
+        for (let emitted = 1; emitted < turns; emitted += 1) {
+          const agenda = view.active.notepad?.versions.find(
+            (item) => item.id === versionId,
+          )?.agenda
+          if (agenda?.phase === "complete") break
+          view = await requestView(path, init)
+        }
+        return view.active
+      }),
+    [exclusive, flushNotepadEdits, requestView, sessionId],
   )
 
   const generateNotepadTopics = useCallback(async () => {

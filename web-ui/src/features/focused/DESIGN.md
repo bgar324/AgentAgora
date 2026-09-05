@@ -43,7 +43,7 @@ Selecting a topic prepares an editable chat question without replacing an existi
 
 Topics persist across Document versions, cleared chats, and reloads. Topics from removed Perspectives remain available. A new Perspective receives a topic without replacing existing topics. A generation failure leaves chat available and offers **Retry**. Discussion actions hold the busy state through pending Document saves and the subsequent command.
 
-For each Document field, every Perspective gives independent feedback before any Perspective compares the feedback. Every Perspective then gives one comparison. The agenda advances through Framing, Previous work, Methodology, and Expected results. A click emits exactly the selected number of turns and resumes from the persisted agenda.
+For each Document field, every Perspective gives independent feedback before any Perspective compares the feedback. Every Perspective then gives one comparison. The agenda advances through Framing, Previous work, Methodology, and Expected results. A click requests the selected number of turns one at a time, so each turn appears as it finishes; the click stops early if the agenda completes. A failure mid-way keeps the turns already recorded.
 
 A researcher question adds one researcher message and one reply from every active Perspective. The common agenda does not reset. A Perspective added later joins the current field. A completed review stops until the researcher starts another review.
 

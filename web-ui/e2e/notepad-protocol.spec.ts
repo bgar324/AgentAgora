@@ -182,6 +182,33 @@ test("the review emits the exact budget and resumes its four-element agenda", as
   await expect(page.getByText(/Reviewing Previous work · 0\/3/)).toBeVisible()
 })
 
+test("turns render one at a time while the click is still running", async ({
+  page,
+}) => {
+  await baselineWorkspace(page)
+  await openDiscussion(page)
+  const gates: Array<() => void> = []
+  await page.route("**/api/focused/sessions/*/notepad/discuss", async (route) => {
+    expect(route.request().postDataJSON().turns).toBe(1)
+    await new Promise<void>((resolve) => gates.push(resolve))
+    await route.continue()
+  })
+
+  await page.getByLabel("Turns").selectOption("3")
+  await page.getByRole("button", { name: "Let agents discuss" }).click()
+  await expect.poll(() => gates.length).toBe(1)
+  gates[0]()
+  await expect(page.getByTestId("notepad-turn-feedback")).toHaveCount(1)
+  await expect(page.getByRole("button", { name: "Let agents discuss" })).toBeDisabled()
+  await expect.poll(() => gates.length).toBe(2)
+  gates[1]()
+  await expect(page.getByTestId("notepad-turn-feedback")).toHaveCount(2)
+  await expect.poll(() => gates.length).toBe(3)
+  gates[2]()
+  await expect(page.getByTestId("notepad-turn-feedback")).toHaveCount(3)
+  await expect(page.getByRole("button", { name: "Let agents discuss" })).toBeEnabled()
+})
+
 test("one directed question gets one reply from every active Perspective", async ({
   page,
 }) => {
