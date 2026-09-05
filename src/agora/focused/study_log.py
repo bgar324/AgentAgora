@@ -29,6 +29,7 @@ class StudyAction(StrEnum):
     PERSPECTIVE_CREATE = "perspective.create"
     PERSPECTIVE_REMOVE = "perspective.remove"
     DISCUSSION_START = "discussion.start"
+    TOPICS_GENERATE = "topics.generate"
     DOCUMENT_EDIT = "document.edit"
     VERSION_CREATE = "version.create"
     VERSION_SWITCH = "version.switch"
@@ -73,6 +74,7 @@ ACTION_STAGES: Final[dict[StudyAction, StudyStage]] = {
     StudyAction.PERSPECTIVE_CREATE: StudyStage.PERSPECTIVES,
     StudyAction.PERSPECTIVE_REMOVE: StudyStage.PERSPECTIVES,
     StudyAction.DISCUSSION_START: StudyStage.DISCUSSION,
+    StudyAction.TOPICS_GENERATE: StudyStage.DISCUSSION,
     StudyAction.DOCUMENT_EDIT: StudyStage.DISCUSSION,
     StudyAction.VERSION_CREATE: StudyStage.DISCUSSION,
     StudyAction.VERSION_SWITCH: StudyStage.DISCUSSION,
@@ -94,7 +96,7 @@ _SAFE_DETAIL_KEYS: Final[dict[StudyAction, frozenset[str]]] = {
     StudyAction.DOCUMENT_EDIT: frozenset({"part", "text_characters"}),
     StudyAction.VERSION_CREATE: frozenset({"copy_current"}),
     StudyAction.DISCUSSION_RUN: frozenset({"turns_requested"}),
-    StudyAction.QUESTION_SEND: frozenset({"message_characters"}),
+    StudyAction.QUESTION_SEND: frozenset({"message_characters", "topic_id"}),
 }
 
 _OBJECT_ARGUMENTS: Final[
@@ -272,6 +274,12 @@ def build_study_event(
         else:
             object_type = None
 
+    details = safe_event_details(action, arguments)
+    if action == StudyAction.QUESTION_SEND and outcome == StudyOutcome.SUCCESS:
+        topic_id = arguments.get("topic_id")
+        if isinstance(topic_id, str) and topic_id:
+            details["topic_id"] = topic_id
+
     return StudyEvent(
         event_id=event_id,
         workspace_id=workspace_id,
@@ -288,5 +296,5 @@ def build_study_event(
         object_type=object_type,
         object_id=object_id,
         error_code=error_code,
-        details=safe_event_details(action, arguments),
+        details=details,
     )

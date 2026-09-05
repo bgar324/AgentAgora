@@ -121,6 +121,7 @@ class NotepadDiscussRequest(RequestModel):
 class NotepadAskRequest(RequestModel):
     version_id: str = Field(min_length=1, max_length=200)
     message: str = Field(min_length=1, max_length=4000)
+    topic_id: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class NotepadVersionCommand(RequestModel):
@@ -244,6 +245,11 @@ async def start_notepad(session_id: str, service: Service) -> WorkspaceView:
     return await _acall_view(service, service.start_notepad(session_id))
 
 
+@focused_router.post("/sessions/{session_id}/notepad/topics")
+async def generate_notepad_topics(session_id: str, service: Service) -> WorkspaceView:
+    return await _acall_view(service, service.generate_notepad_topics(session_id))
+
+
 @focused_router.patch("/sessions/{session_id}/notepad/part")
 async def edit_notepad_part(
     session_id: str,
@@ -328,6 +334,7 @@ async def ask_notepad(
             session_id,
             version_id=request.version_id,
             message=request.message,
+            topic_id=request.topic_id,
         ),
     )
 

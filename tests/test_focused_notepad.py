@@ -20,6 +20,7 @@ from agora.focused.models import (
 )
 from agora.focused.persistence import FocusedPersistence
 from agora.focused.service import FocusedPanelService, SessionError
+from agora.focused.study_log import StudyAction, StudyOutcome
 
 PROBLEM = "Should antibiotics be prescribed broadly?"
 POSITION = {
@@ -599,5 +600,179 @@ def test_feedback_text_never_exposes_internal_paper_ids(monkeypatch) -> None:
         assert public is not None
         assert "p1" not in public.turns[-1].text
         assert public.turns[-1].citations == []
+
+    asyncio.run(go())
+
+
+def test_topic_exchange_preserves_draft_agenda_and_survives_reload() -> None:
+    async def go() -> None:
+        connection = sqlite3.connect(":memory:", check_same_thread=False)
+        connection.row_factory = sqlite3.Row
+        persistence = FocusedPersistence(connection)
+        service, session_id, workspace_id = await _panel(persistence=persistence)
+        await service.generate_notepad_topics(session_id)
+        topics = _notepad(service, session_id).topics
+        assert {topic.perspective_id for topic in topics} == {
+            "persp-1",
+            "persp-2",
+            "persp-3",
+        }
+        before_generation = service.workspace_view(workspace_id)
+        await service.generate_notepad_topics(session_id)
+        assert service.workspace_view(workspace_id) == before_generation
+
+        version = _version(service, session_id)
+        await service.discuss_notepad(session_id, version_id=version.id, turns=1)
+        agenda = version.agenda.model_copy(deep=True)
+        doc = version.doc.model_copy(deep=True)
+        topic = topics[0]
+        await service.ask_notepad(
+            session_id,
+            version_id=version.id,
+            message=topic.question,
+            topic_id=topic.id,
+        )
+        exchange = _notepad(service, session_id).turns[-4:]
+        assert exchange[0].text == topic.question
+        assert {turn.author_id for turn in exchange[1:]} == {
+            "persp-1",
+            "persp-2",
+            "persp-3",
+        }
+        assert all(turn.topic_id == topic.id for turn in exchange)
+        assert all(turn.reply_to_turn_id == exchange[0].id for turn in exchange[1:])
+        assert version.doc == doc
+        assert version.agenda.model_dump(exclude={"turns_emitted"}) == (
+            agenda.model_dump(exclude={"turns_emitted"})
+        )
+
+        await service.add_notepad_version(session_id, copy_current=True)
+        await service.clear_notepad_chat(session_id)
+        await service.finish_notepad_study(session_id)
+        reloaded = FocusedPanelService(persistence=persistence)
+        restored = _notepad(reloaded, session_id)
+        assert restored.topics == topics
+        assert [
+            turn for turn in restored.turns if turn.topic_id == topic.id
+        ] == exchange
+        assert restored.final_snapshot is not None
+        assert restored.final_snapshot.versions[0].doc == doc
+        with pytest.raises(SessionError, match="read-only"):
+            await reloaded.generate_notepad_topics(session_id)
+
+    asyncio.run(go())
+
+
+def test_topic_from_another_study_is_rejected_before_agent_work(monkeypatch) -> None:
+    async def go() -> None:
+        service, session_id, workspace_id = await _panel()
+        other_service, other_session_id, _ = await _panel()
+        await other_service.generate_notepad_topics(other_session_id)
+        foreign_topic = _notepad(other_service, other_session_id).topics[0]
+        before = service.workspace_view(workspace_id)
+
+        async def should_not_run(*args, **kwargs):
+            raise AssertionError("an unknown topic reached an agent")
+
+        monkeypatch.setattr(agents, "reply_to_user", should_not_run)
+        with pytest.raises(SessionError, match="Unknown discussion topic") as error:
+            await service.ask_notepad(
+                session_id,
+                version_id=_version(service, session_id).id,
+                message=foreign_topic.question,
+                topic_id=foreign_topic.id,
+            )
+        assert error.value.status == 404
+        assert service.workspace_view(workspace_id) == before
+
+    asyncio.run(go())
+
+
+def test_failed_topic_generation_is_retryable_without_resetting_chat(
+    monkeypatch,
+) -> None:
+    async def go() -> None:
+        service, session_id, workspace_id = await _panel()
+        await service.discuss_notepad(
+            session_id, version_id=_version(service, session_id).id, turns=1
+        )
+        before = service.workspace_view(workspace_id)
+
+        async def unavailable(**kwargs):
+            raise agents.FocusedAgentError("model unavailable")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(agents, "generate_discussion_topics", unavailable)
+            with pytest.raises(agents.FocusedAgentError):
+                await service.generate_notepad_topics(session_id)
+        assert service.workspace_view(workspace_id) == before
+        await service.generate_notepad_topics(session_id)
+        after = service.workspace_view(workspace_id)
+        assert after.active.notepad.turns == before.active.notepad.turns
+        assert (
+            _version(service, session_id).doc == before.active.notepad.versions[0].doc
+        )
+
+    asyncio.run(go())
+
+
+def test_topic_actions_keep_research_content_out_of_study_logs(monkeypatch) -> None:
+    async def go() -> None:
+        connection = sqlite3.connect(":memory:", check_same_thread=False)
+        connection.row_factory = sqlite3.Row
+        persistence = FocusedPersistence(connection)
+        try:
+            service, session_id, _ = await _panel(persistence=persistence)
+
+            async def unavailable(**kwargs):
+                raise agents.FocusedAgentError("PRIVATE MODEL ERROR")
+
+            with monkeypatch.context() as patch:
+                patch.setattr(agents, "generate_discussion_topics", unavailable)
+                with pytest.raises(agents.FocusedAgentError):
+                    await service.generate_notepad_topics(session_id)
+            await service.generate_notepad_topics(session_id)
+            topic = _notepad(service, session_id).topics[0]
+            version_id = _version(service, session_id).id
+            message = "PRIVATE RESEARCHER QUESTION"
+            await service.ask_notepad(
+                session_id,
+                version_id=version_id,
+                message=message,
+                topic_id=topic.id,
+            )
+            with pytest.raises(SessionError, match="Unknown discussion topic"):
+                await service.ask_notepad(
+                    session_id,
+                    version_id=version_id,
+                    message=message,
+                    topic_id="PRIVATE INVALID TOPIC ID",
+                )
+            events = [
+                event
+                for event in persistence.load_study_events()
+                if event.action
+                in {StudyAction.TOPICS_GENERATE, StudyAction.QUESTION_SEND}
+            ]
+            assert [(event.action, event.outcome) for event in events] == [
+                (StudyAction.TOPICS_GENERATE, StudyOutcome.FAILURE),
+                (StudyAction.TOPICS_GENERATE, StudyOutcome.SUCCESS),
+                (StudyAction.QUESTION_SEND, StudyOutcome.SUCCESS),
+                (StudyAction.QUESTION_SEND, StudyOutcome.FAILURE),
+            ]
+            assert events[0].error_code == "model_failure"
+            assert events[0].revision_before == events[0].revision_after
+            assert events[2].details == {
+                "message_characters": len(message),
+                "topic_id": topic.id,
+            }
+            assert events[2].object_id == version_id
+            assert "topic_id" not in events[3].details
+            assert all("PRIVATE" not in event.model_dump_json() for event in events)
+            assert all(
+                topic.question not in event.model_dump_json() for event in events
+            )
+        finally:
+            connection.close()
 
     asyncio.run(go())

@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 import re
 from collections import Counter
-from typing import TYPE_CHECKING, TypeVar
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, NamedTuple, TypeVar
 
 from pydantic import BaseModel
 
@@ -17,6 +18,8 @@ from agora.focused.models import (
     ClusterNaming,
     ClusterNamings,
     DerivedQuestions,
+    DiscussionTopicDraft,
+    DiscussionTopicDrafts,
     ExpPaper,
     Facet,
     FacetEvidence,
@@ -1197,3 +1200,431 @@ async def summarize_notepad_turns(
             dict.fromkeys(citation for turn in turns for citation in turn.citations)
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Proposal-derived discussion topics
+# ---------------------------------------------------------------------------
+#
+# Proposal-derived topics stay provisional and cite the Perspective's abstracts.
+
+TOPIC_TITLE_WORDS = 10
+TOPIC_QUESTION_WORDS = 25
+TOPIC_HYPOTHESIS_WORDS = 30
+TOPIC_RATIONALE_WORDS = 40
+TOPIC_OBSERVATIONS = 8
+TOPIC_OBSERVATIONS_PER_PAPER = 2
+# Six Kat-sized proposals in one batch overrun the 2k reasoning default.
+TOPIC_MAX_OUTPUT_TOKENS = 6000
+
+
+class _Observation(NamedTuple):
+    """One bounded abstract statement a topic is allowed to cite."""
+
+    paper_id: str
+    text: str
+
+
+def _collapse(text: str) -> str:
+    return " ".join((text or "").split())
+
+
+def _topic_observations(
+    perspective: Perspective, papers: list[ExpPaper]
+) -> list[_Observation]:
+    """Select verbatim statements from this Perspective's papers only."""
+    by_id = {paper.id: paper for paper in papers}
+    source_ids = dict.fromkeys([perspective.anchor_paper_id, *perspective.sources])
+    sentences = {
+        paper_id: _abstract_sentences(by_id[paper_id])
+        for paper_id in source_ids
+        if paper_id in by_id
+    }
+    observations: list[_Observation] = []
+    per_paper: Counter[str] = Counter()
+    seen: set[str] = set()
+    size = 0
+
+    def push(paper_id: str, text: str) -> None:
+        nonlocal size
+        statement = _collapse(text)
+        key = statement.casefold()
+        if (
+            not statement
+            or key in seen
+            or per_paper[paper_id] >= TOPIC_OBSERVATIONS_PER_PAPER
+            or len(observations) >= TOPIC_OBSERVATIONS
+            or size + len(statement) > 6000
+        ):
+            return
+        seen.add(key)
+        per_paper[paper_id] += 1
+        size += len(statement)
+        observations.append(_Observation(paper_id=paper_id, text=statement))
+
+    for evidence in perspective.facets.values():
+        for sentence in sentences.get(evidence.paper_id, []):
+            if _collapse(sentence) == _collapse(evidence.sentence or evidence.text):
+                push(evidence.paper_id, sentence)
+                break
+    depth = max((len(items) for items in sentences.values()), default=0)
+    for index in range(depth):
+        for paper_id, items in sentences.items():
+            if index < len(items):
+                push(paper_id, items[index])
+        if len(observations) >= TOPIC_OBSERVATIONS:
+            break
+    return observations
+
+
+def _topic_citable_ids(observations: list[_Observation]) -> list[str]:
+    """Only the papers whose statements were actually supplied."""
+    return list(dict.fromkeys(item.paper_id for item in observations))
+
+
+def _question_signature(question: str) -> frozenset[str]:
+    return frozenset(_content_words(question))
+
+
+def _questions_repeat(left: frozenset[str], right: frozenset[str]) -> bool:
+    """Whether two questions ask substantively the same thing."""
+    if not left or not right:
+        return left == right
+    return len(left & right) / len(left | right) >= 0.8
+
+
+TOPIC_SYSTEM = """\
+You propose the discussion topics a researcher could take up with each
+scientific Perspective on a shared research problem. A topic is an
+evidence-motivated proposal, not an established finding.
+
+Write exactly one topic per Perspective, copying its perspective_id verbatim:
+- title: a 1 to 10 word label for a narrow sidebar.
+- question: one scientific question of at most 25 words, ending in a question
+  mark, that this Perspective's own evidence makes worth investigating.
+- hypothesis: a tentative, falsifiable expectation of at most 30 words. Keep it
+  provisional wherever the abstracts do not establish a general relationship.
+- rationale: at most 40 words on what the supplied observations already report
+  that motivates the question.
+- citations: the paper IDs of the observations you used, taken only from that
+  Perspective's own observation block.
+
+Every question must be substantively distinct from the other questions here and
+from the existing topics, and must follow from that Perspective's evidence
+rather than restate the research problem. The researcher's position is context
+for relevance, not evidence: never cite it, and never propose editing their
+document. Do not mention paper IDs outside the citations field."""
+
+
+def _topics_user_block(
+    problem: str,
+    position: NotepadDoc | None,
+    perspectives: list[Perspective],
+    observations: dict[str, list[_Observation]],
+    existing_topics: Sequence[DiscussionTopicDraft],
+) -> str:
+    blocks = [
+        f"### {perspective.id} — {perspective.name}\n"
+        f"Orientation: {perspective.summary or 'Not summarized.'}\n"
+        f"Facets:\n{_facets_block(perspective) or '- none established'}\n"
+        "Observations (cite these paper IDs only):\n"
+        + "\n".join(
+            f"- [{item.paper_id}] {item.text}" for item in observations[perspective.id]
+        )
+        for perspective in perspectives
+    ]
+    existing = (
+        "\n".join(f"- {topic.title}: {topic.question}" for topic in existing_topics)
+        or "(none yet)"
+    )
+    return (
+        f"## RESEARCH PROBLEM\n{problem}"
+        + _position_block(position)
+        + f"\n\n## EXISTING TOPICS (do not repeat these)\n{existing}"
+        + "\n\n## PERSPECTIVES\n"
+        + "\n\n".join(blocks)
+    )
+
+
+class _TopicFrame(NamedTuple):
+    label: str
+    question: str
+    hypothesis: str
+
+
+# Demo questions use complete sentences rather than splicing abstract clauses.
+_TOPIC_FRAMES: tuple[_TopicFrame, ...] = (
+    _TopicFrame(
+        "Generalizability",
+        "do the cited findings hold beyond the populations and conditions studied?",
+        "The reported effect will weaken in populations with different baseline characteristics.",
+    ),
+    _TopicFrame(
+        "Mechanism",
+        "which alternative mechanism could explain the reported association?",
+        "Adjusting for the competing mechanism will reduce the reported association.",
+    ),
+    _TopicFrame(
+        "Measurement",
+        "would a different outcome measure change the conclusion?",
+        "An independent outcome measure will show a smaller effect than the original measure.",
+    ),
+    _TopicFrame(
+        "Counterevidence",
+        "what observation would contradict the current interpretation of the evidence?",
+        "The reported association will disappear when the main alternative explanation is controlled.",
+    ),
+    _TopicFrame(
+        "Tradeoffs",
+        "when would the reported harms outweigh the proposed benefits?",
+        "The balance will favor a narrower intervention in groups with lower baseline risk.",
+    ),
+    _TopicFrame(
+        "Replication",
+        "which finding should be replicated before applying it to the research problem?",
+        "An independent sample using the same protocol will reproduce the direction of the reported effect.",
+    ),
+)
+
+
+def _demo_topic_drafts(
+    perspectives: list[Perspective],
+    observations: dict[str, list[_Observation]],
+    existing_topics: Sequence[DiscussionTopicDraft],
+) -> list[DiscussionTopicDraft]:
+    drafts = []
+    seen = {_collapse(topic.question).casefold() for topic in existing_topics}
+    for index, perspective in enumerate(perspectives, start=len(existing_topics)):
+        name = " ".join(perspective.name.replace("?", "").split()[:6])[:120]
+        for offset in range(len(_TOPIC_FRAMES)):
+            frame = _TOPIC_FRAMES[(index + offset) % len(_TOPIC_FRAMES)]
+            question = f'For "{name}", {frame.question}'
+            if question.casefold() not in seen:
+                break
+        else:
+            # Demo has six question types per label; never silently repeat one.
+            raise FocusedAgentError(f"No unused demo topics remain for {name}.")
+        seen.add(question.casefold())
+        found = observations[perspective.id]
+        words = found[0].text.split()
+        excerpt = " ".join(words[:28])[:600]
+        if excerpt != found[0].text:
+            excerpt += "..."
+        drafts.append(
+            DiscussionTopicDraft(
+                perspective_id=perspective.id,
+                title=f"{name}: {frame.label.lower()}",
+                question=question,
+                hypothesis=frame.hypothesis,
+                rationale=(
+                    f'The abstract reports: "{excerpt}" '
+                    f"This motivates examining {frame.label.lower()}."
+                ),
+                citations=[found[0].paper_id],
+            )
+        )
+    return drafts
+
+
+def _validate_topic_drafts(
+    drafts: Sequence[DiscussionTopicDraft],
+    perspectives: list[Perspective],
+    observations: dict[str, list[_Observation]],
+    existing_topics: Sequence[DiscussionTopicDraft],
+    *,
+    known_paper_ids: set[str],
+) -> tuple[list[DiscussionTopicDraft], list[str]]:
+    """Accepted drafts plus every reason the set is not usable as returned."""
+    by_id = {perspective.id: perspective for perspective in perspectives}
+    signatures = [_question_signature(topic.question) for topic in existing_topics]
+    accepted: dict[str, DiscussionTopicDraft] = {}
+    problems: list[str] = []
+    paper_reference = re.compile(
+        r"(?<!\w)(?:"
+        + "|".join(re.escape(key) for key in known_paper_ids)
+        + r")(?!\w)",
+        re.IGNORECASE,
+    )
+
+    for draft in drafts:
+        perspective_id = _collapse(draft.perspective_id)
+        perspective = by_id.get(perspective_id)
+        if perspective is None:
+            problems.append(
+                f"perspective_id {draft.perspective_id!r} was not requested"
+            )
+            continue
+        if perspective_id in accepted:
+            problems.append(f"{perspective.name}: more than one topic")
+            continue
+
+        label = perspective.name
+        title = _collapse(draft.title)
+        question = _collapse(draft.question)
+        hypothesis = _collapse(draft.hypothesis)
+        rationale = _collapse(draft.rationale)
+        for field, value in (
+            ("title", title),
+            ("question", question),
+            ("hypothesis", hypothesis),
+            ("rationale", rationale),
+        ):
+            if paper_reference.search(value):
+                problems.append(f"{label}: keep paper IDs in citations, not {field}")
+
+        if not 1 <= len(title.split()) <= TOPIC_TITLE_WORDS:
+            problems.append(f"{label}: title must be 1-{TOPIC_TITLE_WORDS} words")
+        if (
+            question.count("?") != 1
+            or not question.endswith("?")
+            or not question.rstrip("?").strip()
+        ):
+            problems.append(f"{label}: write exactly one scientific question")
+        if not 1 <= len(question.split()) <= TOPIC_QUESTION_WORDS:
+            problems.append(f"{label}: question must be 1-{TOPIC_QUESTION_WORDS} words")
+        if not 1 <= len(hypothesis.split()) <= TOPIC_HYPOTHESIS_WORDS:
+            problems.append(
+                f"{label}: hypothesis must be 1-{TOPIC_HYPOTHESIS_WORDS} words"
+            )
+        if "?" in hypothesis:
+            problems.append(f"{label}: hypothesis must be a prediction, not a question")
+        if not 1 <= len(rationale.split()) <= TOPIC_RATIONALE_WORDS:
+            problems.append(
+                f"{label}: rationale must be 1-{TOPIC_RATIONALE_WORDS} words"
+            )
+
+        citable = _topic_citable_ids(observations[perspective_id])
+        cited = [
+            citation
+            for citation in dict.fromkeys(
+                _collapse(citation) for citation in draft.citations
+            )
+            if citation
+        ]
+        unknown = [citation for citation in cited if citation not in citable]
+        if unknown:
+            problems.append(
+                f"{label}: {', '.join(unknown)} is not among its supplied observations"
+            )
+        cited = [citation for citation in cited if citation in citable]
+        if not cited:
+            problems.append(f"{label}: cite at least one supplied paper ID")
+
+        signature = _question_signature(question)
+        if any(_questions_repeat(signature, prior) for prior in signatures):
+            problems.append(f"{label}: question repeats another topic")
+        signatures.append(signature)
+
+        if cited:
+            accepted[perspective_id] = draft.model_copy(
+                update={
+                    "perspective_id": perspective_id,
+                    "title": title,
+                    "question": question,
+                    "hypothesis": hypothesis,
+                    "rationale": rationale,
+                    "citations": cited,
+                }
+            )
+
+    uncovered = [
+        perspective.name
+        for perspective in perspectives
+        if perspective.id not in accepted
+    ]
+    if uncovered:
+        problems.append("no topic for: " + ", ".join(uncovered))
+    return (
+        [
+            accepted[perspective.id]
+            for perspective in perspectives
+            if perspective.id in accepted
+        ],
+        problems,
+    )
+
+
+async def generate_discussion_topics(
+    *,
+    problem: str,
+    perspectives: list[Perspective],
+    papers: list[ExpPaper],
+    position: NotepadDoc | None = None,
+    existing_topics: Sequence[DiscussionTopicDraft] = (),
+    provider: FocusedProvider | None = None,
+) -> list[DiscussionTopicDraft]:
+    """One evidence-motivated proposal per requested Perspective.
+
+    Live generation never falls back to invented topics: an unusable set after
+    one bounded correction pass is a `FocusedAgentError` the researcher retries.
+    """
+    if not perspectives:
+        return []
+    observations = {
+        perspective.id: _topic_observations(perspective, papers)
+        for perspective in perspectives
+    }
+    ungrounded = [
+        perspective.name
+        for perspective in perspectives
+        if not observations[perspective.id]
+    ]
+    if ungrounded:
+        raise FocusedAgentError(
+            "discussion topics must cite abstracts; no abstract evidence for: "
+            + ", ".join(ungrounded)
+        )
+    if provider is None:
+        return _demo_topic_drafts(perspectives, observations, existing_topics)
+
+    user = _topics_user_block(
+        problem, position, perspectives, observations, existing_topics
+    )
+    parsed = await _structured(
+        provider,
+        TOPIC_SYSTEM,
+        user,
+        DiscussionTopicDrafts,
+        task=FocusedTask.generate_discussion_topics,
+        temperature=0.3,
+        max_output_tokens=TOPIC_MAX_OUTPUT_TOKENS,
+    )
+    known_paper_ids = {paper.id for paper in papers}
+    topics, problems = _validate_topic_drafts(
+        list(parsed.topics) if parsed else [],
+        perspectives,
+        observations,
+        existing_topics,
+        known_paper_ids=known_paper_ids,
+    )
+    if not problems:
+        return topics
+
+    rejected = (
+        DiscussionTopicDrafts(topics=list(parsed.topics)).model_dump_json()
+        if parsed and parsed.topics
+        else "(no topics returned)"
+    )
+    corrected = await _structured(
+        provider,
+        TOPIC_SYSTEM,
+        f"{user}\n\n## REJECTED ATTEMPT\n{rejected}\n\n## FIX THESE PROBLEMS\n"
+        + "\n".join(f"- {reason}" for reason in problems)
+        + "\n\nReturn the complete corrected set, one topic per Perspective.",
+        DiscussionTopicDrafts,
+        task=FocusedTask.generate_discussion_topics,
+        temperature=0.2,
+        max_output_tokens=TOPIC_MAX_OUTPUT_TOKENS,
+    )
+    topics, problems = _validate_topic_drafts(
+        list(corrected.topics) if corrected else [],
+        perspectives,
+        observations,
+        existing_topics,
+        known_paper_ids=known_paper_ids,
+    )
+    if problems:
+        raise FocusedAgentError(
+            "discussion topic generation failed: " + "; ".join(problems)
+        )
+    return topics

@@ -18,6 +18,7 @@ class FocusedTask(StrEnum):
     name_clusters = "name_clusters"
     extract_cluster_facets = "extract_cluster_facets"
     derive_framing = "derive_framing"
+    generate_discussion_topics = "generate_discussion_topics"
     reply_to_user = "reply_to_user"
     review_draft_element = "review_draft_element"
     compare_draft_feedback = "compare_draft_feedback"
@@ -34,6 +35,7 @@ TASK_ROLES: Final = MappingProxyType(
         FocusedTask.name_clusters: FocusedModelRole.corpus,
         FocusedTask.extract_cluster_facets: FocusedModelRole.corpus,
         FocusedTask.derive_framing: FocusedModelRole.reasoning,
+        FocusedTask.generate_discussion_topics: FocusedModelRole.reasoning,
         FocusedTask.reply_to_user: FocusedModelRole.reasoning,
         FocusedTask.review_draft_element: FocusedModelRole.reasoning,
         FocusedTask.compare_draft_feedback: FocusedModelRole.reasoning,

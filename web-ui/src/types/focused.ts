@@ -101,6 +101,17 @@ export interface NotepadVersion {
   created_at: string
 }
 
+export interface DiscussionTopic {
+  id: string
+  perspective_id: string
+  title: string
+  question: string
+  hypothesis: string
+  rationale: string
+  citations: string[]
+  created_at: string
+}
+
 export interface NotepadTurn {
   id: string
   version_id: string
@@ -120,6 +131,7 @@ export interface NotepadTurn {
   part: NotepadPart | null
   comparison_cycle: number | null
   reply_to_turn_id: string | null
+  topic_id: string | null
   created_at: string
 }
 
@@ -133,6 +145,7 @@ export interface NotepadState {
   versions: NotepadVersion[]
   active_version_id: string | null
   turns: NotepadTurn[]
+  topics: DiscussionTopic[]
   in_chat: string[]
   final_snapshot: NotepadFinalSnapshot | null
 }

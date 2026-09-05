@@ -25,6 +25,7 @@ import {
   MAX_PERSPECTIVES,
   NOTEPAD_LABELS,
   NOTEPAD_PARTS,
+  type DiscussionTopic,
   type NotepadPart,
   type NotepadState,
   type NotepadTurn,
@@ -39,8 +40,6 @@ const PART_PLACEHOLDERS: Record<NotepadPart, string> = {
   method: "How you would go about it.",
   expected: "What you expect to find, and why it would matter.",
 }
-
-type RegisterFlush = (flush: () => Promise<void>) => () => void
 
 function ErrorLine({ children }: { children: string }) {
   return (
@@ -58,7 +57,6 @@ function PartField({
   onCommit,
   onStage,
   onFocus,
-  registerFlush,
   disabled,
   readOnly,
 }: {
@@ -73,7 +71,6 @@ function PartField({
   ) => Promise<unknown>
   onStage: (versionId: string, part: NotepadPart, text: string) => void
   onFocus: (part: NotepadPart) => void
-  registerFlush: RegisterFlush
   disabled: boolean
   readOnly: boolean
 }) {
@@ -123,7 +120,6 @@ function PartField({
     return operation
   }, [part, versionId])
 
-  useEffect(() => registerFlush(flush), [flush, registerFlush])
   useEffect(
     () => () => {
       window.clearTimeout(timer.current)
@@ -164,14 +160,213 @@ function PartField({
   )
 }
 
-function NotepadColumn({
+type TopicSelection = { topicId: string; seed: number }
+
+function TopicRow({
+  topic,
+  perspective,
+  selected,
+  disabled,
+  readOnly,
+  onSelect,
+}: {
+  topic: DiscussionTopic
+  perspective: Perspective | undefined
+  selected: boolean
+  disabled: boolean
+  readOnly: boolean
+  onSelect: () => void
+}) {
+  return (
+    <li>
+      <button
+        type="button"
+        data-testid="notepad-topic"
+        aria-pressed={readOnly ? undefined : selected}
+        aria-expanded={readOnly ? selected : undefined}
+        disabled={disabled}
+        onClick={onSelect}
+        className="w-full rounded-lg border px-2.5 py-2 text-left transition-colors disabled:cursor-default"
+        style={{
+          borderColor: selected ? "var(--line-strong)" : "var(--line)",
+          background: selected
+            ? "color-mix(in srgb, var(--node) 5%, transparent)"
+            : "transparent",
+        }}
+      >
+        <span className="flex items-baseline gap-1.5">
+          <UserRound
+            aria-hidden
+            size={11}
+            strokeWidth={2.2}
+            style={{ color: perspective?.color ?? "var(--mute)" }}
+          />
+          <span className="min-w-0 flex-1 break-words text-[12px] font-medium">
+            {topic.title}
+          </span>
+        </span>
+        <span className="mt-0.5 block break-words text-[11px] leading-relaxed text-[var(--ink-2)]">
+          {topic.question}
+        </span>
+        <span className="mt-0.5 block break-words text-[10.5px] text-[var(--mute)]">
+          {perspective ? perspective.name : "Perspective no longer in the chat"}
+        </span>
+        {readOnly && selected ? (
+          <span className="mt-2 block border-t border-[var(--line)] pt-2 text-[11px] leading-relaxed">
+            <span className="block break-words">
+              {`Tentative hypothesis. ${topic.hypothesis}`}
+            </span>
+            <span className="mt-1 block break-words text-[var(--ink-2)]">
+              {topic.rationale}
+            </span>
+          </span>
+        ) : null}
+      </button>
+    </li>
+  )
+}
+
+function TopicList({
+  session,
   notepad,
   busy,
+  selectedTopicId,
+  onSelect,
+}: {
+  session: SessionState
+  notepad: NotepadState
+  busy: string | null
+  selectedTopicId: string | null
+  onSelect: (topicId: string) => void
+}) {
+  const generateNotepadTopics = useFocusedPanel().generateNotepadTopics
+  const [error, setError] = useState<string | null>(null)
+  const attempted = useRef(new Set<string>())
+  const finished = notepad.final_snapshot !== null
+  const generating = busy === "Generating topics"
+  const topics = useMemo(() => notepad.topics ?? [], [notepad.topics])
+  const perspectives = useMemo(
+    () =>
+      session.perspectives.filter(
+        (perspective) => !perspective.id.startsWith("optimistic:"),
+      ),
+    [session.perspectives],
+  )
+  const covered = useMemo(
+    () => new Set(topics.map((topic) => topic.perspective_id)),
+    [topics],
+  )
+  const missing = perspectives.filter(
+    (perspective) => !covered.has(perspective.id),
+  )
+  const signature = missing.map((perspective) => perspective.id).join(",")
+  const ordered = useMemo(() => {
+    const rank = new Map(
+      perspectives.map((perspective, index) => [perspective.id, index]),
+    )
+    return [...topics].sort((left, right) => {
+      const leftRank = rank.get(left.perspective_id) ?? perspectives.length
+      const rightRank = rank.get(right.perspective_id) ?? perspectives.length
+      if (leftRank !== rightRank) return leftRank - rightRank
+      return left.created_at < right.created_at ? -1 : 1
+    })
+  }, [perspectives, topics])
+
+  const generate = useCallback(() => {
+    setError(null)
+    void generateNotepadTopics().catch((cause: unknown) =>
+      setError(
+        cause instanceof Error ? cause.message : "Could not suggest topics",
+      ),
+    )
+  }, [generateNotepadTopics])
+
+  // One automatic attempt per set of uncovered Perspectives. A failure keeps
+  // the signature marked so the surface offers Retry instead of looping.
+  useEffect(() => {
+    if (finished || signature === "" || busy !== null) return
+    if (attempted.current.has(signature)) return
+    attempted.current.add(signature)
+    generate()
+  }, [busy, finished, generate, signature])
+
+  const showAction = !finished && (error !== null || missing.length > 0)
+
+  return (
+    <div data-testid="notepad-topics">
+      <div className="flex items-baseline justify-between gap-2">
+        <SectionLabel>Discussion topics</SectionLabel>
+        {showAction ? (
+          <button
+            type="button"
+            data-testid="notepad-topics-generate"
+            disabled={busy !== null}
+            onClick={generate}
+            className="inline-flex items-center gap-1 rounded-md border border-[var(--line)] px-2 py-0.5 text-[10.5px] font-medium text-[var(--ink-2)] hover:border-[var(--line-strong)] disabled:opacity-40"
+          >
+            {generating ? <Spinner className="size-3" /> : null}
+            {error !== null
+              ? "Retry"
+              : ordered.length === 0
+                ? "Suggest topics"
+                : "Suggest more"}
+          </button>
+        ) : null}
+      </div>
+      {ordered.length === 0 ? (
+        <p className="mt-1.5 text-[11px] leading-relaxed text-[var(--mute)]">
+          {generating
+            ? "Generating topics from the retrieved papers."
+            : perspectives.length === 0
+              ? "Build a Perspective to get topics."
+              : "No topics yet."}
+        </p>
+      ) : (
+        <ul className="mt-1.5 max-h-[280px] space-y-1.5 overflow-y-auto pr-1">
+          {ordered.map((topic) => (
+            <TopicRow
+              key={topic.id}
+              topic={topic}
+              perspective={perspectives.find(
+                (perspective) => perspective.id === topic.perspective_id,
+              )}
+              selected={topic.id === selectedTopicId}
+              disabled={busy !== null}
+              readOnly={finished}
+              onSelect={() => onSelect(topic.id)}
+            />
+          ))}
+        </ul>
+      )}
+      {generating && ordered.length > 0 ? (
+        <p className="mt-1 text-[10.5px] text-[var(--mute)]">
+          Adding topics for the newer Perspectives.
+        </p>
+      ) : null}
+      {error ? <ErrorLine>{error}</ErrorLine> : null}
+      <p className="mt-1 text-[10.5px] leading-relaxed text-[var(--mute)]">
+        {finished
+          ? "Proposals from this study. The topics stay with the final output."
+          : "Proposals to explore, not findings. Select one to prepare a question."}
+      </p>
+    </div>
+  )
+}
+
+function NotepadColumn({
+  session,
+  notepad,
+  busy,
+  selectedTopicId,
+  onTopicSelect,
   onPartFocus,
   onFinish,
 }: {
+  session: SessionState
   notepad: NotepadState
   busy: string | null
+  selectedTopicId: string | null
+  onTopicSelect: (topicId: string) => void
   onPartFocus: (part: NotepadPart) => void
   onFinish: () => void
 }) {
@@ -179,7 +374,6 @@ function NotepadColumn({
   const drafts = useFocusedStore((state) => state.notepadDrafts)
   const [error, setError] = useState<string | null>(null)
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
-  const flushers = useRef(new Set<() => Promise<void>>())
   const finished = notepad.final_snapshot !== null
   const version =
     notepad.versions.find((item) => item.id === notepad.active_version_id) ??
@@ -190,15 +384,6 @@ function NotepadColumn({
     action.catch((cause) =>
       setError(cause instanceof Error ? cause.message : "Could not save"),
     )
-  }
-  const registerFlush = useCallback<RegisterFlush>((flush) => {
-    flushers.current.add(flush)
-    return () => {
-      flushers.current.delete(flush)
-    }
-  }, [])
-  const flushThen = (action: () => Promise<unknown>) => {
-    guard(Promise.all([...flushers.current].map((flush) => flush())).then(action))
   }
 
   const editNotepadPart = focused.editNotepadPart
@@ -242,6 +427,14 @@ function NotepadColumn({
       data-testid="notepad-panel"
       className="ep-enter panel flex min-h-0 flex-col rounded-xl px-4 py-3.5"
     >
+      <TopicList
+        session={session}
+        notepad={notepad}
+        busy={busy}
+        selectedTopicId={selectedTopicId}
+        onSelect={onTopicSelect}
+      />
+      <div className="my-3 border-t border-[var(--line)]" />
       <SectionLabel>Document</SectionLabel>
       <div className="mt-2 flex flex-wrap items-center gap-1">
         {notepad.versions.map((item) => {
@@ -253,13 +446,9 @@ function NotepadColumn({
                 data-testid={`notepad-version-${item.name}`}
                 aria-pressed={active}
                 disabled={busy !== null}
-                onClick={() => {
-                  if (finished) {
-                    guard(focused.switchNotepadVersion(item.id, true))
-                    return
-                  }
-                  flushThen(() => focused.switchNotepadVersion(item.id))
-                }}
+                onClick={() =>
+                  guard(focused.switchNotepadVersion(item.id, finished))
+                }
                 className="rounded-md border px-2 py-0.5 text-[11px] tabular-nums transition-colors"
                 style={{
                   borderColor: active ? "var(--line-strong)" : "var(--line)",
@@ -275,7 +464,7 @@ function NotepadColumn({
                   aria-label={`Delete ${item.name}`}
                   disabled={busy !== null}
                   onClick={() =>
-                    flushThen(() => focused.deleteNotepadVersion(item.id))
+                    guard(focused.deleteNotepadVersion(item.id))
                   }
                   className="ml-0.5 text-[var(--mute)] hover:text-[var(--red)]"
                 >
@@ -292,7 +481,7 @@ function NotepadColumn({
               disabled={busy !== null}
               aria-label="Add version by copying the current version"
               title="Copy the current version"
-              onClick={() => flushThen(() => focused.addNotepadVersion(true))}
+              onClick={() => guard(focused.addNotepadVersion(true))}
               className="ml-1 flex items-center gap-1 rounded-md border border-dashed border-[var(--line)] px-2 py-0.5 text-[11px] text-[var(--mute)] hover:border-[var(--line-strong)] hover:text-[var(--ink-2)]"
             >
               {busy === "Starting a version" ? (
@@ -307,7 +496,7 @@ function NotepadColumn({
               disabled={busy !== null}
               aria-label="Add a blank version"
               title="Start with four blank parts"
-              onClick={() => flushThen(() => focused.addNotepadVersion(false))}
+              onClick={() => guard(focused.addNotepadVersion(false))}
               className="flex items-center rounded-md border border-dashed border-[var(--line)] px-2 py-0.5 text-[11px] text-[var(--mute)] hover:border-[var(--line-strong)] hover:text-[var(--ink-2)]"
             >
               Start blank
@@ -333,7 +522,6 @@ function NotepadColumn({
             readOnly={finished}
             onCommit={commit}
             onStage={stageNotepadPart}
-            registerFlush={registerFlush}
             disabled={busy !== null || finished}
             onFocus={onPartFocus}
           />
@@ -389,7 +577,15 @@ function CopyFeedback({ text }: { text: string }) {
   )
 }
 
-function TurnRow({ turn, color }: { turn: NotepadTurn; color?: string }) {
+function TurnRow({
+  turn,
+  color,
+  topicTitle,
+}: {
+  turn: NotepadTurn
+  color?: string
+  topicTitle?: string
+}) {
   const isResearcher = turn.role === "researcher"
   const isSummary = turn.role === "summary"
   const copyable = turn.role === "perspective" || isSummary
@@ -423,6 +619,11 @@ function TurnRow({ turn, color }: { turn: NotepadTurn; color?: string }) {
             </span>
           ) : null}
         </div>
+        {topicTitle ? (
+          <div className="mb-1 break-words text-[10.5px] text-[var(--mute)]">
+            {`Topic: ${topicTitle}`}
+          </div>
+        ) : null}
         <p className="text-[12.5px] leading-relaxed">{turn.text}</p>
         {copyable ? <CopyFeedback text={turn.text} /> : null}
       </article>
@@ -454,24 +655,41 @@ function ConversationColumn({
   session,
   notepad,
   busy,
+  selection,
+  onClearSelection,
 }: {
   session: SessionState
   notepad: NotepadState
   busy: string | null
+  selection: TopicSelection | null
+  onClearSelection: () => void
 }) {
   const focused = useFocusedPanel()
   const [message, setMessage] = useState("")
   const [error, setError] = useState<string | null>(null)
+  const [topicNotice, setTopicNotice] = useState<string | null>(null)
   const [turnBudgets, setTurnBudgets] = useState<Record<string, number>>({})
+  const input = useRef<HTMLTextAreaElement | null>(null)
+  const seeded = useRef<{ seed: number; text: string | null } | null>(null)
+  const focusPending = useRef(false)
   const version = notepad.active_version_id
     ? notepad.versions.find((item) => item.id === notepad.active_version_id)
     : notepad.versions[0]
   const versionId = version?.id ?? ""
   const turns = turnBudgets[versionId] ?? version?.agenda.turn_budget ?? 4
   const finished = notepad.final_snapshot !== null
+  const topics = useMemo(() => notepad.topics ?? [], [notepad.topics])
+  const selectedTopic =
+    selection === null
+      ? null
+      : (topics.find((topic) => topic.id === selection.topicId) ?? null)
   const colors = useMemo(
     () => new Map(session.perspectives.map((item) => [item.id, item.color])),
     [session.perspectives],
+  )
+  const topicTitles = useMemo(
+    () => new Map(topics.map((topic) => [topic.id, topic.title])),
+    [topics],
   )
   const visibleTurns = notepad.turns
     .filter((turn) => turn.version_id === versionId)
@@ -480,17 +698,78 @@ function ConversationColumn({
     (turn) => turn.role === "perspective",
   ).length
 
+  const focusComposer = useCallback(() => {
+    const node = input.current
+    if (node === null || node.disabled) {
+      focusPending.current = true
+      return
+    }
+    focusPending.current = false
+    node.focus()
+  }, [])
+
+  useEffect(() => {
+    if (focusPending.current) focusComposer()
+  }, [busy, focusComposer, versionId])
+
+  // Seeding runs once per selection. An untouched seeded question is replaced;
+  // anything the researcher wrote is kept and the topic simply rides along.
+  useEffect(() => {
+    if (finished || selection === null || selectedTopic === null) return
+    if (seeded.current?.seed === selection.seed) return
+    const previous = seeded.current
+    const keepDraft = message.trim() !== "" && message !== previous?.text
+    seeded.current = {
+      seed: selection.seed,
+      text: keepDraft ? null : selectedTopic.question,
+    }
+    if (keepDraft) {
+      setTopicNotice(
+        "Your draft is kept. Send attaches this topic, or use its question.",
+      )
+    } else {
+      setMessage(selectedTopic.question)
+      setTopicNotice(null)
+    }
+    focusComposer()
+  }, [finished, focusComposer, message, selectedTopic, selection])
+
   const guard = (action: Promise<unknown>) => {
     setError(null)
     action.catch((cause) =>
       setError(cause instanceof Error ? cause.message : "Could not do that"),
     )
   }
+  const clearTopic = () => {
+    setTopicNotice(null)
+    onClearSelection()
+  }
+  const useTopicQuestion = () => {
+    if (selectedTopic === null) return
+    setMessage(selectedTopic.question)
+    setTopicNotice(null)
+    if (selection !== null) {
+      seeded.current = { seed: selection.seed, text: selectedTopic.question }
+    }
+    focusComposer()
+  }
   const send = () => {
     const text = message.trim()
     if (!text || !versionId) return
-    setMessage("")
-    guard(focused.askNotepad(versionId, text))
+    const sent = message
+    const topicId = selectedTopic?.id ?? null
+    setError(null)
+    void focused.askNotepad(versionId, text, topicId).then(
+      () => {
+        setMessage((current) => (current === sent ? "" : current))
+        setTopicNotice(null)
+        seeded.current = null
+        onClearSelection()
+      },
+      (cause: unknown) => {
+        setError(cause instanceof Error ? cause.message : "Could not send")
+      },
+    )
   }
 
   return (
@@ -531,6 +810,9 @@ function ConversationColumn({
             key={turn.id}
             turn={turn}
             color={turn.author_id ? colors.get(turn.author_id) : undefined}
+            topicTitle={
+              turn.topic_id ? topicTitles.get(turn.topic_id) : undefined
+            }
           />
         ))}
       </div>
@@ -617,8 +899,51 @@ function ConversationColumn({
             )}
           </button>
         </div>
+        {selectedTopic !== null && !finished ? (
+          <div
+            data-testid="composer-topic"
+            className="rounded-lg border border-dashed border-[var(--line-strong)] px-2.5 py-2"
+          >
+            <p className="break-words text-[11px] font-medium text-[var(--ink)]">
+              {`Topic: ${selectedTopic.title}`}
+            </p>
+            <p className="mt-0.5 break-words text-[10.5px] leading-relaxed text-[var(--mute)]">
+              {`Tentative hypothesis. ${selectedTopic.hypothesis}`}
+            </p>
+            <p className="mt-1 break-words text-[10.5px] leading-relaxed text-[var(--ink-2)]">
+              {selectedTopic.rationale}
+            </p>
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+              {message !== selectedTopic.question ? (
+                <button
+                  type="button"
+                  disabled={busy !== null}
+                  onClick={useTopicQuestion}
+                  className="rounded-md border border-[var(--line)] px-2 py-0.5 text-[10.5px] font-medium text-[var(--ink-2)] hover:border-[var(--line-strong)]"
+                >
+                  Use its question
+                </button>
+              ) : null}
+              <button
+                type="button"
+                data-testid="composer-topic-clear"
+                disabled={busy !== null}
+                onClick={clearTopic}
+                className="rounded-md border border-[var(--line)] px-2 py-0.5 text-[10.5px] font-medium text-[var(--ink-2)] hover:border-[var(--line-strong)]"
+              >
+                Clear topic
+              </button>
+            </div>
+            {topicNotice ? (
+              <p className="mt-1 break-words text-[10.5px] leading-relaxed text-[var(--amber)]">
+                {topicNotice}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
         <div className="relative">
           <textarea
+            ref={input}
             value={message}
             rows={2}
             aria-label="Message the panel"
@@ -772,6 +1097,25 @@ export function StageNotepad({ session }: { session: SessionState }) {
   const [collapsed, setCollapsed] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const notepad = session.notepad
+  const [selection, setSelection] = useState<TopicSelection | null>(null)
+  const seed = useRef(0)
+  const activeVersionId = notepad?.active_version_id ?? null
+  const finished = notepad?.final_snapshot != null
+
+  const [composerVersion, setComposerVersion] = useState(activeVersionId)
+  if (composerVersion !== activeVersionId) {
+    setComposerVersion(activeVersionId)
+    setSelection(null)
+  }
+
+  const clearSelection = useCallback(() => setSelection(null), [])
+  const selectTopic = useCallback((topicId: string) => {
+    seed.current += 1
+    const next = seed.current
+    setSelection((current) =>
+      current?.topicId === topicId ? null : { topicId, seed: next },
+    )
+  }, [])
 
   if (!notepad) {
     return (
@@ -815,7 +1159,10 @@ export function StageNotepad({ session }: { session: SessionState }) {
       }`}
     >
       <NotepadColumn
+        session={session}
         notepad={notepad}
+        selectedTopicId={selection?.topicId ?? null}
+        onTopicSelect={selectTopic}
         busy={busy}
         onPartFocus={() => undefined}
         onFinish={() => {
@@ -827,7 +1174,13 @@ export function StageNotepad({ session }: { session: SessionState }) {
           )
         }}
       />
-      <ConversationColumn session={session} notepad={notepad} busy={busy} />
+      <ConversationColumn
+        session={session}
+        notepad={notepad}
+        busy={busy}
+        selection={finished ? null : selection}
+        onClearSelection={clearSelection}
+      />
       {collapsed ? (
         <>
           <div className="lg:hidden">

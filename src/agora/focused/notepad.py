@@ -417,6 +417,7 @@ def record_direct_exchange(
     version_id: str,
     message: str,
     replies: list[tuple[Perspective, Statement]],
+    topic_id: str | None = None,
 ) -> NotepadState:
     notepad = _require(state)
     _ensure_open(notepad)
@@ -431,6 +432,7 @@ def record_direct_exchange(
         role="researcher",
         author_label="You",
         text=text,
+        topic_id=topic_id,
     )
     notepad.turns.append(user_turn)
     for perspective, statement in replies:
@@ -445,6 +447,7 @@ def record_direct_exchange(
                 text=statement.text,
                 citations=statement.citations,
                 reply_to_turn_id=user_turn.id,
+                topic_id=topic_id,
             )
         )
         version.agenda.turns_emitted += 1

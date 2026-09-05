@@ -170,6 +170,22 @@ class NotepadDoc(BaseModel):
     expected: str = Field(default="", max_length=4000)
 
 
+class DiscussionTopicDraft(BaseModel):
+    """An evidence-motivated proposal, not an established finding."""
+
+    perspective_id: str = Field(min_length=1, max_length=200)
+    title: str = Field(min_length=1, max_length=200)
+    question: str = Field(min_length=1, max_length=500)
+    hypothesis: str = Field(min_length=1, max_length=600)
+    rationale: str = Field(min_length=1, max_length=800)
+    citations: list[str] = Field(min_length=1)
+
+
+class DiscussionTopic(DiscussionTopicDraft):
+    id: str
+    created_at: datetime = Field(default_factory=utcnow)
+
+
 AgendaPhase = Literal["feedback", "comparison", "complete"]
 NotepadTurnKind = Literal[
     "feedback",
@@ -222,6 +238,7 @@ class NotepadTurn(BaseModel):
     part: NotepadPart | None = None
     comparison_cycle: int | None = Field(default=None, ge=1)
     reply_to_turn_id: str | None = None
+    topic_id: str | None = None
     created_at: datetime = Field(default_factory=utcnow)
 
 
@@ -237,6 +254,7 @@ class NotepadState(BaseModel):
     versions: list[NotepadVersion] = Field(default_factory=list)
     active_version_id: str | None = None
     turns: list[NotepadTurn] = Field(default_factory=list)
+    topics: list[DiscussionTopic] = Field(default_factory=list)
     in_chat: list[str] = Field(default_factory=list)
     final_snapshot: NotepadFinalSnapshot | None = None
 
@@ -431,6 +449,10 @@ class FacetExtraction(BaseModel):
         description="Four abstract-grounded facets: scope, explanation, "
         "approach, and significance."
     )
+
+
+class DiscussionTopicDrafts(BaseModel):
+    topics: list[DiscussionTopicDraft] = Field(min_length=1)
 
 
 class Statement(BaseModel):

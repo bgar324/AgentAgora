@@ -73,6 +73,10 @@ retains assignment and interaction history. Each repeated (`participant_id`,
 `condition`) pair starts another workspace attempt. Use `assigned_at` to order
 the attempts.
 
+Discussion topic generation records `topics.generate`. A successful topic-linked
+`question.send` records `details.topic_id`, while failed requests omit topic IDs.
+Neither topic text nor message contents enter the study log.
+
 The app has no actor accounts or tenant authorization. Production deploys gate
 the FastAPI service behind the Vercel server proxy token.
 
@@ -147,6 +151,10 @@ Create a Supabase project, then run every file in `supabase/migrations/` in
 filename order. The migrations create workspace snapshots and archives, then
 the study assignment and append-only interaction tables. Copy the project URL
 and secret key after the migrations succeed.
+
+For an existing Supabase deployment, apply pending migrations before deploying.
+`20260904000000_focused_discussion_topics.sql` extends the event constraints for
+topic generation and topic-linked questions.
 
 To import existing local workspaces, run:
 

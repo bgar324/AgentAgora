@@ -479,22 +479,6 @@ export function useFocusedPanel() {
     [sessionId],
   )
 
-  const notepadCall = useCallback(
-    (label: string, path: string, init?: RequestInit) =>
-      exclusive(label, async () => {
-        const view = await requestView(
-          `sessions/${sessionId}/notepad/${path}`,
-          init,
-        )
-        return view.active
-      }),
-    [exclusive, requestView, sessionId],
-  )
-
-  const startNotepad = useCallback(
-    () => notepadCall("Opening the discussion", "start", { method: "POST" }),
-    [notepadCall],
-  )
 
   const stageNotepadPart = useCallback(
     (versionId: string, part: NotepadPart, text: string) => {
@@ -612,90 +596,114 @@ export function useFocusedPanel() {
     return operation
   }, [editNotepadPart, notepadDraftStaged, sessionId])
 
+  const notepadCall = useCallback(
+    (label: string, path: string, init?: RequestInit, skipDraftFlush = false) =>
+      exclusive(label, async () => {
+        if (!skipDraftFlush) await flushNotepadEdits()
+        const view = await requestView(
+          `sessions/${sessionId}/notepad/${path}`,
+          init,
+        )
+        return view.active
+      }),
+    [exclusive, flushNotepadEdits, requestView, sessionId],
+  )
+
+  const startNotepad = useCallback(
+    () => notepadCall("Opening the discussion", "start", { method: "POST" }, true),
+    [notepadCall],
+  )
+
   const addNotepadVersion = useCallback(
     async (copyCurrent: boolean) => {
-      await flushNotepadEdits()
       return notepadCall("Starting a version", "versions", {
         method: "POST",
         body: JSON.stringify({ copy_current: copyCurrent }),
       })
     },
-    [flushNotepadEdits, notepadCall],
+    [notepadCall],
   )
 
   const switchNotepadVersion = useCallback(
     async (versionId: string, skipDraftFlush = false) => {
-      if (!skipDraftFlush) await flushNotepadEdits()
-      return notepadCall("Switching version", `versions/${versionId}`, {
-        method: "PUT",
-      })
+      return notepadCall(
+        "Switching version",
+        `versions/${versionId}`,
+        { method: "PUT" },
+        skipDraftFlush,
+      )
     },
-    [flushNotepadEdits, notepadCall],
+    [notepadCall],
   )
 
   const deleteNotepadVersion = useCallback(
     async (versionId: string) => {
-      await flushNotepadEdits()
       return notepadCall("Deleting version", `versions/${versionId}`, {
         method: "DELETE",
       })
     },
-    [flushNotepadEdits, notepadCall],
+    [notepadCall],
   )
 
   const discussNotepad = useCallback(
     async (versionId: string, turns: number) => {
-      await flushNotepadEdits()
       return notepadCall("Agents discussing", "discuss", {
         method: "POST",
         body: JSON.stringify({ version_id: versionId, turns }),
       })
     },
-    [flushNotepadEdits, notepadCall],
+    [notepadCall],
   )
 
+  const generateNotepadTopics = useCallback(async () => {
+    return notepadCall("Generating topics", "topics", { method: "POST" })
+  }, [notepadCall])
+
   const askNotepad = useCallback(
-    async (versionId: string, message: string) => {
-      await flushNotepadEdits()
+    async (
+      versionId: string,
+      message: string,
+      topicId: string | null = null,
+    ) => {
       return notepadCall("Sending", "messages", {
         method: "POST",
-        body: JSON.stringify({ version_id: versionId, message }),
+        body: JSON.stringify({
+          version_id: versionId,
+          message,
+          topic_id: topicId,
+        }),
       })
     },
-    [flushNotepadEdits, notepadCall],
+    [notepadCall],
   )
 
   const summarizeNotepad = useCallback(
     async (versionId: string) => {
-      await flushNotepadEdits()
       return notepadCall("Summarizing", "summaries", {
         method: "POST",
         body: JSON.stringify({ version_id: versionId }),
       })
     },
-    [flushNotepadEdits, notepadCall],
+    [notepadCall],
   )
 
   const restartNotepadReview = useCallback(
     async (versionId: string) => {
-      await flushNotepadEdits()
       return notepadCall("Restarting review", "restart", {
         method: "POST",
         body: JSON.stringify({ version_id: versionId }),
       })
     },
-    [flushNotepadEdits, notepadCall],
+    [notepadCall],
   )
 
   const clearNotepadChat = useCallback(async () => {
-    await flushNotepadEdits()
     return notepadCall("Clearing the chat", "chat", { method: "DELETE" })
-  }, [flushNotepadEdits, notepadCall])
+  }, [notepadCall])
 
   const finishNotepadStudy = useCallback(async () => {
-    await flushNotepadEdits()
     return notepadCall("Finishing study", "finish", { method: "POST" })
-  }, [flushNotepadEdits, notepadCall])
+  }, [notepadCall])
 
   return {
     loadWorkspace,
@@ -714,6 +722,7 @@ export function useFocusedPanel() {
     switchNotepadVersion,
     deleteNotepadVersion,
     discussNotepad,
+    generateNotepadTopics,
     askNotepad,
     summarizeNotepad,
     restartNotepadReview,

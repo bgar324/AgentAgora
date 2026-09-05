@@ -28,6 +28,7 @@ from agora.focused.models import (
     PERSONA_COLORS,
     ClusterCard,
     ClusteringDiagnostics,
+    DiscussionTopic,
     ExpPaper,
     Facet,
     FacetEvidence,
@@ -1907,6 +1908,45 @@ class FocusedPanelService:
             session_id, lambda mod, state: mod.start_notepad(state)
         )
 
+    @_serialized_session_mutation(StudyAction.TOPICS_GENERATE)
+    async def generate_notepad_topics(self, session_id: str) -> SessionState:
+        session = self._require(session_id)
+        state = session.state
+        notepad = state.notepad
+        if notepad is None:
+            raise SessionError("The discussion has not started yet.")
+        if notepad.final_snapshot is not None:
+            raise SessionError("This study is finished and read-only.", status=409)
+        if not state.perspectives:
+            raise SessionError("Build at least one Perspective first.")
+        proposed = {topic.perspective_id for topic in notepad.topics}
+        missing = [
+            perspective
+            for perspective in state.perspectives
+            if perspective.id not in proposed
+        ]
+        if not missing:
+            return state
+        provider = self._provider_for(session)
+        if not state.demo and provider is None:
+            raise SessionError("The live model is not configured.", status=503)
+        drafts = await agents.generate_discussion_topics(
+            problem=state.problem,
+            position=state.position,
+            perspectives=missing,
+            papers=state.papers,
+            existing_topics=notepad.topics,
+            provider=provider,
+        )
+        notepad.topics.extend(
+            DiscussionTopic(
+                **draft.model_dump(),
+                id=f"topic-{uuid.uuid4().hex[:12]}",
+            )
+            for draft in drafts
+        )
+        return self._save_state(state)
+
     @_serialized_session_mutation(StudyAction.DOCUMENT_EDIT)
     async def edit_notepad_part(
         self,
@@ -2038,6 +2078,7 @@ class FocusedPanelService:
         *,
         version_id: str,
         message: str,
+        topic_id: str | None = None,
     ) -> SessionState:
         from agora.focused import notepad as notepad_module
 
@@ -2059,6 +2100,14 @@ class FocusedPanelService:
         )
         if version is None:
             raise SessionError("Unknown Document version.")
+        topic = None
+        if topic_id is not None:
+            topic = next(
+                (item for item in notepad.topics if item.id == topic_id),
+                None,
+            )
+            if topic is None:
+                raise SessionError("Unknown discussion topic.", status=404)
         version_turns = [
             turn for turn in notepad.turns if turn.version_id == version_id
         ]
@@ -2066,6 +2115,14 @@ class FocusedPanelService:
             f"{turn.author_label}: {turn.text}"
             for turn in version_turns[version.visible_turn_start :]
         ][-8:]
+        if topic is not None:
+            history.append(
+                f"Selected discussion topic: {topic.title}\n"
+                f"Question: {topic.question}\n"
+                f"Tentative hypothesis to examine, not an established finding: "
+                f"{topic.hypothesis}\n"
+                f"Evidence motivation: {topic.rationale}"
+            )
         replies = await asyncio.gather(
             *[
                 agents.reply_to_user(
@@ -2098,6 +2155,7 @@ class FocusedPanelService:
             version_id=version_id,
             message=clean_message,
             replies=grounded,
+            topic_id=topic_id,
         )
         return self._save_state(state)
 
