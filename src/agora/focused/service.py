@@ -917,11 +917,14 @@ class FocusedPanelService:
                         variant,
                         exc,
                     )
-                    if " returned 429:" in str(exc):
-                        failure_reason = "rate_limited"
-                        break
-                    failure_reason = "unavailable"
-                    continue
+                    # An error is about the service, not the wording, so the
+                    # relaxed variant would only repeat the wait.
+                    failure_reason = (
+                        "rate_limited"
+                        if " returned 429:" in str(exc)
+                        else "unavailable"
+                    )
+                    break
                 succeeded = True
                 failure_reason = None
                 retrieved_for_query = len(results)
@@ -1586,18 +1589,33 @@ class FocusedPanelService:
             ordered_groups,
             provider=self._provider_for(session),
         )
-        for idx, group in enumerate(ordered_groups):
-            naming = namings[idx] if idx < len(namings) else None
-            representatives = (
+        representatives_by_group = [
+            (
                 partition_representatives[idx]
                 if partition_representatives is not None
                 and idx < len(partition_representatives)
                 else group[:CLUSTER_REPRESENTATIVE_PAPERS]
             )
-            facets = await agents.extract_cluster_facets(
-                representatives,
-                provider=self._provider_for(session),
-            )
+            for idx, group in enumerate(ordered_groups)
+        ]
+        # Clusters are independent, so their facet calls run concurrently.
+        try:
+            async with asyncio.TaskGroup() as task_group:
+                facet_tasks = [
+                    task_group.create_task(
+                        agents.extract_cluster_facets(
+                            representatives,
+                            provider=self._provider_for(session),
+                        )
+                    )
+                    for representatives in representatives_by_group
+                ]
+        except* Exception as errors:  # noqa: BLE001
+            raise errors.exceptions[0]
+        for idx, group in enumerate(ordered_groups):
+            naming = namings[idx] if idx < len(namings) else None
+            representatives = representatives_by_group[idx]
+            facets = facet_tasks[idx].result()
             # Provenance is enforced against the abstracts the model read.
             by_id = {paper.id: paper for paper in representatives}
             grounded_by_facet: dict[Facet, FacetEvidence] = {}

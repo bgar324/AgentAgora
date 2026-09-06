@@ -12,6 +12,7 @@ SEMANTIC_SCHOLAR_BASE_URL = "https://api.semanticscholar.org"
 GPT_5_6_LUNA = "gpt-5.6-luna"
 DSPY_GPT_5_6_LUNA = f"openai/{GPT_5_6_LUNA}"
 
+
 def _env(name: str) -> str | None:
     value = os.getenv(name, "").strip()
     return value or None
@@ -85,10 +86,10 @@ class OpenRouterSettings:
 class SemanticScholarSettings:
     api_key: str | None = field(default=None, repr=False)
     base_url: str = SEMANTIC_SCHOLAR_BASE_URL
-    timeout: float = 60.0
+    timeout: float = 15.0
     min_request_interval: float = 1.5
-    max_retries: int = 5
-    retry_threshold_s: float = 90.0
+    max_retries: int = 3
+    retry_threshold_s: float = 20.0
     cache_dir: Path | None = Path(".cache/s2")
     cache_ttl: float | None = None
 
@@ -187,14 +188,11 @@ def load_settings() -> Settings:
             "Supabase persistence requires SUPABASE_URL and SUPABASE_SECRET_KEY"
         )
     if persistence_backend == "supabase" and not proxy_token:
-        raise ConfigurationError(
-            "Supabase deployment requires AGORA_PROXY_TOKEN"
-        )
+        raise ConfigurationError("Supabase deployment requires AGORA_PROXY_TOKEN")
     if persistence_backend == "supabase" and not openai_api_key:
         raise ConfigurationError(
             "Supabase deployment requires OPENAI_API_KEY for focused GPT-5.6 models"
         )
-
 
     return Settings(
         openai=OpenAISettings(
@@ -220,12 +218,12 @@ def load_settings() -> Settings:
         semantic_scholar=SemanticScholarSettings(
             api_key=_env("SEMANTIC_SCHOLAR_API_KEY"),
             base_url=_env("SEMANTIC_SCHOLAR_BASE_URL") or SEMANTIC_SCHOLAR_BASE_URL,
-            timeout=_env_float("SEMANTIC_SCHOLAR_TIMEOUT", 60.0),
+            timeout=_env_float("SEMANTIC_SCHOLAR_TIMEOUT", 15.0),
             min_request_interval=_env_float(
                 "SEMANTIC_SCHOLAR_MIN_REQUEST_INTERVAL", 1.5
             ),
-            max_retries=_env_int("SEMANTIC_SCHOLAR_MAX_RETRIES", 5),
-            retry_threshold_s=_env_float("SEMANTIC_SCHOLAR_RETRY_THRESHOLD_S", 90.0),
+            max_retries=_env_int("SEMANTIC_SCHOLAR_MAX_RETRIES", 3),
+            retry_threshold_s=_env_float("SEMANTIC_SCHOLAR_RETRY_THRESHOLD_S", 20.0),
             cache_dir=Path(_env("SEMANTIC_SCHOLAR_CACHE_DIR") or ".cache/s2"),
             cache_ttl=_env_optional_float("SEMANTIC_SCHOLAR_CACHE_TTL"),
         ),
