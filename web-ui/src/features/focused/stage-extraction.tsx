@@ -24,6 +24,9 @@ export function StageExtraction() {
   const queryToggled = useFocusedStore((state) => state.queryToggled)
   const busy = useFocusedStore((state) => state.busy)
   const openPaperSet = useFocusedStore((state) => state.openPaperSet)
+  const searchStatus = useFocusedStore(
+    (state) => state.searchProgress.at(-1)?.message ?? null,
+  )
   const {
     suggestQueries,
     runSearch,
@@ -295,8 +298,15 @@ export function StageExtraction() {
           <div className="min-h-0 flex-1 overflow-y-auto p-3">
             {!session.searched ? (
               busy === "Searching literature" ? (
-                <div className="flex h-full min-h-[180px] items-center justify-center gap-2 text-[12px] text-[var(--mute)]">
-                  <Spinner /> Searching papers…
+                <div className="flex h-full min-h-[180px] flex-col items-center justify-center gap-2 px-6 text-center text-[12px] text-[var(--mute)]">
+                  <span className="inline-flex items-center gap-2">
+                    <Spinner /> Searching papers…
+                  </span>
+                  {searchStatus ? (
+                    <span data-testid="search-status" className="text-[11px]">
+                      {searchStatus}
+                    </span>
+                  ) : null}
                 </div>
               ) : (
                 <div className="flex h-full min-h-[180px] items-center justify-center px-6 text-center">

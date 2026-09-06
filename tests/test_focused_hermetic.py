@@ -310,19 +310,21 @@ def test_question_search_records_reach_and_miss() -> None:
             started_by_sequence[item["query_run_id"]]["query"] == item["query"]
             for item in terminal
         )
-        assert [item["kind"] for item in items[-3:]] == [
+        assert [item["kind"] for item in items[-4:]] == [
             "retrieval_completed",
             "clustering_started",
+            "groups_describing",
             "clustering_completed",
         ]
-        retrieval_progress = items[-3]
+        assert "questions_reading" in {item["kind"] for item in items}
+        retrieval_progress = items[-4]
         assert retrieval_progress["retrieved"] == sum(
             item["retrieved"] for item in completed
         )
         assert retrieval_progress["retained"] == len(state.papers)
         assert retrieval_progress["query_count"] == len(terminal)
-        assert items[-2]["papers"] == len(state.papers)
-        assert items[-2]["requested_clusters"] == state.clustering.requested_clusters
+        assert items[-3]["papers"] == len(state.papers)
+        assert items[-3]["requested_clusters"] == state.clustering.requested_clusters
         assert items[-1]["clusters"] == len(state.clusters)
         assert items[-1]["unassigned"] == len(state.unassigned_paper_ids)
 

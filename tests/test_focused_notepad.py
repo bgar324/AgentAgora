@@ -604,6 +604,37 @@ def test_feedback_text_never_exposes_internal_paper_ids(monkeypatch) -> None:
     asyncio.run(go())
 
 
+def test_feedback_markup_is_flattened_to_prose(monkeypatch) -> None:
+    async def go() -> None:
+        service, session_id, _ = await _panel(participants=1)
+        version_id = _version(service, session_id).id
+
+        async def markdown_feedback(*args, **kwargs):
+            return Statement(
+                text=(
+                    "## Relation to previous work\n"
+                    "The study sits at the **intersection** of four strands.\n"
+                    "- First, adoption work treats *trust* as a condition.\n"
+                    "- Second, `explainable AI` shows static limits.\n"
+                    "### Open question?\n"
+                    "Effect sizes of 0.05 * 2 remain small_effects."
+                ),
+                citations=["p1"],
+            )
+
+        monkeypatch.setattr(agents, "review_draft_element", markdown_feedback)
+        await service.discuss_notepad(session_id, version_id=version_id, turns=1)
+        text = _notepad(service, session_id).turns[-1].text
+        assert text == (
+            "Relation to previous work. The study sits at the intersection of "
+            "four strands. First, adoption work treats trust as a condition. "
+            "Second, explainable AI shows static limits. Open question? "
+            "Effect sizes of 0.05 * 2 remain small_effects."
+        )
+
+    asyncio.run(go())
+
+
 def test_topic_exchange_preserves_draft_agenda_and_survives_reload() -> None:
     async def go() -> None:
         connection = sqlite3.connect(":memory:", check_same_thread=False)

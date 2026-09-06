@@ -1036,7 +1036,8 @@ async def reply_to_user(
         "Perspective. Use the complete hidden profile and recent conversation. "
         "Give a direct answer and name an important boundary or tradeoff. Put "
         "supporting paper IDs only in citations; never mention IDs in the answer "
-        "text. Do not claim to change the researcher's draft.",
+        "text. Do not claim to change the researcher's draft. Write plain prose "
+        "with no markdown, headings, lists, or bold.",
         f"## JOB\n{perspective.name}\n\n"
         f"## ORIENTATION\n{perspective.summary}\n\n"
         f"## YOUR PROFILE\n{_facets_block(perspective)}\n\n"
@@ -1088,7 +1089,8 @@ async def review_draft_element(
         "and recommend what the researcher should reconsider. Use the hidden "
         "Perspective profile and its evidence. Do not mention other agents or "
         "their feedback. Put paper IDs only in citations; never mention IDs in "
-        "the feedback text. Do not rewrite the draft.",
+        "the feedback text. Do not rewrite the draft. Write plain prose with no "
+        "markdown, headings, lists, or bold.",
         f"## JOB\n{perspective.name}\n\n"
         f"## ORIENTATION\n{perspective.summary}\n\n"
         f"## DRAFT ELEMENT\n{NOTEPAD_LABELS[part]}: {subject_text or 'Not written.'}\n\n"
@@ -1138,7 +1140,8 @@ async def compare_draft_feedback(
         "Perspective. Identify a substantive agreement or difference, explain "
         "why it matters for the draft, and say what the researcher should weigh. "
         "Do not rewrite the draft. Put your supporting paper IDs only in citations; "
-        "never mention IDs in the feedback text.",
+        "never mention IDs in the feedback text. Write plain prose with no "
+        "markdown, headings, lists, or bold.",
         f"## DRAFT ELEMENT\n{NOTEPAD_LABELS[part]}: {subject_text or 'Not written.'}\n\n"
         f"## JOB\n{perspective.name}\n\n"
         f"## ORIENTATION\n{perspective.summary}\n\n"
@@ -1181,7 +1184,8 @@ async def summarize_notepad_turns(
         provider,
         "Summarize the feedback the researcher has received. Preserve the main "
         "agreements, differences, and actionable questions. Do not rewrite or "
-        "claim to update the draft.",
+        "claim to update the draft. Write plain prose with no markdown, "
+        "headings, lists, or bold.",
         f"## FEEDBACK\n{transcript}",
         ChatReply,
         task=FocusedTask.summarize_notepad,

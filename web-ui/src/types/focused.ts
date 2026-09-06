@@ -56,6 +56,8 @@ export type SearchProgressKind =
   | "retrieval_completed"
   | "clustering_started"
   | "clustering_completed"
+  | "questions_reading"
+  | "groups_describing"
 
 export interface SearchProgressItem {
   generation: number

@@ -67,7 +67,7 @@ class OpenAISettings:
     api_key: str | None = field(default=None, repr=False)
     base_url: str | None = None
     max_retries: int = 2
-    timeout: float = 180.0
+    timeout: float = 90.0
 
 
 @dataclass
@@ -199,7 +199,7 @@ def load_settings() -> Settings:
             api_key=openai_api_key,
             base_url=_env("OPENAI_BASE_URL"),
             max_retries=_env_int("OPENAI_MAX_RETRIES", 2),
-            timeout=_env_float("OPENAI_TIMEOUT", 180.0),
+            timeout=_env_float("OPENAI_TIMEOUT", 90.0),
         ),
         openrouter=OpenRouterSettings(
             api_key=_env("OPENROUTER_API_KEY"),
@@ -264,7 +264,7 @@ def load_settings() -> Settings:
             reasoning=PhaseModel(
                 model=_env("AGORA_FOCUSED_REASONING_MODEL") or GPT_5_6_LUNA,
                 temperature=None,
-                max_tokens=_env_int("AGORA_FOCUSED_REASONING_MAX_TOKENS", 2_000),
+                max_tokens=_env_int("AGORA_FOCUSED_REASONING_MAX_TOKENS", 8_000),
                 reasoning_effort=_env_reasoning_effort(
                     "AGORA_FOCUSED_REASONING_EFFORT", "medium"
                 ),

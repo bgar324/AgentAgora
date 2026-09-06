@@ -79,7 +79,14 @@ SearchProgressKind = Literal[
     "retrieval_completed",
     "clustering_started",
     "clustering_completed",
+    "questions_reading",
+    "groups_describing",
 ]
+
+_HEADING = re.compile(r"^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$", re.MULTILINE)
+_LIST_MARKER = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+", re.MULTILINE)
+_BOLD = re.compile(r"\*\*(.+?)\*\*|__(.+?)__")
+_ITALIC = re.compile(r"(?<!\w)\*(?!\s)(.+?)(?<!\s)\*(?!\w)")
 
 
 @dataclass(frozen=True)
@@ -226,6 +233,7 @@ class FocusedPanelService:
         self._workspaces: dict[str, WorkspaceState] = {}
         self._workspace_locks: dict[str, asyncio.Lock] = {}
         self._study_assignments: dict[str, StudyAssignment] = {}
+        self._prefetch_tasks: set[asyncio.Task[None]] = set()
         self._retain_search_embeddings = retain_search_embeddings
         self._search_progress: dict[str, list[dict[str, Any]]] = {}
         self._search_progress_sequence: dict[str, int] = {}
@@ -794,25 +802,41 @@ class FocusedPanelService:
                 position=state.position,
                 provider=self._provider_for(session),
             )
+        provider = self._provider_for(session)
+        # The problem-level suggestions and each question's plan are
+        # independent model calls, so they run together.
+        try:
+            async with asyncio.TaskGroup() as task_group:
+                problem_task = task_group.create_task(
+                    agents.suggest_queries(
+                        state.problem,
+                        state.research_questions,
+                        position=state.position,
+                        provider=provider,
+                        count=3 if state.research_questions else MAX_SUGGESTED_QUERIES,
+                    )
+                )
+                plan_tasks = [
+                    task_group.create_task(
+                        agents.plan_question_search(
+                            state.problem, question, provider=provider
+                        )
+                    )
+                    for question in state.research_questions
+                ]
+        except* Exception as errors:  # noqa: BLE001
+            raise errors.exceptions[0]
         problem_suggestions = [
             suggestion.model_copy(
                 update={"kind": "problem", "question_index": None, "round": 1}
             )
-            for suggestion in await agents.suggest_queries(
-                state.problem,
-                state.research_questions,
-                position=state.position,
-                provider=self._provider_for(session),
-                count=3 if state.research_questions else MAX_SUGGESTED_QUERIES,
-            )
+            for suggestion in problem_task.result()
         ]
         question_suggestions = []
-        for question_index, question in enumerate(state.research_questions):
-            plan = await agents.plan_question_search(
-                state.problem,
-                question,
-                provider=self._provider_for(session),
-            )
+        for question_index, (question, plan_task) in enumerate(
+            zip(state.research_questions, plan_tasks, strict=True)
+        ):
+            plan = plan_task.result()
             reaches.append(
                 QuestionReach(
                     question=question,
@@ -873,7 +897,23 @@ class FocusedPanelService:
                     break
         state.suggested_queries = deduped
         state.question_reach = reaches
+        if self._s2 is not None and not self._demo(session):
+            self._prefetch([suggestion.query for suggestion in deduped])
         return self._save_state(state)
+
+    def _prefetch(self, queries: list[str]) -> None:
+        """Warm the search cache while the researcher reads the suggestions."""
+
+        async def warm() -> None:
+            for query in queries:
+                try:
+                    await self._s2.search(query, limit=PAPERS_PER_QUERY)
+                except Exception:  # noqa: BLE001
+                    logger.info("prefetch skipped %r", query)
+
+        task = asyncio.create_task(warm())
+        self._prefetch_tasks.add(task)
+        task.add_done_callback(self._prefetch_tasks.discard)
 
     def _demo_retrieve(self, queries: list[str]) -> list[ExpPaper]:
         scored: list[tuple[float, ExpPaper]] = []
@@ -1409,6 +1449,12 @@ class FocusedPanelService:
             question = state.research_questions[len(reaches)]
             reaches.append(QuestionReach(question=question, candidates=[question]))
 
+        self._publish_search_progress(
+            session_id,
+            "questions_reading",
+            f"Reading papers for {len(reaches)} research question"
+            f"{'s' if len(reaches) != 1 else ''}.",
+        )
         question_tasks = []
         try:
             async with asyncio.TaskGroup() as task_group:
@@ -1585,9 +1631,11 @@ class FocusedPanelService:
 
         clusters: list[ClusterCard] = []
         ordered_groups = [self._centroid_order(group) for group in groups]
-        namings = await agents.name_clusters(
-            ordered_groups,
-            provider=self._provider_for(session),
+        self._publish_search_progress(
+            session_id,
+            "groups_describing",
+            f"Describing {len(ordered_groups)} literature group"
+            f"{'s' if len(ordered_groups) != 1 else ''}.",
         )
         representatives_by_group = [
             (
@@ -1598,9 +1646,15 @@ class FocusedPanelService:
             )
             for idx, group in enumerate(ordered_groups)
         ]
-        # Clusters are independent, so their facet calls run concurrently.
+        # Naming and per-cluster facets are independent model calls.
         try:
             async with asyncio.TaskGroup() as task_group:
+                naming_task = task_group.create_task(
+                    agents.name_clusters(
+                        ordered_groups,
+                        provider=self._provider_for(session),
+                    )
+                )
                 facet_tasks = [
                     task_group.create_task(
                         agents.extract_cluster_facets(
@@ -1612,6 +1666,7 @@ class FocusedPanelService:
                 ]
         except* Exception as errors:  # noqa: BLE001
             raise errors.exceptions[0]
+        namings = naming_task.result()
         for idx, group in enumerate(ordered_groups):
             naming = namings[idx] if idx < len(namings) else None
             representatives = representatives_by_group[idx]
@@ -1872,7 +1927,19 @@ class FocusedPanelService:
 
     @staticmethod
     def _participant_text(state: SessionState, text: str) -> str:
-        cleaned = text
+        # Turns render as one plain paragraph, so markdown the model emits
+        # anyway would show up as literal "##" and "**".
+        cleaned = _HEADING.sub(
+            lambda match: (
+                match.group(1)
+                + ("" if match.group(1).endswith((".", "?", "!", ":")) else ".")
+            ),
+            text,
+        )
+        cleaned = _LIST_MARKER.sub("", cleaned)
+        cleaned = _BOLD.sub(r"\1\2", cleaned)
+        cleaned = _ITALIC.sub(r"\1", cleaned)
+        cleaned = cleaned.replace("`", "")
         for paper_id in sorted(
             (paper.id for paper in state.papers),
             key=len,

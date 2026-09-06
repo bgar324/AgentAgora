@@ -22,11 +22,7 @@ def _prompt_cache_key(
     material = cache_namespace
     if material is None:
         material = next(
-            (
-                message["content"]
-                for message in messages
-                if message["role"] == "system"
-            ),
+            (message["content"] for message in messages if message["role"] == "system"),
             "",
         )
     if not material:
@@ -172,6 +168,14 @@ class OpenAIProvider(LLMProvider):
                 **request,
             )
         except Exception as exc:
+            # The SDK parses before we can inspect the response, so a JSON
+            # string cut off at the token budget surfaces as a parse error.
+            if "json_invalid" in str(exc) or "EOF while parsing" in str(exc):
+                raise ProviderError(
+                    "OpenAI structured output was cut off before the JSON closed "
+                    f"(max_output_tokens={max_output_tokens}); raise the phase "
+                    "token budget"
+                ) from exc
             raise ProviderError(f"OpenAI request failed: {exc}") from exc
 
         usage = _usage(response)
