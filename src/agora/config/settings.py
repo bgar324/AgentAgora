@@ -256,7 +256,7 @@ def load_settings() -> Settings:
             query=PhaseModel(
                 model=_env("AGORA_FOCUSED_QUERY_MODEL") or GPT_5_6_LUNA,
                 temperature=None,
-                max_tokens=_env_int("AGORA_FOCUSED_QUERY_MAX_TOKENS", 2_000),
+                max_tokens=_env_int("AGORA_FOCUSED_QUERY_MAX_TOKENS", 8_000),
                 reasoning_effort=_env_reasoning_effort(
                     "AGORA_FOCUSED_QUERY_REASONING_EFFORT", "low"
                 ),
