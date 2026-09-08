@@ -1,6 +1,7 @@
 "use client"
 
 import {
+  useCallback,
   useEffect,
   useId,
   useState,
@@ -8,6 +9,7 @@ import {
   type ButtonHTMLAttributes,
   type ReactNode,
 } from "react"
+import { Check, ChevronDown } from "lucide-react"
 
 /** Design-system primitives — the only sanctioned building blocks for
  * Focused Panel surfaces. See ./DESIGN.md. */
@@ -202,6 +204,160 @@ export function ModalShell({
         <div className="min-h-0 flex-1 overflow-auto px-5 py-4">
           {children}
         </div>
+      </div>
+    </div>
+  )
+}
+
+const TURN_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8]
+
+export function TurnSelect({
+  value,
+  onChange,
+  disabled = false,
+}: {
+  value: number
+  onChange: (value: number) => void
+  disabled?: boolean
+}) {
+  const id = useId()
+  const trigger = useRef<HTMLButtonElement>(null)
+  const menu = useRef<HTMLDivElement>(null)
+  const [open, setOpen] = useState(false)
+  const [active, setActive] = useState(value)
+  const close = useCallback(() => {
+    if (menu.current?.matches(":popover-open")) menu.current.hidePopover()
+  }, [])
+
+  useEffect(() => {
+    if (disabled) close()
+  }, [close, disabled])
+
+  useEffect(() => {
+    if (!open) return
+    const onScroll = (event: Event) => {
+      if (
+        event.target === window ||
+        (event.target instanceof Node && event.target.contains(trigger.current))
+      ) {
+        close()
+      }
+    }
+    window.addEventListener("resize", close)
+    window.addEventListener("scroll", onScroll, true)
+    return () => {
+      window.removeEventListener("resize", close)
+      window.removeEventListener("scroll", onScroll, true)
+    }
+  }, [close, open])
+
+  useEffect(() => {
+    const popup = menu.current
+    const option = document.getElementById(`${id}-${active}`)
+    if (open && popup && option) {
+      popup.scrollTop = option.offsetTop - (popup.clientHeight - option.offsetHeight) / 2
+    }
+  }, [active, id, open])
+
+  const prepare = () => {
+    const button = trigger.current
+    const popup = menu.current
+    if (!button || !popup || popup.matches(":popover-open")) return
+    const rect = button.getBoundingClientRect()
+    const above = Math.max(0, rect.top - 14)
+    const below = Math.max(0, window.innerHeight - rect.bottom - 14)
+    const placeAbove = above >= 270 || above >= below
+    const height = Math.min(270, placeAbove ? above : below)
+    popup.style.left = `${Math.max(8, Math.min(rect.right - 128, window.innerWidth - 136))}px`
+    popup.style.top = `${placeAbove ? rect.top - height - 6 : rect.bottom + 6}px`
+    popup.style.maxHeight = `${height}px`
+    setActive(value)
+  }
+
+  const choose = (count: number) => {
+    onChange(count)
+    close()
+  }
+
+  return (
+    <div className="flex w-[88px] shrink-0 items-center border-l border-[var(--line)]">
+      <button
+        ref={trigger}
+        type="button"
+        role="combobox"
+        aria-label="Turns"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={id}
+        aria-activedescendant={open ? `${id}-${active}` : undefined}
+        popoverTarget={id}
+        disabled={disabled}
+        onClick={prepare}
+        onKeyDown={(event) => {
+          const showing = menu.current?.matches(":popover-open") ?? false
+          if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+            event.preventDefault()
+            if (!showing) trigger.current?.click()
+            if (event.key === "Home") setActive(1)
+            else if (event.key === "End") setActive(8)
+            else if (showing) {
+              setActive((current) => Math.max(1, Math.min(8,
+                current + (event.key === "ArrowDown" ? 1 : -1),
+              )))
+            }
+          } else if (showing && (event.key === "Enter" || event.key === " ")) {
+            event.preventDefault()
+            choose(active)
+          } else if (showing && event.key === "Escape") {
+            event.preventDefault()
+            close()
+          } else if (showing && event.key === "Tab") {
+            choose(active)
+          } else if (/^[1-8]$/.test(event.key)) {
+            event.preventDefault()
+            if (showing) setActive(Number(event.key))
+            else onChange(Number(event.key))
+          }
+        }}
+        className="inline-flex h-full w-full items-center justify-between gap-1 px-2.5 text-[13px] font-medium tabular-nums text-[var(--ink-2)] outline-none enabled:hover:bg-[var(--hover)] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ink-2)] disabled:opacity-40"
+      >
+        <span>{`${value} ${value === 1 ? "turn" : "turns"}`}</span>
+        <ChevronDown size={12} aria-hidden />
+      </button>
+      <div
+        ref={menu}
+        id={id}
+        popover="auto"
+        role="listbox"
+        aria-label="Turns"
+        onToggle={(event) => setOpen(event.currentTarget.matches(":popover-open"))}
+        style={{ inset: "auto", width: 128 }}
+        className="ep-expand-enter m-0 overflow-y-auto overscroll-contain rounded-lg border border-[var(--line-strong)] bg-[var(--panel)] p-1.5 text-[var(--ink)] shadow-lg"
+      >
+        {TURN_OPTIONS.map((count) => (
+          <button
+            key={count}
+            id={`${id}-${count}`}
+            type="button"
+            role="option"
+            aria-selected={value === count}
+            tabIndex={-1}
+            onPointerMove={() => setActive(count)}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => {
+              choose(count)
+              trigger.current?.focus({ preventScroll: true })
+            }}
+            className={`flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[12.5px] ${
+              active === count ? "bg-[var(--hover)]" : ""
+            }`}
+          >
+            <span className="w-3 shrink-0">
+              {value === count ? <Check size={12} aria-hidden /> : null}
+            </span>
+            {`${count} ${count === 1 ? "turn" : "turns"}`}
+          </button>
+        ))}
       </div>
     </div>
   )

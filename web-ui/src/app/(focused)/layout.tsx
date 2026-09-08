@@ -25,6 +25,7 @@ const tokens = `
   --amber: #b54708;
   --amber-bg: #fffaeb;
   --red: #d92d20;
+  --red-bg: #fef3f2;
   --node: #101828;
   --on-node: #b6bfcc;
   --on-node-accent: #7cc5ab;
@@ -62,11 +63,13 @@ const tokens = `
   gap: 6px;
   border-radius: 8px;
   font-weight: 500;
+  cursor: pointer;
   transition: opacity var(--motion-fast) ease,
     background var(--motion-fast) ease,
     border-color var(--motion-fast) ease, color var(--motion-fast) ease,
     transform var(--motion-fast) ease, box-shadow var(--motion-fast) ease;
 }
+.focused .btn:disabled { cursor: not-allowed; }
 .focused .btn:active:not(:disabled) {
   transform: translateY(1px) scale(0.985);
 }
@@ -164,6 +167,31 @@ const tokens = `
   border-color: var(--line-strong);
   box-shadow: 0 8px 20px -18px rgba(16, 24, 40, 0.45);
 }
+@keyframes ep-pending-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.85; }
+}
+.focused .ep-skeleton {
+  display: block;
+  background: var(--line-strong);
+  border-radius: 4px;
+  animation: ep-pending-pulse 1800ms ease-in-out infinite;
+}
+.focused .ep-pending-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 12px;
+}
+.focused .ep-pending-dots > span {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: ep-pending-pulse 1200ms ease-in-out infinite;
+}
+.focused .ep-pending-dots > span:nth-child(2) { animation-delay: 150ms; }
+.focused .ep-pending-dots > span:nth-child(3) { animation-delay: 300ms; }
 @media (prefers-reduced-motion: reduce) {
   .focused .ep-enter,
   .focused .ep-card-enter,
@@ -171,6 +199,10 @@ const tokens = `
   .focused .ep-fade-in,
   .focused .ep-drawer-enter,
   .focused .ep-modal-enter,
+  .focused .ep-skeleton,
+  .focused .ep-pending-dots > span,
+  .focused .animate-spin,
+  .focused .animate-pulse,
   .focused .ep-expand-enter {
     opacity: 1 !important;
     animation: none !important;
@@ -181,6 +213,10 @@ const tokens = `
   .focused .field,
   .focused .ep-interactive-card {
     transition-duration: 0.01ms !important;
+  }
+  .focused .btn:active:not(:disabled),
+  .focused .ep-interactive-card:hover {
+    transform: none !important;
   }
 }
 `

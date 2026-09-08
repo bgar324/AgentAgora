@@ -32,7 +32,7 @@ import {
   type Perspective,
   type SessionState,
 } from "@/types/focused"
-import { Button, EmptyLine, SectionLabel, Spinner } from "./ui"
+import { Button, EmptyLine, ModalShell, SectionLabel, Spinner, TurnSelect } from "./ui"
 
 const PART_PLACEHOLDERS: Record<NotepadPart, string> = {
   framing: "How you are framing the problem.",
@@ -326,11 +326,13 @@ function TopicList({
             className="inline-flex items-center gap-1 rounded-md border border-[var(--line)] px-2 py-0.5 text-[10.5px] font-medium text-[var(--ink-2)] hover:border-[var(--line-strong)] disabled:opacity-40"
           >
             {generating ? <Spinner className="size-3" /> : null}
-            {error !== null
-              ? "Retry"
-              : ordered.length === 0
-                ? "Suggest topics"
-                : "Suggest more"}
+            {generating
+              ? "Suggesting topics…"
+              : error !== null
+                ? "Retry"
+                : ordered.length === 0
+                  ? "Suggest topics"
+                  : "Suggest more"}
           </button>
         ) : null}
       </div>
@@ -600,6 +602,18 @@ function CopyFeedback({ text }: { text: string }) {
   )
 }
 
+/** Distance from the bottom that still counts as reading the newest message. */
+const BOTTOM_SLACK = 48
+
+type PendingSend = {
+  text: string
+  topicTitle: string | null
+  /** Turn ids present before the request, so a new researcher turn is a commit. */
+  knownTurnIds: Set<string>
+}
+
+const BUBBLE_SHELL = "w-fit max-w-[78%] rounded-xl px-3 py-2.5"
+
 function TurnRow({
   turn,
   color,
@@ -618,10 +632,10 @@ function TurnRow({
         data-testid={`notepad-turn-${turn.kind}`}
         className={
           isResearcher
-            ? "w-fit max-w-[78%] rounded-xl border border-[var(--line)] bg-[color-mix(in_srgb,var(--node)_6%,var(--panel))] px-3 py-2.5"
+            ? `ep-enter ${BUBBLE_SHELL} border border-[var(--line)] bg-[color-mix(in_srgb,var(--node)_6%,var(--panel))]`
             : isSummary
-              ? "rounded-xl border border-dashed border-[var(--line)] px-3 py-2.5"
-              : "rounded-xl border border-[var(--line)] px-3 py-2.5"
+              ? "ep-enter rounded-xl border border-dashed border-[var(--line)] px-3 py-2.5"
+              : "ep-enter rounded-xl border border-[var(--line)] px-3 py-2.5"
         }
       >
         <div className="mb-1 flex items-baseline justify-between gap-2">
@@ -651,6 +665,65 @@ function TurnRow({
         <p className="text-[12.5px] leading-relaxed">{turn.text}</p>
         {copyable ? <CopyFeedback text={turn.text} /> : null}
       </article>
+    </div>
+  )
+}
+
+function PendingDots() {
+  return (
+    <span className="ep-pending-dots" aria-hidden>
+      <span />
+      <span />
+      <span />
+    </span>
+  )
+}
+
+/** The researcher's own words, held locally until the server records them. */
+function PendingMessage({
+  text,
+  topicTitle,
+}: {
+  text: string
+  topicTitle: string | null
+}) {
+  return (
+    <div className="flex justify-end">
+      <article
+        data-testid="notepad-pending-message"
+        className={`ep-enter ${BUBBLE_SHELL} border border-dashed border-[var(--line-strong)] bg-[color-mix(in_srgb,var(--node)_4%,var(--panel))]`}
+      >
+        <div className="mb-1 flex items-baseline justify-between gap-2">
+          <span className="text-[11px] font-medium text-[var(--ink-2)]">
+            You
+          </span>
+          <span className="inline-flex items-center gap-1 text-[10px] text-[var(--mute)]">
+            <PendingDots />
+            Sending
+          </span>
+        </div>
+        {topicTitle ? (
+          <div className="mb-1 break-words text-[10.5px] text-[var(--mute)]">
+            {`Topic: ${topicTitle}`}
+          </div>
+        ) : null}
+        <p className="text-[12.5px] leading-relaxed text-[var(--ink-2)]">
+          {text}
+        </p>
+      </article>
+    </div>
+  )
+}
+
+function PendingActivity({ label }: { label: string }) {
+  return (
+    <div
+      role="status"
+      data-testid="notepad-pending-activity"
+      className="ep-enter flex items-center gap-2 rounded-xl border border-dashed border-[var(--line)] px-3 py-2.5 text-[11px] font-medium text-[var(--ink-2)]"
+    >
+      <PendingDots />
+      {label}
     </div>
   )
 }
@@ -691,10 +764,16 @@ function ConversationColumn({
   const focused = useFocusedPanel()
   const [message, setMessage] = useState("")
   const [error, setError] = useState<string | null>(null)
+  const [clearDialog, setClearDialog] = useState<{ error: string | null } | null>(null)
   const [topicNotice, setTopicNotice] = useState<string | null>(null)
   const [turnBudgets, setTurnBudgets] = useState<Record<string, number>>({})
   const [rosterOpen, setRosterOpen] = useState(false)
+  const [pending, setPending] = useState<PendingSend | null>(null)
+  const [showJump, setShowJump] = useState(false)
   const input = useRef<HTMLTextAreaElement | null>(null)
+  const composer = useRef<HTMLDivElement | null>(null)
+  const scroller = useRef<HTMLDivElement | null>(null)
+  const pinned = useRef(true)
   const seeded = useRef<{ seed: number; text: string | null } | null>(null)
   const focusPending = useRef(false)
   const version = notepad.active_version_id
@@ -722,6 +801,60 @@ function ConversationColumn({
   const visibleFeedbackCount = visibleTurns.filter(
     (turn) => turn.role === "perspective",
   ).length
+
+  // The pending preview disappears the moment the server records a researcher
+  // turn, so a commit can never render beside its own local copy.
+  const pendingCommitted =
+    pending !== null &&
+    visibleTurns.some(
+      (turn) => turn.role === "researcher" && !pending.knownTurnIds.has(turn.id),
+    )
+  const showPending = pending !== null && !pendingCommitted
+  const activity =
+    busy === "Sending"
+      ? "Waiting for replies"
+      : busy === "Agents discussing"
+        ? "Perspectives are discussing"
+        : busy === "Summarizing"
+          ? "Writing the summary"
+          : null
+
+  const scrollToLatest = useCallback(() => {
+    const node = scroller.current
+    if (node === null) return
+    // Smooth scrolling emits intermediate events that look like scrolling away.
+    node.scrollTop = node.scrollHeight
+    pinned.current = true
+    setShowJump(false)
+  }, [])
+
+  const trackScroll = () => {
+    const node = scroller.current
+    if (node === null) return
+    const bottom =
+      node.scrollHeight - node.scrollTop - node.clientHeight <= BOTTOM_SLACK
+    pinned.current = bottom
+    setShowJump(!bottom)
+  }
+
+  // Opening a version starts at the newest message without animating there.
+  useLayoutEffect(() => {
+    pinned.current = true
+    scrollToLatest()
+  }, [scrollToLatest, versionId])
+
+  // Follow new content only for a reader who is already at the bottom.
+  useLayoutEffect(() => {
+    const node = scroller.current
+    if (node === null) return
+    if (pinned.current) {
+      scrollToLatest()
+      return
+    }
+    setShowJump(
+      node.scrollHeight - node.scrollTop - node.clientHeight > BOTTOM_SLACK,
+    )
+  }, [activity, scrollToLatest, showPending, visibleTurns.length])
 
   const focusComposer = useCallback(() => {
     const node = input.current
@@ -783,21 +916,45 @@ function ConversationColumn({
     if (!text || !versionId) return
     const sent = message
     const topicId = selectedTopic?.id ?? null
+    const keepFocus =
+      composer.current?.contains(document.activeElement) ?? false
+    const restoreComposerFocus = () => {
+      const target = document.activeElement
+      if (
+        keepFocus &&
+        (target === document.body || composer.current?.contains(target))
+      ) {
+        focusComposer()
+      }
+    }
     setError(null)
+    setPending({
+      text,
+      topicTitle: selectedTopic?.title ?? null,
+      knownTurnIds: new Set(notepad.turns.map((turn) => turn.id)),
+    })
+    setMessage("")
+    setTopicNotice(null)
     void focused.askNotepad(versionId, text, topicId).then(
       () => {
-        setMessage((current) => (current === sent ? "" : current))
-        setTopicNotice(null)
+        setPending(null)
         seeded.current = null
         onClearSelection()
+        restoreComposerFocus()
       },
       (cause: unknown) => {
+        setPending(null)
+        // The composer stays disabled during the request, so an empty box means
+        // nothing newer was typed and the submitted wording can come back.
+        setMessage((current) => (current.trim() === "" ? sent : current))
         setError(cause instanceof Error ? cause.message : "Could not send")
+        restoreComposerFocus()
       },
     )
   }
 
   return (
+    <>
     <section
       data-testid="notepad-conversation"
       className="ep-enter panel flex min-h-0 flex-col rounded-xl px-4 py-3.5"
@@ -834,7 +991,7 @@ function ConversationColumn({
         </button>
       </div>
       {rosterOpen ? (
-        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        <div className="ep-expand-enter mt-2 flex flex-wrap items-center gap-1.5">
           <span className="text-[11px] text-[var(--mute)]">In the chat</span>
           {session.perspectives.map((perspective) => (
             <span
@@ -857,22 +1014,46 @@ function ConversationColumn({
         <AgendaStatus notepad={notepad} />
       </div>
 
-      <div className="mt-3 min-h-0 flex-1 space-y-2.5 overflow-y-auto pr-1">
-        {visibleTurns.length === 0 ? (
-          <EmptyLine>
-            Start the draft review, or ask the Perspectives a specific question.
-          </EmptyLine>
+      <div className="relative mt-3 flex min-h-0 flex-1 flex-col">
+        <div
+          ref={scroller}
+          onScroll={trackScroll}
+          className="min-h-0 flex-1 space-y-2.5 overflow-y-auto pr-1"
+        >
+          {visibleTurns.length === 0 && !showPending && activity === null ? (
+            <EmptyLine>
+              Start the draft review, or ask the Perspectives a specific
+              question.
+            </EmptyLine>
+          ) : null}
+          {visibleTurns.map((turn) => (
+            <TurnRow
+              key={turn.id}
+              turn={turn}
+              color={turn.author_id ? colors.get(turn.author_id) : undefined}
+              topicTitle={
+                turn.topic_id ? topicTitles.get(turn.topic_id) : undefined
+              }
+            />
+          ))}
+          {showPending && pending !== null ? (
+            <PendingMessage
+              text={pending.text}
+              topicTitle={pending.topicTitle}
+            />
+          ) : null}
+          {activity !== null ? <PendingActivity label={activity} /> : null}
+        </div>
+        {showJump ? (
+          <button
+            type="button"
+            data-testid="notepad-jump-latest"
+            onClick={() => scrollToLatest()}
+            className="ep-enter absolute bottom-1 left-1/2 -translate-x-1/2 rounded-full border border-[var(--line-strong)] bg-[var(--panel)] px-2.5 py-1 text-[10.5px] font-medium text-[var(--ink-2)] hover:border-[var(--node)]"
+          >
+            Jump to latest
+          </button>
         ) : null}
-        {visibleTurns.map((turn) => (
-          <TurnRow
-            key={turn.id}
-            turn={turn}
-            color={turn.author_id ? colors.get(turn.author_id) : undefined}
-            topicTitle={
-              turn.topic_id ? topicTitles.get(turn.topic_id) : undefined
-            }
-          />
-        ))}
       </div>
 
       <div className="mt-3 space-y-2 border-t border-[var(--line)] pt-3">
@@ -902,35 +1083,28 @@ function ConversationColumn({
                 !versionId ||
                 version?.agenda.phase === "complete"
               }
-              onClick={() => guard(focused.discussNotepad(versionId, turns))}
+              onClick={() => {
+                setTurnBudgets((current) => ({
+                  ...current,
+                  [versionId]: turns,
+                }))
+                guard(focused.discussNotepad(versionId, turns))
+              }}
               className="inline-flex min-w-0 flex-1 items-center justify-center gap-1.5 whitespace-nowrap px-3 text-[13px] font-medium text-[var(--ink)] hover:bg-[color-mix(in_srgb,var(--node)_5%,transparent)] disabled:opacity-40"
             >
               {busy === "Agents discussing" ? <Spinner /> : null}
               Discuss
             </button>
-            <label className="flex w-[88px] shrink-0 items-center border-l border-[var(--line)] px-2.5">
-              <span className="sr-only">Turns</span>
-              <select
-                value={turns}
-                aria-label="Turns"
-                disabled={finished || busy !== null || !versionId}
-                onChange={(event) =>
-                  setTurnBudgets((current) => ({
-                    ...current,
-                    [versionId]: Number(event.target.value),
-                  }))
-                }
-                className="w-full bg-transparent text-[13px] font-medium tabular-nums text-[var(--ink-2)] outline-none"
-              >
-                {Array.from({ length: 8 }, (_, index) => index + 1).map(
-                  (count) => (
-                    <option key={count} value={count}>
-                      {`${count} ${count === 1 ? "turn" : "turns"}`}
-                    </option>
-                  ),
-                )}
-              </select>
-            </label>
+            <TurnSelect
+              value={turns}
+              disabled={finished || busy !== null || !versionId}
+              onChange={(count) =>
+                setTurnBudgets((current) => ({
+                  ...current,
+                  [versionId]: count,
+                }))
+              }
+            />
           </div>
           <Button
             variant="outline"
@@ -947,7 +1121,7 @@ function ConversationColumn({
             aria-label="Clear chat"
             title="Clear chat"
             disabled={finished || busy !== null || visibleTurns.length === 0}
-            onClick={() => guard(focused.clearNotepadChat())}
+            onClick={() => setClearDialog({ error: null })}
             className="col-start-2 row-start-1 grid size-8 place-items-center rounded-lg text-[var(--mute)] hover:bg-[var(--red-bg)] hover:text-[var(--red)] disabled:pointer-events-none disabled:opacity-35 min-[480px]:col-auto min-[480px]:row-auto"
           >
             {busy === "Clearing the chat" ? (
@@ -960,7 +1134,7 @@ function ConversationColumn({
         {selectedTopic !== null && !finished ? (
           <div
             data-testid="composer-topic"
-            className="rounded-lg border border-dashed border-[var(--line-strong)] px-2.5 py-2"
+            className="ep-expand-enter rounded-lg border border-dashed border-[var(--line-strong)] px-2.5 py-2"
           >
             <p className="break-words text-[11px] font-medium text-[var(--ink)]">
               {`Topic: ${selectedTopic.title}`}
@@ -972,7 +1146,7 @@ function ConversationColumn({
               {selectedTopic.rationale}
             </p>
             <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-              {message !== selectedTopic.question ? (
+              {pending === null && message !== selectedTopic.question ? (
                 <button
                   type="button"
                   disabled={busy !== null}
@@ -999,7 +1173,7 @@ function ConversationColumn({
             ) : null}
           </div>
         ) : null}
-        <div className="relative">
+        <div ref={composer} className="relative">
           <textarea
             ref={input}
             value={message}
@@ -1033,6 +1207,46 @@ function ConversationColumn({
       </div>
       {error ? <ErrorLine>{error}</ErrorLine> : null}
     </section>
+      {clearDialog !== null ? (
+        <ModalShell
+          title="Clear chat?"
+          onClose={() => {
+            if (busy === null) setClearDialog(null)
+          }}
+        >
+          <p className="text-[13px] leading-relaxed text-[var(--ink-2)]">
+            Clear this version’s visible chat? Your Document and review progress
+            stay unchanged.
+          </p>
+          {clearDialog.error ? <ErrorLine>{clearDialog.error}</ErrorLine> : null}
+          <div className="mt-4 flex justify-end gap-2">
+            <Button
+              variant="ghost"
+              data-autofocus
+              disabled={busy !== null}
+              onClick={() => setClearDialog(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              disabled={busy !== null}
+              onClick={() => {
+                setClearDialog({ error: null })
+                void focused.clearNotepadChat().then(
+                  () => setClearDialog(null),
+                  (cause: unknown) => setClearDialog({
+                    error: cause instanceof Error ? cause.message : "Could not clear the chat.",
+                  }),
+                )
+              }}
+            >
+              {busy === "Clearing the chat" ? <><Spinner /> Clearing…</> : "Clear chat"}
+            </Button>
+          </div>
+        </ModalShell>
+      ) : null}
+    </>
   )
 }
 
@@ -1076,16 +1290,18 @@ function PerspectiveCard({
               <button
                 type="button"
                 onClick={() => openPaperSet(anchor.id)}
-                className="underline underline-offset-2"
+                className="block w-full text-left underline decoration-[var(--line-strong)] underline-offset-2 hover:text-[var(--ink-2)]"
               >
                 {anchor.title}
               </button>
             ) : (
               "Anchor paper unavailable"
             )}
-            {` · ${perspective.related_paper_count} related ${
-              perspective.related_paper_count === 1 ? "paper" : "papers"
-            }`}
+            <span className="mt-1 block">
+              {`${perspective.related_paper_count} related ${
+                perspective.related_paper_count === 1 ? "paper" : "papers"
+              }`}
+            </span>
           </div>
         </div>
       ) : null}
@@ -1095,10 +1311,12 @@ function PerspectiveCard({
 
 function PerspectivesColumn({
   session,
+  busy,
   onCollapse,
   onBuildAnother,
 }: {
   session: SessionState
+  busy: string | null
   onCollapse: () => void
   onBuildAnother: () => void
 }) {
@@ -1131,8 +1349,9 @@ function PerspectivesColumn({
           <button
             type="button"
             data-testid="notepad-build-perspective"
+            disabled={busy !== null}
             onClick={onBuildAnother}
-            className="w-full rounded-xl border border-dashed border-[var(--line)] px-3 py-2.5 text-left hover:border-[var(--line-strong)]"
+            className="w-full rounded-xl border border-dashed border-[var(--line)] px-3 py-2.5 text-left enabled:hover:border-[var(--line-strong)] disabled:cursor-not-allowed disabled:opacity-40"
           >
             <span className="flex items-center gap-1.5 text-[12.5px] font-medium">
               <Plus size={12} strokeWidth={2.2} aria-hidden />
@@ -1181,7 +1400,7 @@ export function StageNotepad({ session }: { session: SessionState }) {
         <section className="ep-enter panel rounded-xl px-4 py-3.5">
           <SectionLabel>Discussion</SectionLabel>
           <p className="mt-1.5 text-[12.5px] leading-relaxed">
-            The Perspectives will review the four notepad elements in order.
+            The Perspectives will review the four Document fields in order.
           </p>
           <Button
             variant="primary"
@@ -1244,6 +1463,7 @@ export function StageNotepad({ session }: { session: SessionState }) {
           <div className="lg:hidden">
             <PerspectivesColumn
               session={session}
+              busy={busy}
               onCollapse={() => setCollapsed(true)}
               onBuildAnother={() => stageSet("extraction")}
             />
@@ -1262,6 +1482,7 @@ export function StageNotepad({ session }: { session: SessionState }) {
       ) : (
         <PerspectivesColumn
           session={session}
+          busy={busy}
           onCollapse={() => setCollapsed(true)}
           onBuildAnother={() => stageSet("extraction")}
         />

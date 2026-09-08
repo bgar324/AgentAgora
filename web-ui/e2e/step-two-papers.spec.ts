@@ -166,9 +166,6 @@ test("a failed build stays in the Perspectives column and can be retried", async
   await expect(failed.getByRole("alert")).toHaveText(
     "Perspective model unavailable.",
   )
-  await expect(page.getByTestId("perspective-editor")).toContainText(
-    "Add a paper to start editing.",
-  )
   await failed.getByRole("button", { name: "Retry" }).click()
   await expect(page.getByLabel("Job", { exact: true })).toHaveValue(paper.title)
   await expect(page.getByTestId("failed-perspective")).toHaveCount(0)
@@ -220,7 +217,7 @@ test("a stale successful add clears its optimistic row", async ({ page }) => {
   )
 
   await page.getByRole("button", { name: "Build Perspective" }).click()
-  await expect(page.getByText("Adding…")).toHaveCount(0, { timeout: 5_000 })
+  await expect(page.getByTestId("pending-perspective")).toHaveCount(0, { timeout: 5_000 })
 })
 
 test("a paper add accepts an authoritative concurrent removal", async ({
@@ -229,7 +226,7 @@ test("a paper add accepts an authoritative concurrent removal", async ({
   const { workspaceId } = await atStepTwo(page)
   await carryPaper(page)
   await page.getByRole("button", { name: "Build Perspective" }).click()
-  await expect(page.getByText("Adding…")).toHaveCount(0, { timeout: 30_000 })
+  await expect(page.getByTestId("pending-perspective")).toHaveCount(0, { timeout: 30_000 })
 
   const before = await activeView(page, workspaceId)
   const sessionId = before.active.id as string
@@ -265,7 +262,7 @@ test("a paper add accepts an authoritative concurrent removal", async ({
   releaseAdd()
 
   const built = page.getByTestId("built-perspectives")
-  await expect(built.getByText("Adding…")).toHaveCount(0, { timeout: 30_000 })
+  await expect(built.getByTestId("pending-perspective")).toHaveCount(0, { timeout: 30_000 })
   await expect(built).not.toContainText(removed.name)
   await expect(built.locator("article")).toHaveCount(1)
   const after = await activeView(page, workspaceId)
@@ -276,6 +273,7 @@ test("a second paper can be queued while the first Perspective is still adding",
   page,
 }) => {
   const { workspaceId } = await atStepTwo(page)
+  await page.emulateMedia({ reducedMotion: "no-preference" })
   let releaseAdds: () => void = () => undefined
   const addsHeld = new Promise<void>((resolve) => {
     releaseAdds = resolve
@@ -293,10 +291,42 @@ test("a second paper can be queued while the first Perspective is still adding",
   await carryPaper(page, 1)
   await page.getByRole("button", { name: "Build Perspective" }).click()
   const built = page.getByTestId("built-perspectives")
-  await expect(built.getByText("Adding…")).toHaveCount(2)
+  await expect(built.getByTestId("pending-perspective")).toHaveCount(2)
+  const firstPending = built.getByTestId("pending-perspective").first()
+  const firstName = await firstPending.locator("h3").innerText()
+  await expect.poll(() => firstPending.evaluate((node) =>
+    getComputedStyle(node).opacity,
+  )).toBe("1")
+  await built.evaluate((list, name) => {
+    const observer = new MutationObserver(() => {
+      const confirmed = [...list.querySelectorAll('[data-testid="built-perspective"]')]
+        .find((row) => row.querySelector("h3")?.textContent === name)
+      if (!confirmed) return
+      observer.disconnect()
+      list.setAttribute("data-confirmation-opacity", getComputedStyle(confirmed).opacity)
+    })
+    observer.observe(list, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["data-testid"],
+    })
+  }, firstName)
+  await carryPaper(page, 2)
+  const nextJob = page.getByLabel("Job", { exact: true })
+  const nextDescription = page.getByRole("textbox", {
+    name: "Description",
+    exact: true,
+  })
+  await nextJob.fill("The next Perspective draft")
+  await nextDescription.fill("Keep this orientation while the earlier builds finish.")
   releaseAdds()
-  await expect(built.getByText("Adding…")).toHaveCount(0, { timeout: 30_000 })
+  await expect(built.getByTestId("pending-perspective")).toHaveCount(0, { timeout: 30_000 })
   await expect(built.locator("article")).toHaveCount(2)
+  await expect(built).toHaveAttribute("data-confirmation-opacity", "1")
+  await expect(nextJob).toHaveValue("The next Perspective draft")
+  await expect(nextDescription).toHaveValue("Keep this orientation while the earlier builds finish.")
+  await expect(nextDescription).toBeFocused()
   const after = await activeView(page, workspaceId)
   expect(after.active.perspectives).toHaveLength(2)
 })
@@ -403,6 +433,21 @@ test("a Perspective shows only its anchor paper and related count", async ({
   await expect(
     page.getByText(/Scope|Explanation|Approach|Significance|Fragment/i),
   ).toHaveCount(0)
+  const source = page.getByTestId("built-perspectives").getByRole("button", {
+    name: sourceTitle,
+    exact: true,
+  })
+  await expect(source).toHaveCSS("text-align", "left")
+  const footer = await source.evaluate((button) => {
+    const count = button.nextElementSibling
+    if (!count) throw new Error("Missing related-paper count")
+    return {
+      separateLine: count.getBoundingClientRect().top >= button.getBoundingClientRect().bottom,
+      count: count.textContent,
+    }
+  })
+  expect(footer.separateLine).toBe(true)
+  expect(footer.count).not.toMatch(/^\s*·/)
   await page.getByTestId("built-perspectives").getByRole("button", {
     name: sourceTitle,
     exact: true,

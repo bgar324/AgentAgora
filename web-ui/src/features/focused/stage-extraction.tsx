@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Check, ChevronDown } from "lucide-react"
 
 import { useFocusedPanel } from "@/hooks/use-focused"
@@ -46,12 +46,37 @@ export function StageExtraction() {
     name: string
   } | null>(null)
   const [removalError, setRemovalError] = useState<string | null>(null)
+  const [carryStatus, setCarryStatus] = useState<{
+    message: string
+    keptDraft: boolean
+  } | null>(null)
+  const [carryTick, setCarryTick] = useState(0)
+  const jobFieldRef = useRef<HTMLInputElement | null>(null)
+  const editorSectionRef = useRef<HTMLElement | null>(null)
+
+  // Carrying a paper moves focus into the Job field, so a keyboard user lands
+  // where the editing continues instead of guessing which column changed.
+  useEffect(() => {
+    if (carryTick === 0) return
+    const field = jobFieldRef.current
+    if (!field) return
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)")
+      .matches
+    editorSectionRef.current?.scrollIntoView({
+      block: "nearest",
+      behavior: reduced ? "auto" : "smooth",
+    })
+    field.focus()
+    field.setSelectionRange(field.value.length, field.value.length)
+  }, [carryTick])
 
   if (!session) return null
 
-  const hasPendingPerspectives = session.perspectives.some((perspective) =>
+  const pendingCount = session.perspectives.filter((perspective) =>
     perspective.id.startsWith("optimistic:"),
-  )
+  ).length
+  const hasPendingPerspectives = pendingCount > 0
+  const readyCount = session.perspectives.length - pendingCount
   const atPerspectiveLimit = session.perspectives.length >= MAX_PERSPECTIVES
   const queryOptions = session.suggested_queries.slice(0, 5)
   const selectedQueries = queryOptions
@@ -89,10 +114,21 @@ export function StageExtraction() {
     paper: ExpPaper,
     wording?: { name: string; description: string },
   ) => {
+    const alreadySelected = selectedPaperId === paper.id
+    const keptDraft = alreadySelected && wording === undefined
     setSelectedPaperId(paper.id)
-    setJob(wording?.name ?? paper.title.slice(0, 200))
-    setDescription(wording?.description ?? paperAbstract(paper).slice(0, 2000))
+    if (!keptDraft) {
+      setJob(wording?.name ?? paper.title.slice(0, 200))
+      setDescription(wording?.description ?? paperAbstract(paper).slice(0, 2000))
+    }
     dismissFailed(paper.id)
+    setCarryStatus({
+      message: keptDraft
+        ? `${paper.title} is already in the Perspective editor. Your draft is kept.`
+        : `Carried ${paper.title} into the Perspective editor.`,
+      keptDraft,
+    })
+    setCarryTick((tick) => tick + 1)
   }
 
   // The editor frees immediately; the optimistic row in the Perspectives
@@ -104,6 +140,7 @@ export function StageExtraction() {
     setSelectedPaperId(null)
     setJob("")
     setDescription("")
+    setCarryStatus(null)
     try {
       await generatePerspective(paper.id, wording)
     } catch (cause) {
@@ -298,15 +335,30 @@ export function StageExtraction() {
           <div className="min-h-0 flex-1 overflow-y-auto p-3">
             {!session.searched ? (
               busy === "Searching literature" ? (
-                <div className="flex h-full min-h-[180px] flex-col items-center justify-center gap-2 px-6 text-center text-[12px] text-[var(--mute)]">
-                  <span className="inline-flex items-center gap-2">
+                <div className="space-y-2" aria-busy="true">
+                  <p className="flex items-center gap-2 px-0.5 text-[12px] text-[var(--mute)]">
                     <Spinner /> Searching papers…
-                  </span>
-                  {searchStatus ? (
-                    <span data-testid="search-status" className="text-[11px]">
-                      {searchStatus}
-                    </span>
-                  ) : null}
+                  </p>
+                  <p
+                    role="status"
+                    aria-live="polite"
+                    data-testid="search-status"
+                    className="min-h-[15px] px-0.5 text-[11px] leading-snug text-[var(--mute)]"
+                  >
+                    {searchStatus}
+                  </p>
+                  {[0, 1, 2, 3].map((slot) => (
+                    <div
+                      key={slot}
+                      aria-hidden
+                      className="ep-card-enter rounded-lg border border-[var(--line)] bg-[var(--panel)] px-3 py-3"
+                      style={{ animationDelay: `${slot * 60}ms` }}
+                    >
+                      <span className="ep-skeleton block h-[11px] w-[86%] rounded-full" />
+                      <span className="ep-skeleton mt-2 block h-[11px] w-[58%] rounded-full" />
+                      <span className="ep-skeleton mt-3 block h-[9px] w-[36%] rounded-full" />
+                    </div>
+                  ))}
                 </div>
               ) : (
                 <div className="flex h-full min-h-[180px] items-center justify-center px-6 text-center">
@@ -376,24 +428,31 @@ export function StageExtraction() {
                           <p className="mt-1.5 text-[12px] leading-relaxed text-[var(--ink-2)]">
                             {abstract || "No abstract is available for this paper."}
                           </p>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            disabled={
-                              !abstract ||
-                              status !== undefined ||
-                              busy !== null ||
-                              atPerspectiveLimit
-                            }
-                            onClick={() => carryPaper(paper)}
-                            className="mt-3"
-                          >
-                            {status === undefined
-                              ? "Add to editor"
-                              : status.id.startsWith("optimistic:")
-                                ? "Adding…"
-                                : "Perspective built"}
-                          </Button>
+                          <div className="mt-3 flex flex-wrap items-center gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={
+                                !abstract ||
+                                status !== undefined ||
+                                busy !== null ||
+                                atPerspectiveLimit
+                              }
+                              onClick={() => carryPaper(paper)}
+                            >
+                              {status === undefined
+                                ? "Add to editor"
+                                : status.id.startsWith("optimistic:")
+                                  ? "Adding…"
+                                  : "Perspective built"}
+                            </Button>
+                            {status === undefined &&
+                              selectedPaperId === paper.id && (
+                                <span className="text-[10.5px] text-[var(--mute)]">
+                                  In the editor
+                                </span>
+                              )}
+                          </div>
                         </div>
                       )}
                     </article>
@@ -405,22 +464,32 @@ export function StageExtraction() {
         </section>
 
         <section
+          ref={editorSectionRef}
           className="panel flex min-h-[300px] min-w-0 flex-col overflow-hidden"
           data-testid="perspective-editor"
           aria-label="Perspective editor"
         >
           <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3.5">
             <SectionLabel>Perspective editor</SectionLabel>
+            <p className="sr-only" role="status" aria-live="polite">
+              {carryStatus?.message ?? ""}
+            </p>
             {selectedPaper ? (
               <div className="mt-2">
                 <p className="text-[11px] leading-snug text-[var(--mute)]">
                   Carried from {selectedPaper.title}
                 </p>
+                {carryStatus?.keptDraft && (
+                  <p className="ep-expand-enter mt-1.5 text-[11px] leading-snug text-[var(--amber)]">
+                    Your draft for this paper is kept.
+                  </p>
+                )}
                 <label className="mt-3 block">
                   <span className="text-[11px] font-medium text-[var(--ink-2)]">
                     Job
                   </span>
                   <input
+                    ref={jobFieldRef}
                     value={job}
                     onChange={(event) => setJob(event.target.value)}
                     maxLength={200}
@@ -456,96 +525,155 @@ export function StageExtraction() {
               </div>
             ) : (
               <div className="flex min-h-[150px] items-center justify-center px-4 text-center">
-                <EmptyLine>Add a paper to start editing.</EmptyLine>
+                {hasPendingPerspectives ? (
+                  <div className="ep-expand-enter space-y-1">
+                    <p className="text-[12.5px] font-medium text-[var(--ink-2)]">
+                      {atPerspectiveLimit
+                        ? "Your panel is being added"
+                        : "Ready for another paper"}
+                    </p>
+                    <p className="text-[11px] leading-relaxed text-[var(--mute)]">
+                      You can keep browsing while the panel updates.
+                    </p>
+                  </div>
+                ) : (
+                  <EmptyLine>Add a paper to start editing.</EmptyLine>
+                )}
               </div>
             )}
 
             <div className="my-4 border-t border-[var(--line)]" />
-            <div className="flex items-baseline justify-between">
-              <SectionLabel>Built Perspectives</SectionLabel>
-              <span className="text-[11px] text-[var(--mute)]">
-                {session.perspectives.length} / {MAX_PERSPECTIVES}
+            <div className="flex items-baseline justify-between gap-2">
+              <SectionLabel>Perspectives</SectionLabel>
+              <span className="flex items-baseline gap-1.5 text-[11px] text-[var(--mute)]">
+                {hasPendingPerspectives && (
+                  <span>
+                    {readyCount} ready · {pendingCount} adding
+                  </span>
+                )}
+                <span>
+                  {session.perspectives.length} / {MAX_PERSPECTIVES}
+                </span>
               </span>
             </div>
+            {hasPendingPerspectives && (
+              <p className="ep-expand-enter mt-1.5 text-[10.5px] leading-snug text-[var(--mute)]">
+                You can keep browsing papers
+                {!atPerspectiveLimit ? " and build another" : ""} while{" "}
+                {pendingCount === 1 ? "this one finishes" : "these finish"}.
+              </p>
+            )}
+            <p className="sr-only" role="status" aria-live="polite">
+              {hasPendingPerspectives
+                ? `${pendingCount} Perspective${
+                    pendingCount === 1 ? "" : "s"
+                  } still being added. ${
+                    atPerspectiveLimit
+                      ? "You can keep browsing papers."
+                      : "You can keep browsing papers and build another."
+                  }`
+                : ""}
+            </p>
             {session.perspectives.length === 0 && failedList.length === 0 ? (
               <div className="py-8 text-center">
                 <EmptyLine>No Perspectives built yet.</EmptyLine>
               </div>
             ) : (
               <div className="mt-2 space-y-2" data-testid="built-perspectives">
-                {session.perspectives.map((perspective) => (
-                  <article
-                    key={perspective.id}
-                    className="rounded-lg border border-[var(--line)] bg-[var(--panel)] px-3 py-2.5"
-                  >
-                    <div className="flex items-start gap-2">
-                      <div className="min-w-0 flex-1">
-                        <h3 className="text-[12.5px] font-semibold leading-snug text-[var(--ink)]">
-                          {perspective.name}
-                        </h3>
-                        {perspective.summary && (
-                          <p className="mt-1 line-clamp-3 text-[11px] leading-relaxed text-[var(--ink-2)]">
-                            {perspective.summary}
-                          </p>
-                        )}
-                      </div>
-                      {!perspective.id.startsWith("optimistic:") && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setRemovalError(null)
-                            setPerspectiveToRemove({
-                              id: perspective.id,
-                              name: perspective.name,
-                            })
-                          }}
-                          disabled={
-                            busy !== null ||
-                            hasPendingPerspectives
-                          }
-                          aria-label={`Remove ${perspective.name}`}
-                          className="shrink-0 text-[13px] leading-none text-[var(--mute)] hover:text-[var(--red)] disabled:opacity-50"
-                        >
-                          ×
-                        </button>
-                      )}
-                    </div>
-                    <div className="mt-2 text-[10.5px] text-[var(--mute)]">
-                      {perspective.id.startsWith("optimistic:") ? (
-                        <span className="inline-flex items-center gap-1.5">
-                          <Spinner /> Adding…
-                        </span>
-                      ) : perspective.anchor_paper_id ? (
-                        <span>
+                {session.perspectives.map((perspective) => {
+                  const pending = perspective.id.startsWith("optimistic:")
+                  const anchor = session.papers.find(
+                    (paper) => paper.id === perspective.anchor_paper_id,
+                  )
+                  // Keyed on the anchor paper so the optimistic-to-confirmed
+                  // swap updates this row in place instead of remounting it.
+                  const rowKey = perspective.anchor_paper_id || perspective.id
+                  return (
+                    <article
+                      key={rowKey}
+                      data-testid={
+                        pending ? "pending-perspective" : "built-perspective"
+                      }
+                      aria-busy={pending || undefined}
+                      className={`ep-card-enter rounded-lg border px-3 py-2.5 ${
+                        pending
+                          ? "border-dashed border-[var(--line-strong)] bg-[var(--hover)]"
+                          : "border-[var(--line)] bg-[var(--panel)]"
+                      }`}
+                    >
+                      <div className="flex items-start gap-2">
+                        <div className="min-w-0 flex-1">
+                          <h3 className="text-[12.5px] font-semibold leading-snug text-[var(--ink)]">
+                            {perspective.name}
+                          </h3>
+                          {perspective.summary && (
+                            <p className="mt-1 line-clamp-3 text-[11px] leading-relaxed text-[var(--ink-2)]">
+                              {perspective.summary}
+                            </p>
+                          )}
+                        </div>
+                        {!pending && (
                           <button
                             type="button"
-                            onClick={() =>
-                              openPaperSet(perspective.anchor_paper_id)
+                            onClick={() => {
+                              setRemovalError(null)
+                              setPerspectiveToRemove({
+                                id: perspective.id,
+                                name: perspective.name,
+                              })
+                            }}
+                            disabled={
+                              busy !== null ||
+                              hasPendingPerspectives
                             }
-                            className="underline decoration-[var(--line-strong)] underline-offset-2 hover:text-[var(--ink-2)]"
+                            aria-label={`Remove ${perspective.name}`}
+                            className="shrink-0 text-[13px] leading-none text-[var(--mute)] hover:text-[var(--red)] disabled:opacity-50"
                           >
-                            {session.papers.find(
-                              (paper) =>
-                                paper.id === perspective.anchor_paper_id,
-                            )?.title ?? "Anchor paper"}
+                            ×
                           </button>
-                          {` · ${perspective.related_paper_count} related ${
-                            perspective.related_paper_count === 1
-                              ? "paper"
-                              : "papers"
-                          }`}
-                        </span>
-                      ) : (
-                        "Source pending"
-                      )}
-                    </div>
-                  </article>
-                ))}
+                        )}
+                      </div>
+                      <div className="mt-2 text-[10.5px] text-[var(--mute)]">
+                        {pending ? (
+                          <span className="inline-flex items-center gap-2 text-[var(--ink-2)]">
+                            <span className="ep-pending-dots" aria-hidden>
+                              <span />
+                              <span />
+                              <span />
+                            </span>
+                            Adding…
+                          </span>
+                        ) : perspective.anchor_paper_id ? (
+                          <span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                openPaperSet(perspective.anchor_paper_id)
+                              }
+                              className="block w-full text-left underline decoration-[var(--line-strong)] underline-offset-2 hover:text-[var(--ink-2)]"
+                            >
+                              {anchor?.title ?? "Anchor paper"}
+                            </button>
+                            <span className="mt-1 block">
+                              {`${perspective.related_paper_count} related ${
+                                perspective.related_paper_count === 1
+                                  ? "paper"
+                                  : "papers"
+                              }`}
+                            </span>
+                          </span>
+                        ) : (
+                          "Source pending"
+                        )}
+                      </div>
+                    </article>
+                  )
+                })}
                 {failedList.map(([paperId, failed]) => (
                   <article
                     key={`failed:${paperId}`}
                     data-testid="failed-perspective"
-                    className="rounded-lg border border-[var(--line)] bg-[var(--panel)] px-3 py-2.5"
+                    className="ep-card-enter rounded-lg border border-[var(--line)] bg-[var(--panel)] px-3 py-2.5"
                   >
                     <h3 className="text-[12.5px] font-semibold leading-snug text-[var(--ink)]">
                       {failed.name}

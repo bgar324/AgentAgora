@@ -1,7 +1,7 @@
 "use client"
 
 import { Check, X } from "lucide-react"
-import { useEffect, useState } from "react"
+import { useEffect, useState, type FormEvent } from "react"
 
 import { ApiError, useFocusedPanel } from "@/hooks/use-focused"
 import { useFocusedStore } from "@/store/focused"
@@ -387,34 +387,37 @@ const DEMO_POSITION: NotepadDoc = {
     "Narrower first-line holds outcomes outside sepsis, and the harm horizon runs past the treated infection.",
 }
 
-const EMPTY_POSITION: NotepadDoc = {
-  framing: "",
-  prior: "",
-  method: "",
-  expected: "",
-}
 
 function StartScreen({ demo }: { demo: boolean }) {
-  const [customProblem, setCustomProblem] = useState("")
-  const [customPosition, setCustomPosition] =
-    useState<NotepadDoc>(EMPTY_POSITION)
-  const [demoPosition, setDemoPosition] =
-    useState<NotepadDoc>(DEMO_POSITION)
-  const problem = demo ? DEMO_PROBLEM : customProblem
-  const position = demo ? demoPosition : customPosition
-  const setPosition = demo ? setDemoPosition : setCustomPosition
   const [error, setError] = useState<string | null>(null)
   const [starting, setStarting] = useState(false)
   const { createWorkspace } = useFocusedPanel()
 
-  const start = async () => {
+  const start = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (starting) return
+    const data = new FormData(event.currentTarget)
+    const text = (name: string) => {
+      const value = data.get(name)
+      return typeof value === "string" ? value : ""
+    }
+    const problem = (demo ? DEMO_PROBLEM : text("problem")).trim()
+    if (problem.length < 3) {
+      setError("Enter a research problem with at least 3 characters.")
+      return
+    }
     setStarting(true)
     setError(null)
     try {
       await createWorkspace({
-        problem: problem.trim(),
+        problem,
         demo,
-        position,
+        position: {
+          framing: text("framing"),
+          prior: text("prior"),
+          method: text("method"),
+          expected: text("expected"),
+        },
       })
     } catch (err) {
       setError(err instanceof Error ? err.message : "failed to start")
@@ -436,13 +439,19 @@ function StartScreen({ demo }: { demo: boolean }) {
           </p>
         </div>
 
-        <div className="flex flex-col gap-4">
+        <form
+          className="flex flex-col gap-4"
+          method="post"
+          onSubmit={(event) => void start(event)}
+        >
           <div>
             <SectionLabel htmlFor="focused-problem">Problem</SectionLabel>
             <textarea
               id="focused-problem"
-              value={problem}
-              onChange={(event) => setCustomProblem(event.target.value)}
+              name="problem"
+              defaultValue={demo ? DEMO_PROBLEM : ""}
+              required
+              minLength={3}
               disabled={demo}
               rows={3}
               className="field w-full resize-none px-3 py-2.5 text-[13px] leading-relaxed placeholder:text-[var(--mute)]"
@@ -462,14 +471,9 @@ function StartScreen({ demo }: { demo: boolean }) {
                 </label>
                 <textarea
                   id={`position-${part}`}
-                  value={position[part]}
+                  name={part}
+                  defaultValue={demo ? DEMO_POSITION[part] : ""}
                   rows={2}
-                  onChange={(event) =>
-                    setPosition((current) => ({
-                      ...current,
-                      [part]: event.target.value,
-                    }))
-                  }
                   className="field mt-1 w-full resize-none px-3 py-2 text-[12.5px] leading-relaxed placeholder:text-[var(--mute)]"
                   placeholder={PART_HINTS[part]}
                 />
@@ -477,18 +481,18 @@ function StartScreen({ demo }: { demo: boolean }) {
             ))}
           </div>
           {error && (
-            <div className="text-[13px] text-[var(--red)]">{error}</div>
+            <div role="alert" className="text-[13px] text-[var(--red)]">{error}</div>
           )}
           <Button
             variant="primary"
             size="md"
-            onClick={() => void start()}
-            disabled={starting || problem.trim().length < 3}
+            type="submit"
+            disabled={starting}
             className="mt-1"
           >
             {starting ? <><Spinner /> Continuing…</> : "Continue"}
           </Button>
-        </div>
+        </form>
       </div>
     </div>
   )
