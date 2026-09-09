@@ -813,11 +813,13 @@ function ConversationColumn({
   const activity =
     busy === "Sending"
       ? "Waiting for replies"
-      : busy === "Agents discussing"
-        ? "Perspectives are discussing"
-        : busy === "Summarizing"
-          ? "Writing the summary"
-          : null
+      : busy === "Recovering reply"
+        ? "Checking the saved reply"
+        : busy === "Agents discussing"
+          ? "Perspectives are discussing"
+          : busy === "Summarizing"
+            ? "Writing the summary"
+            : null
 
   const scrollToLatest = useCallback(() => {
     const node = scroller.current

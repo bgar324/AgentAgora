@@ -672,17 +672,66 @@ export function useFocusedPanel() {
       versionId: string,
       message: string,
       topicId: string | null = null,
-    ) => {
-      return notepadCall("Sending", "messages", {
-        method: "POST",
-        body: JSON.stringify({
-          version_id: versionId,
-          message,
-          topic_id: topicId,
-        }),
-      })
-    },
-    [notepadCall],
+    ) => exclusive("Sending", async () => {
+      await flushNotepadEdits()
+      const before = useFocusedStore.getState()
+      const originWorkspaceId = before.workspace?.id
+      const previousTurns = before.session?.notepad?.turns ?? []
+      try {
+        const view = await requestView(`sessions/${sessionId}/notepad/messages`, {
+          method: "POST",
+          body: JSON.stringify({
+            version_id: versionId,
+            message,
+            topic_id: topicId,
+          }),
+        })
+        return view.active
+      } catch (cause) {
+        if (
+          !(cause instanceof ApiError) ||
+          (cause.status !== 502 && cause.status !== 504) ||
+          !originWorkspaceId
+        ) {
+          throw cause
+        }
+        const unconfirmed = new ApiError(
+          `The response could not be confirmed (HTTP ${cause.status}). It may still finish. Refresh before sending again.`,
+          cause.status,
+        )
+        busySet("Recovering reply")
+        let latest: WorkspaceView
+        try {
+          latest = await api<WorkspaceView>(`workspaces/${originWorkspaceId}`, {
+            cache: "no-store",
+            signal: AbortSignal.timeout(5_000),
+          })
+        } catch {
+          throw unconfirmed
+        }
+        const current = useFocusedStore.getState()
+        const normalized = message.trim().replace(/\s+/g, " ")
+        const recovered = latest.active.notepad?.turns.some((turn) =>
+          turn.kind === "researcher" &&
+          turn.version_id === versionId &&
+          turn.text === normalized &&
+          (turn.topic_id ?? null) === topicId &&
+          !previousTurns.some((previous) => previous.id === turn.id),
+        )
+        if (
+          recovered &&
+          current.workspace?.id === originWorkspaceId &&
+          current.sessionId === sessionId &&
+          latest.active.id === sessionId &&
+          latest.active.notepad?.active_version_id === versionId
+        ) {
+          workspaceViewSet(latest)
+          return latest.active
+        }
+        throw unconfirmed
+      }
+    }),
+    [busySet, exclusive, flushNotepadEdits, requestView, sessionId, workspaceViewSet],
   )
 
   const summarizeNotepad = useCallback(

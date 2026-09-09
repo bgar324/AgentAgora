@@ -353,6 +353,75 @@ test("one directed question gets one reply from every active Perspective", async
   await expect(page.getByTestId("notepad-turn-direct_reply")).toHaveCount(3)
 })
 
+test("a saved reply is recovered after a gateway error without resending", async ({
+  page,
+}) => {
+  const { workspaceId } = await baselineWorkspace(page, 2)
+  await openDiscussion(page)
+  await page.getByTestId("notepad-topics-toggle").click()
+  await page.getByTestId("notepad-topic").first().click()
+  const message = page.getByLabel("Message the panel")
+  await message.fill("Which   boundary\n should I defend?")
+  let sends = 0
+  await page.route("**/api/focused/sessions/*/notepad/messages", async (route) => {
+    sends++
+    const saved = await route.fetch()
+    expect(saved.ok()).toBeTruthy()
+    await route.fulfill({ status: 502, contentType: "text/plain", body: "Bad Gateway" })
+  })
+  const reads: Array<() => void> = []
+  await page.route(`**/api/focused/workspaces/${workspaceId}`, async (route) => {
+    await new Promise<void>((resolve) => reads.push(resolve))
+    await route.continue()
+  })
+  try {
+    await page.getByRole("button", { name: "Send", exact: true }).click()
+    await expect.poll(() => reads.length, { timeout: 1500 }).toBe(1)
+    await expect(message).toBeDisabled()
+    await expect(page.getByTestId("notepad-build-perspective")).toBeDisabled()
+    await expect(page.getByTestId("notepad-pending-message")).toBeVisible()
+    reads[0]()
+    await expect(page.getByTestId("notepad-turn-researcher")).toHaveCount(1)
+    await expect(page.getByTestId("notepad-turn-researcher").locator("p"))
+      .toHaveText("Which boundary should I defend?")
+    await expect(page.getByTestId("notepad-turn-direct_reply")).toHaveCount(2)
+    await expect(page.getByTestId("notepad-pending-message")).toHaveCount(0)
+    await expect(page.getByTestId("composer-topic")).toHaveCount(0)
+    await expect(message).toHaveValue("")
+    await expect(page.getByTestId("notepad-conversation").getByRole("alert")).toHaveCount(0)
+    expect(sends).toBe(1)
+  } finally {
+    for (const release of reads) release()
+  }
+})
+
+test("an earlier identical prompt does not falsely confirm a failed send", async ({
+  page,
+}) => {
+  await baselineWorkspace(page, 1)
+  await openDiscussion(page)
+  await page.getByTestId("notepad-topics-toggle").click()
+  const topic = page.getByTestId("notepad-topic").first()
+  const message = page.getByLabel("Message the panel")
+  const question = "What boundary should I defend?"
+  await topic.click()
+  await message.fill(question)
+  await page.getByRole("button", { name: "Send", exact: true }).click()
+  await expect(page.getByTestId("notepad-turn-direct_reply")).toHaveCount(1)
+  await expect(page.getByTestId("composer-topic")).toHaveCount(0)
+  await topic.click()
+  await message.fill(question)
+  await page.route("**/api/focused/sessions/*/notepad/messages", async (route) => {
+    await route.fulfill({ status: 502, contentType: "text/plain", body: "Bad Gateway" })
+  })
+  await page.getByRole("button", { name: "Send", exact: true }).click()
+  await expect(message).toBeEnabled()
+  await expect(message).toHaveValue(question)
+  await expect(page.getByTestId("composer-topic")).toBeVisible()
+  await expect(page.getByTestId("notepad-turn-researcher")).toHaveCount(1)
+  await expect(page.getByTestId("notepad-conversation").getByRole("alert")).toContainText("502")
+})
+
 test("pending messages recover their draft and do not steal reader focus", async ({
   page,
 }) => {

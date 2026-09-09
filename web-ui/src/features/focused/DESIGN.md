@@ -61,6 +61,8 @@ A researcher question adds one researcher message and one reply from every activ
 
 Send displays a local **Sending** preview immediately. The recorded turn replaces that preview on success; failure restores the draft and keeps its topic. Discussion, Send, and Summary show activity inside the conversation. Incoming turns appear without moving a reader who has scrolled into older feedback; **Jump to latest** returns to the bottom. Completing a request does not take focus away from another control the researcher opened.
 
+After a send receives HTTP 502 or 504, the UI keeps its busy guard and performs one uncached workspace read, limited to five seconds. A new researcher turn must match the submitted version, normalized text, and topic before the UI accepts the saved result. Earlier identical messages do not count. An unconfirmed result keeps the draft and topic and asks the researcher to refresh before sending again. Recovery never resends the prompt automatically.
+
 **Papers**, **Build another Perspective**, and version navigation wait for the active command to settle. This keeps pending message drafts and topics mounted for error recovery.
 
 **Copy feedback** writes text only to the clipboard. Feedback, comparison, direct replies, and summaries never mutate the Document.
