@@ -99,6 +99,38 @@ test("the input screen has one baseline form and no participant condition contro
   await expect(page.getByText(/Demo mode|guided/i)).toHaveCount(0)
 })
 
+test("Start over preserves a finished study and clears browser resume state", async ({
+  page,
+}) => {
+  const { workspaceId } = await baselineWorkspace(page, 1)
+  await openDiscussion(page)
+  await page.getByLabel("Message the panel").fill("Which uncertainty matters most?")
+  await page.getByLabel("Message the panel").press("Enter")
+  await expect(page.getByTestId("notepad-turn-direct_reply")).toHaveCount(1)
+  await page.getByRole("button", { name: "Finish study" }).click()
+  await expect(page.getByRole("button", { name: "Study finished" })).toBeVisible()
+  const before = await page.request.get(`/api/focused/workspaces/${workspaceId}`)
+  expect(before.ok()).toBeTruthy()
+  const savedStudy = await before.json()
+
+  await page.getByRole("button", { name: "Start over", exact: true }).click()
+  await page.getByRole("button", { name: "Start new study", exact: true }).click()
+  await expect(page.getByLabel("Problem", { exact: true })).toBeVisible()
+  expect(new URL(page.url()).searchParams.has("workspace")).toBe(false)
+  expect(await page.evaluate(() => localStorage.getItem("focused-workspace"))).toBeNull()
+  const after = await page.request.get(`/api/focused/workspaces/${workspaceId}`)
+  expect(after.ok()).toBeTruthy()
+  expect(await after.json()).toEqual(savedStudy)
+
+  await page.reload()
+  await expect(page.getByLabel("Problem", { exact: true })).toBeVisible()
+  await page.goto(`/focused?workspace=${workspaceId}`)
+  await expect(page.getByRole("button", { name: "Study finished" })).toBeVisible()
+  await expect(page.getByTestId("notepad-turn-researcher")).toContainText(
+    "Which uncertainty matters most?",
+  )
+})
+
 test("Continue submits visible restored fields without React input events", async ({
   page,
   baseURL,

@@ -6,7 +6,7 @@ The focused surface has one baseline flow at `/focused`. `/demo` runs the same f
 
 ## Flow
 
-The header shows two steps: **Find papers** and **Discuss**. **Start over** deletes the current workspace. The primary action moves between the paper workflow and the discussion.
+The header shows two steps: **Find papers** and **Discuss**. **Start over** saves pending notepad edits, clears this browser's active workspace, and returns to the start screen. The previous workspace, including finished study data, remains stored and can be reopened with its workspace URL. The primary action moves between the paper workflow and the discussion.
 
 ### Start
 

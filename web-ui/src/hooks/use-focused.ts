@@ -212,7 +212,6 @@ export function useFocusedPanel() {
     (state) => state.notepadDraftAcknowledged,
   )
   const sessionId = useFocusedStore((state) => state.sessionId)
-  const workspaceId = useFocusedStore((state) => state.workspace?.id ?? null)
 
   const exclusive = useCallback(
     async <T,>(label: string, operation: () => Promise<T>): Promise<T> => {
@@ -295,14 +294,6 @@ export function useFocusedPanel() {
     [exclusive, workspaceViewSet],
   )
 
-  const deleteWorkspace = useCallback(async () => {
-    if (!workspaceId) throw new Error("No active workspace.")
-    return exclusive("Deleting workspace", () =>
-      api<{ deleted: string }>(`workspaces/${workspaceId}`, {
-        method: "DELETE",
-      }),
-    )
-  }, [exclusive, workspaceId])
 
   const createWorkspace = useCallback(
     async ({
@@ -590,6 +581,11 @@ export function useFocusedPanel() {
     return operation
   }, [editNotepadPart, notepadDraftStaged, sessionId])
 
+  const savePendingEdits = useCallback(
+    () => exclusive("Saving changes", flushNotepadEdits),
+    [exclusive, flushNotepadEdits],
+  )
+
   const notepadCall = useCallback(
     (label: string, path: string, init?: RequestInit, skipDraftFlush = false) =>
       exclusive(label, async () => {
@@ -764,7 +760,7 @@ export function useFocusedPanel() {
 
   return {
     loadWorkspace,
-    deleteWorkspace,
+    savePendingEdits,
     createWorkspace,
     suggestQueries,
     runSearch,

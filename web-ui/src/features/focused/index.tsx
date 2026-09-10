@@ -273,7 +273,7 @@ export function FocusedWorkspace({ demo = false }: { demo?: boolean }) {
           onConfirm={() => {
             setResetError(null)
             void focused
-              .deleteWorkspace()
+              .savePendingEdits()
               .then(() => {
                 window.localStorage.removeItem("focused-workspace")
                 const url = new URL(window.location.href)
@@ -286,11 +286,11 @@ export function FocusedWorkspace({ demo = false }: { demo?: boolean }) {
                 setResetError(
                   cause instanceof Error
                     ? cause.message
-                    : "Could not reset workspace",
+                    : "Could not save changes",
                 ),
               )
           }}
-          busy={busy === "Deleting workspace"}
+          busy={busy === "Saving changes"}
           error={resetError}
         />
       ) : null}
@@ -347,8 +347,8 @@ function ResetDialog({
   return (
     <ModalShell title="Start over?" onClose={onClose}>
       <p className="mb-5 text-[13px] leading-relaxed text-[var(--ink-2)]">
-        Deletes the working workspace: every Investigation, paper, panel, and
-        saved hypothesis. Study interaction records remain.
+        Your current workspace and study data will stay saved. Start over opens
+        a fresh study.
       </p>
       {error && (
         <p role="alert" className="mb-3 text-[12px] text-[var(--red)]">
@@ -360,7 +360,7 @@ function ResetDialog({
           Cancel
         </Button>
         <Button variant="primary" size="sm" onClick={onConfirm} disabled={busy}>
-          {busy ? <><Spinner /> Resetting…</> : "Reset workspace"}
+          {busy ? <><Spinner /> Saving…</> : "Start new study"}
         </Button>
       </div>
     </ModalShell>
